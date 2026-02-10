@@ -1,0 +1,143 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "config-base",
+      "displayName": "Base (Ninja)",
+      "description": "General build",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "CCACHE_BASEDIR": "${sourceDir}"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/usr/bin/gcc-11",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++-11",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "develop_gui",
+      "displayName": "🐲 Develop",
+      "inherits": "config-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_LOG": "ON",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_UNITY_BUILD": "ON",
+        "CMAKE_UNITY_BUILD_BATCH_SIZE": "4",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fuse-ld=lld",
+        "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fuse-ld=lld"
+      }
+    },
+    {
+      "name": "develop_console",
+      "displayName": "⌨️ Develop",
+      "inherits": "config-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_LOG": "ON",
+        "ENABLE_RENDER": "OFF",
+        "CMAKE_UNITY_BUILD": "ON",
+        "CMAKE_UNITY_BUILD_BATCH_SIZE": "4",
+        "CMAKE_CXX_FLAGS_DEBUG": "-Og -g",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fuse-ld=lld",
+        "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fuse-ld=lld"
+      }
+    },
+    {
+      "name": "Release",
+      "displayName": "✅ Release",
+      "inherits": "config-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_LOG": "OFF",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_UNITY_BUILD": "OFF",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=gold",
+        "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fuse-ld=gold"
+      }
+    },
+    {
+      "name": "Test",
+      "displayName": "🧪 Test",
+      "inherits": "config-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ENABLE_TEST": "ON",
+        "ENABLE_LOG": "ON",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_UNITY_BUILD": "ON",
+        "CMAKE_UNITY_BUILD_BATCH_SIZE": "4",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g",
+        "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-fuse-ld=lld",
+        "CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO": "-fuse-ld=lld"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "develop_gui",
+      "configurePreset": "develop_gui",
+      "jobs": 16
+    },
+    {
+      "name": "develop_console",
+      "configurePreset": "develop_console",
+      "jobs": 16
+    },
+    {
+      "name": "Release",
+      "configurePreset": "Release",
+      "jobs": 0
+    },
+    {
+      "name": "Test",
+      "configurePreset": "Test",
+      "jobs": 16
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "develop_gui",
+      "configurePreset": "develop_gui",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "develop_console",
+      "configurePreset": "develop_console",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "Release",
+      "configurePreset": "Release",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "Test",
+      "configurePreset": "Test",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

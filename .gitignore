@@ -1,0 +1,9 @@
+build/
+.cache/
+.ccache/
+
+# Ignore saves folder
+data/match/saves/
+
+# Ignore imgui Views config
+imgui.ini

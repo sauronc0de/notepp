@@ -1,0 +1,167 @@
+{
+    "editor.formatOnSave": true,
+    "search.exclude": {
+        "examples": true,
+        "libraries": true
+    },
+    "terminal.integrated.env.linux": {
+        "PATH": "${workspaceFolder}/tools/tasks:${env:PATH}",
+    },
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "git.postCommitCommand": "push",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/build"
+    ],
+    "C_Cpp.intelliSenseEngine": "default",
+    "cmake.useCMakePresets": "always",
+    "cmake.loggingLevel": "debug",
+    "editor.minimap.enabled": false,
+    "cmake.options.advanced": {
+        "build": {
+            "statusBarVisibility": "hidden"
+        },
+        "launch": {
+            "statusBarVisibility": "visible"
+        },
+        "debug": {
+            "statusBarVisibility": "visible"
+        },
+        "cpack": {
+            "statusBarVisibility": "hidden"
+        },
+        "workflow": {
+            "statusBarVisibility": "hidden"
+        },
+        "workflowPreset": {
+            "statusBarVisibility": "hidden"
+        },
+        "packagePreset": {
+            "statusBarVisibility": "hidden"
+        },
+        "testPreset": {
+            "statusBarVisibility": "hidden"
+        },
+        "buildTarget": {
+            "statusBarVisibility": "visible"
+        },
+        "buildPreset": {
+            "statusBarVisibility": "hidden"
+        }
+    },
+    "cmake.options.statusBarVisibility": "visible",
+    "debug.showInStatusBar": "never",
+    "actionButtons": {
+        "defaultColor": "#ff0034", // Can also use string color names.
+        "loadNpmCommands": false, // Disables automatic generation of actions for npm commands.
+        "reloadButton": "🔄", // Custom reload button text or icon (default ↻). null value enables automatic reload on configuration change
+        "commands": [
+            {
+                "cwd": "", // Terminal initial folder ${workspaceFolder} and os user home as defaults
+                "name": "🧹Clean",
+                "color": "#F44336",
+                "singleInstance": true,
+                "useVsCodeApi": true,
+                "command": "cmake.clean",
+            },
+            {
+                "cwd": "", // Terminal initial folder ${workspaceFolder} and os user home as defaults
+                "name": "🧱 Build",
+                "color": "#4CAF50",
+                "useVsCodeApi": true,
+                "command": "workbench.action.tasks.runTask",
+                "args": [
+                    "build.sh"
+                ]
+            },
+            {
+                "cwd": "", // Terminal initial folder ${workspaceFolder} and os user home as defaults
+                "name": "🧩 Dependences",
+                "color": "#FFC107",
+                "singleInstance": true,
+                "command": "dependences.sh"
+            }
+        ],
+    },
+    "files.associations": {
+        "*.cs": "csharp",
+        "array": "cpp",
+        "any": "cpp",
+        "string_view": "cpp",
+        "ranges": "cpp",
+        "span": "cpp",
+        "regex": "cpp",
+        "thread": "cpp",
+        "chrono": "cpp",
+        "cctype": "cpp",
+        "clocale": "cpp",
+        "cmath": "cpp",
+        "csignal": "cpp",
+        "cstdarg": "cpp",
+        "cstddef": "cpp",
+        "cstdio": "cpp",
+        "cstdlib": "cpp",
+        "cstring": "cpp",
+        "ctime": "cpp",
+        "cwchar": "cpp",
+        "cwctype": "cpp",
+        "atomic": "cpp",
+        "strstream": "cpp",
+        "bit": "cpp",
+        "bitset": "cpp",
+        "codecvt": "cpp",
+        "compare": "cpp",
+        "complex": "cpp",
+        "concepts": "cpp",
+        "condition_variable": "cpp",
+        "cstdint": "cpp",
+        "deque": "cpp",
+        "forward_list": "cpp",
+        "list": "cpp",
+        "map": "cpp",
+        "set": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "exception": "cpp",
+        "algorithm": "cpp",
+        "functional": "cpp",
+        "iterator": "cpp",
+        "memory": "cpp",
+        "memory_resource": "cpp",
+        "numeric": "cpp",
+        "optional": "cpp",
+        "random": "cpp",
+        "ratio": "cpp",
+        "system_error": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "utility": "cpp",
+        "fstream": "cpp",
+        "initializer_list": "cpp",
+        "iomanip": "cpp",
+        "iosfwd": "cpp",
+        "iostream": "cpp",
+        "istream": "cpp",
+        "limits": "cpp",
+        "mutex": "cpp",
+        "new": "cpp",
+        "numbers": "cpp",
+        "ostream": "cpp",
+        "semaphore": "cpp",
+        "sstream": "cpp",
+        "stdexcept": "cpp",
+        "stop_token": "cpp",
+        "streambuf": "cpp",
+        "cfenv": "cpp",
+        "cinttypes": "cpp",
+        "typeindex": "cpp",
+        "typeinfo": "cpp",
+        "valarray": "cpp",
+        "variant": "cpp",
+        "csetjmp": "cpp",
+        "future": "cpp",
+        "shared_mutex": "cpp",
+        "*.inc": "cpp"
+    },
+}

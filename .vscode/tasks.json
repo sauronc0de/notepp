@@ -1,0 +1,14 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build.sh",
+            "command": "build.sh",
+            "type": "shell",
+            "args": [
+                "${command:cmake.buildTargetName}",
+                "${command:cmake.activeConfigurePresetName}"
+            ]
+        }
+    ]
+}

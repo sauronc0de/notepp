@@ -1,0 +1,29 @@
+{
+  "name": "🐳[${localWorkspaceFolderBasename}]",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "WORKSPACE_DIR": "/workspaces/${localWorkspaceFolderBasename}",
+      "PROJECT_NAME": "${localWorkspaceFolderBasename}"
+    }
+  },
+  "postStartCommand": "sudo chown -R sauroncode:sauroncode /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "mhutchie.git-graph",
+        "ms-vscode.cmake-tools",
+        "ms-azuretools.vscode-docker",
+        "aaron-bond.better-comments",
+        "seunlanlege.action-buttons",
+        "ms-vscode.makefile-tools",
+        "vadimcn.vscode-lldb",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "jebbs.plantuml",
+        "bierner.markdown-mermaid",
+        "slevesque.shader"
+      ]
+    }
+  }
+}
