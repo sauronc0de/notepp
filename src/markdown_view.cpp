@@ -1,5 +1,6 @@
 #include "markdown_view.hpp"
 
+#include <functional>
 #include <SDL.h>
 #include <imgui.h>
 #include "imgui_md.h"
@@ -27,26 +28,6 @@ struct MdFonts
 };
 
 static MdFonts g_fonts{};
-
-// Trim helpers
-static std::string_view ltrim(std::string_view s)
-{
-  while(!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
-    s.remove_prefix(1);
-  return s;
-}
-static std::string_view rtrim(std::string_view s)
-{
-  while(!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
-    s.remove_suffix(1);
-  return s;
-}
-static std::string_view trim(std::string_view s) { return rtrim(ltrim(s)); }
-
-static bool starts_with(std::string_view s, std::string_view p)
-{
-  return s.size() >= p.size() && s.substr(0, p.size()) == p;
-}
 
 // Remove a single leading '>' (and one optional following space) from a line
 static std::string_view strip_quote_prefix(std::string_view line)
@@ -357,6 +338,34 @@ void MarkdownView::set_fonts(ImFont *regular, ImFont *italic, ImFont *bold)
 {
   g_fonts = {regular, italic, bold};
 }
+static void render_sections(const MdSection &s,
+                            const std::function<void(std::string_view)> &render_body,
+                            int &id_counter)
+{
+  // Render body before children (so text under a heading appears when expanded)
+  // For root (level 0), we don't create a header; just render its body then children.
+  if(s.level == 0)
+  {
+    if(!s.body.empty()) render_body(s.body);
+    for(const auto &k : s.kids) render_sections(k, render_body, id_counter);
+    return;
+  }
+
+  ImGui::PushID(id_counter++);
+
+  // Collapsing header label (use the title only)
+  const bool open = ImGui::CollapsingHeader(
+      s.title.c_str(),
+      ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
+
+  if(open)
+  {
+    if(!s.body.empty()) render_body(s.body);
+    for(const auto &k : s.kids) render_sections(k, render_body, id_counter);
+  }
+
+  ImGui::PopID();
+}
 
 void MarkdownView::render(std::string_view markdown)
 {
@@ -386,7 +395,9 @@ void MarkdownView::render(std::string_view markdown)
   {
     if(!c.is_note)
     {
-      render_with_color_spans(c.text);
+      const MdSection root = parse_sections(c.text);
+      int ids = 0;
+      render_sections(root, render_with_color_spans, ids);
       continue;
     }
 

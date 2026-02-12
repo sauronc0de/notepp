@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "helpers.hpp"
 #include "markdown_view.hpp"
 
 #include <stdexcept>
@@ -6,6 +7,7 @@
 
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <vector>
 
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
@@ -14,7 +16,77 @@
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
+struct MdSection
+{
+  int level = 0;               // 1..6
+  std::string title;           // heading text
+  std::string body;            // markdown until next heading of same/higher level
+  std::vector<MdSection> kids; // nested headings
+};
+
+static bool parse_heading_line(std::string_view line, int &level_out, std::string_view &title_out)
+{
+  line = ltrim(line);
+  int level = 0;
+  while(level < 6 && level < (int)line.size() && line[level] == '#') level++;
+  if(level == 0) return false;
+
+  // require a space after hashes (common markdown rule)
+  if((size_t)level >= line.size() || line[(size_t)level] != ' ') return false;
+
+  std::string_view title = trim(line.substr((size_t)level + 1));
+  if(title.empty()) title = "(untitled)";
+
+  level_out = level;
+  title_out = title;
+  return true;
 }
+
+static MdSection parse_sections(std::string_view md)
+{
+  MdSection root; // level 0
+  std::vector<MdSection *> stack;
+  stack.push_back(&root);
+
+  size_t pos = 0;
+  auto take_line = [&](size_t &p) -> std::string_view {
+    if(p >= md.size()) return {};
+    size_t e = md.find('\n', p);
+    if(e == std::string_view::npos) e = md.size();
+    auto line = md.substr(p, e - p);
+    p = (e < md.size()) ? e + 1 : e;
+    return line;
+  };
+
+  while(pos < md.size())
+  {
+    std::string_view line = take_line(pos);
+
+    int level = 0;
+    std::string_view title;
+    if(parse_heading_line(line, level, title))
+    {
+      // pop until parent has lower level
+      while(!stack.empty() && stack.back()->level >= level) stack.pop_back();
+      if(stack.empty()) stack.push_back(&root);
+
+      // create node under current parent
+      stack.back()->kids.push_back(MdSection{level, std::string(title), {}, {}});
+      MdSection *added = &stack.back()->kids.back();
+      stack.push_back(added);
+    }
+    else
+    {
+      // normal content belongs to current section
+      stack.back()->body.append(line.data(), line.size());
+      stack.back()->body.push_back('\n');
+    }
+  }
+
+  return root;
+}
+
+} // namespace
 
 int App::run()
 {
@@ -183,19 +255,39 @@ void App::frame_ui()
   ImGui::End();
 
   // --- Single window: "Note" (preview + edit overlay) ---
+  // --- Note window: preview by default, double-click to edit, lose focus to preview ---
   ImGui::Begin("Note");
-
-  ImGui::TextUnformatted("Focus window to edit. Click elsewhere to preview.");
+  ImGui::TextUnformatted("Double-click to edit. Click elsewhere to preview.");
   ImGui::Separator();
 
-  // If this window (or any of its children) is focused, we edit; otherwise we preview.
+  static bool editing = false;
+
+  // If window loses focus -> always go back to preview
   const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+  if(!focused)
+    editing = false;
 
   ImGui::BeginChild("##note_body", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-  if(focused)
+  if(!editing)
   {
-    // --- Plain text editor ---
+    // Preview mode (interactive)
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+    MarkdownView::render(markdown_text_);
+    ImGui::PopTextWrapPos();
+
+    // Enter edit mode only on double click (single click does nothing)
+    if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+       ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+    {
+      editing = true;
+      // Next frame, focus the editor widget
+      ImGui::SetKeyboardFocusHere();
+    }
+  }
+  else
+  {
+    // Plain text editor mode
     ImGui::InputTextMultiline(
         "##md",
         markdown_text_.data(),
@@ -212,13 +304,6 @@ void App::frame_ui()
           return 0;
         },
         &markdown_text_);
-  }
-  else
-  {
-    // --- Markdown preview (interactive: tooltips, links, etc.) ---
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-    MarkdownView::render(markdown_text_);
-    ImGui::PopTextWrapPos();
   }
 
   ImGui::EndChild();
