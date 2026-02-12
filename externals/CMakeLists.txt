@@ -25,7 +25,6 @@ add_library(imgui
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp 
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp 
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
@@ -106,3 +105,43 @@ FetchContent_Declare(
   GIT_TAG v2.4.11   # or a newer tag
 )
 FetchContent_MakeAvailable(doctest)
+
+# ------------------------------------------------------------#
+
+# ------------------------------------------------------------#
+# 🌐 Added md4c (parser) -------------------------------------#
+include(FetchContent)
+
+FetchContent_Declare(
+  md4c_fc
+  GIT_REPOSITORY https://github.com/mity/md4c.git
+  GIT_TAG        release-0.5.2
+)
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(md4c_fc)
+
+set(MD4C_INCLUDE_DIR ${md4c_fc_SOURCE_DIR}/src)
+# ------------------------------------------------------------#
+
+
+# ------------------------------------------------------------#
+# 🌐 Added imgui_md (renderer) -------------------------------#
+FetchContent_Declare(
+  imgui_md_fc
+  GIT_REPOSITORY https://github.com/mekhontsev/imgui_md.git
+  GIT_TAG        main
+)
+FetchContent_MakeAvailable(imgui_md_fc)
+
+add_library(imgui_md STATIC
+  ${imgui_md_fc_SOURCE_DIR}/imgui_md.cpp
+)
+
+target_include_directories(imgui_md PUBLIC
+  ${imgui_md_fc_SOURCE_DIR}
+  ${MD4C_INCLUDE_DIR}          # <-- makes md4c.h visible
+)
+
+target_link_libraries(imgui_md PUBLIC imgui md4c)
+# ------------------------------------------------------------#
