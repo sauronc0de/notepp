@@ -156,9 +156,9 @@ void App::frame_begin()
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
 }
-
 void App::frame_ui()
 {
+  // --- Dock host ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(vp->Pos);
   ImGui::SetNextWindowSize(vp->Size);
@@ -182,34 +182,46 @@ void App::frame_ui()
   ImGui::DockSpace(dockspace_id, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
   ImGui::End();
 
-  // Editor
-  ImGui::Begin("Editor");
-  ImGui::TextUnformatted("Edit Markdown:");
+  // --- Single window: "Note" (preview + edit overlay) ---
+  ImGui::Begin("Note");
+
+  ImGui::TextUnformatted("Focus window to edit. Click elsewhere to preview.");
   ImGui::Separator();
 
-  // A simple growable multi-line text editor
-  ImGui::InputTextMultiline(
-      "##md",
-      markdown_text_.data(),
-      markdown_text_.capacity() + 1, // NOTE: see below about resizing
-      ImVec2(-FLT_MIN, ImGui::GetContentRegionAvail().y),
-      ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize,
-      [](ImGuiInputTextCallbackData *data) -> int {
-        if(data->EventFlag == ImGuiInputTextFlags_CallbackResize)
-        {
-          auto *s = static_cast<std::string *>(data->UserData);
-          s->resize(static_cast<size_t>(data->BufTextLen));
-          data->Buf = s->data();
-        }
-        return 0;
-      },
-      &markdown_text_);
+  // If this window (or any of its children) is focused, we edit; otherwise we preview.
+  const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-  ImGui::End();
+  ImGui::BeginChild("##note_body", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
-  // Preview
-  ImGui::Begin("Preview");
-  MarkdownView::render(markdown_text_);
+  if(focused)
+  {
+    // --- Plain text editor ---
+    ImGui::InputTextMultiline(
+        "##md",
+        markdown_text_.data(),
+        markdown_text_.capacity() + 1,
+        ImVec2(-FLT_MIN, ImGui::GetContentRegionAvail().y),
+        ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize,
+        [](ImGuiInputTextCallbackData *data) -> int {
+          if(data->EventFlag == ImGuiInputTextFlags_CallbackResize)
+          {
+            auto *s = static_cast<std::string *>(data->UserData);
+            s->resize(static_cast<size_t>(data->BufTextLen));
+            data->Buf = s->data();
+          }
+          return 0;
+        },
+        &markdown_text_);
+  }
+  else
+  {
+    // --- Markdown preview (interactive: tooltips, links, etc.) ---
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+    MarkdownView::render(markdown_text_);
+    ImGui::PopTextWrapPos();
+  }
+
+  ImGui::EndChild();
   ImGui::End();
 }
 
