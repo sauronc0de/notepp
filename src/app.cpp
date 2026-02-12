@@ -4,6 +4,8 @@
 
 #include <stdexcept>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -16,6 +18,8 @@
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
+static bool palette_hovered = false;
+static bool palette_focused = false;
 struct MdSection
 {
   int level = 0;               // 1..6
@@ -24,6 +28,154 @@ struct MdSection
   std::vector<MdSection> kids; // nested headings
 };
 
+struct MdFormatState
+{
+  int sel_start = 0;
+  int sel_end = 0;
+
+  enum class Action
+  {
+    None,
+    Italic,
+    Bold,
+    Strike,
+    Code,
+    Color
+  } pending = Action::None;
+  ImVec4 color = ImVec4(1, 0.6f, 0.2f, 1); // default
+};
+
+struct MdEditorUserData
+{
+  std::string *text = nullptr;
+  MdFormatState *fmt = nullptr;
+};
+
+static void apply_wrap(ImGuiInputTextCallbackData *data, const char *left, const char *right)
+{
+  int a = data->SelectionStart;
+  int b = data->SelectionEnd;
+  if(a == b) return;
+  if(a > b) std::swap(a, b);
+
+  data->InsertChars(b, right);
+  data->InsertChars(a, left);
+
+  // Keep selection around the original text (now shifted by left length)
+  const int l = (int)strlen(left);
+  data->SelectionStart = a + l;
+  data->SelectionEnd = b + l;
+  data->CursorPos = data->SelectionEnd;
+}
+
+static void apply_note_quote(std::string &s, int &sel_a, int &sel_b)
+{
+  int a = sel_a, b = sel_b;
+  if(a == b) return;
+  if(a > b) std::swap(a, b);
+
+  a = std::max(0, std::min(a, (int)s.size()));
+  b = std::max(0, std::min(b, (int)s.size()));
+
+  // Expand to full lines for nicer behavior
+  while(a > 0 && s[(size_t)a - 1] != '\n') --a;
+  while(b < (int)s.size() && s[(size_t)b] != '\n') ++b;
+
+  // Count lines and insert "> " at each line start.
+  // We insert from start to end while tracking the shifting offset.
+  int offset = 0;
+  for(int i = a; i <= b;)
+  {
+    const int insert_pos = i + offset;
+    s.insert((size_t)insert_pos, "> ");
+    offset += 2;
+
+    // Move to next line start
+    size_t nl = s.find('\n', (size_t)(insert_pos + 2));
+    if(nl == std::string::npos) break;
+    i = (int)nl + 1 - offset; // convert back to original coordinate space
+    if(i > b) break;
+  }
+
+  // Update selection to include the inserted prefixes
+  sel_a = a;
+  sel_b = b + offset;
+}
+
+static void apply_wrap_string(std::string &s, int &sel_a, int &sel_b,
+                              const std::string &left, const std::string &right)
+{
+  int a = sel_a, b = sel_b;
+  if(a == b) return;
+  if(a > b) std::swap(a, b);
+
+  a = std::max(0, std::min(a, (int)s.size()));
+  b = std::max(0, std::min(b, (int)s.size()));
+
+  // Insert right first (at higher index)
+  s.insert((size_t)b, right);
+  s.insert((size_t)a, left);
+
+  // Update selection to remain around the original content
+  a += (int)left.size();
+  b += (int)left.size();
+  sel_a = a;
+  sel_b = b;
+}
+
+static std::string rgba_to_hex(ImVec4 c)
+{
+  auto clamp01 = [](float v) { return v < 0 ? 0.f : (v > 1 ? 1.f : v); };
+  int r = (int)(clamp01(c.x) * 255.0f + 0.5f);
+  int g = (int)(clamp01(c.y) * 255.0f + 0.5f);
+  int b = (int)(clamp01(c.z) * 255.0f + 0.5f);
+
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", r, g, b);
+  return std::string(buf);
+}
+
+static int md_editor_cb(ImGuiInputTextCallbackData *data)
+{
+  auto *st = static_cast<MdFormatState *>(data->UserData);
+
+  // Track selection continuously
+  st->sel_start = data->SelectionStart;
+  st->sel_end = data->SelectionEnd;
+
+  // // Apply a pending action inside the callback (safe)
+  // if(st->pending != MdFormatState::Action::None)
+  // {
+  //   switch(st->pending)
+  //   {
+  //   case MdFormatState::Action::Italic:
+  //     apply_wrap(data, "*", "*");
+  //     break;
+  //   case MdFormatState::Action::Bold:
+  //     apply_wrap(data, "**", "**");
+  //     break;
+  //   case MdFormatState::Action::Strike:
+  //     apply_wrap(data, "~~", "~~");
+  //     break;
+  //   case MdFormatState::Action::Code:
+  //     apply_wrap(data, "`", "`");
+  //     break;
+  //   case MdFormatState::Action::Color: {
+  //     const std::string hex = rgba_to_hex(st->color);
+  //     const std::string left = "[color=" + hex + "]";
+  //     const char *right = "[/color]";
+  //     apply_wrap(data, left.c_str(), right);
+  //   }
+  //   break;
+  //   default:
+  //     break;
+  //   }
+
+  //   st->pending = MdFormatState::Action::None;
+  // }
+
+  return 0;
+}
 static bool parse_heading_line(std::string_view line, int &level_out, std::string_view &title_out)
 {
   line = ltrim(line);
@@ -262,11 +414,6 @@ void App::frame_ui()
 
   static bool editing = false;
 
-  // If window loses focus -> always go back to preview
-  const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-  if(!focused)
-    editing = false;
-
   ImGui::BeginChild("##note_body", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
   if(!editing)
@@ -288,22 +435,141 @@ void App::frame_ui()
   else
   {
     // Plain text editor mode
+    static MdFormatState fmt;
+
+    // Plain text editor mode
+    static MdEditorUserData ud{&markdown_text_, &fmt};
+
+    ImGuiInputTextFlags flags =
+        ImGuiInputTextFlags_AllowTabInput |
+        ImGuiInputTextFlags_CallbackResize |
+        ImGuiInputTextFlags_CallbackAlways;
+    static bool refocus_editor = false;
+    if(refocus_editor)
+    {
+      ImGui::SetKeyboardFocusHere();
+      refocus_editor = false;
+    }
+
     ImGui::InputTextMultiline(
         "##md",
         markdown_text_.data(),
         markdown_text_.capacity() + 1,
         ImVec2(-FLT_MIN, ImGui::GetContentRegionAvail().y),
-        ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_CallbackResize,
+        flags,
         [](ImGuiInputTextCallbackData *data) -> int {
+          auto *ud = static_cast<MdEditorUserData *>(data->UserData);
+
+          // Handle resize
           if(data->EventFlag == ImGuiInputTextFlags_CallbackResize)
           {
-            auto *s = static_cast<std::string *>(data->UserData);
-            s->resize(static_cast<size_t>(data->BufTextLen));
-            data->Buf = s->data();
+            ud->text->resize((size_t)data->BufTextLen);
+            data->Buf = ud->text->data();
+            return 0;
           }
-          return 0;
+
+          // CallbackAlways: selection tracking + apply pending formatting
+          // IMPORTANT: md_editor_cb expects UserData = MdFormatState*
+          data->UserData = ud->fmt;
+          return md_editor_cb(data);
         },
-        &markdown_text_);
+        &ud);
+
+    // After the widget: show popup if selection is non-empty and editor is focused/active
+    const bool editor_focused = ImGui::IsItemFocused();
+    const bool editor_active = ImGui::IsItemActive();
+    const bool editor_engaged = (editor_focused || editor_active);
+
+    const int a = fmt.sel_start, b = fmt.sel_end;
+    const bool has_selection = (a != b);
+
+    static bool popup_was_open = false;
+    static ImVec2 popup_pos = ImVec2(0, 0);
+    // ---- Clickable floating formatting palette (tooltip-like) ----
+    static bool show_palette = false;
+    static ImVec2 palette_pos(0, 0);
+
+    // When selection appears, show palette and pin position once.
+    if((editor_focused || editor_active) && has_selection && !show_palette)
+    {
+      ImVec2 editor_min = ImGui::GetItemRectMin();
+      palette_pos = ImVec2(editor_min.x + 10.0f, editor_min.y + 10.0f);
+      show_palette = true;
+    }
+
+    // Hide when selection is cleared (but NOT when editor loses focus due to clicking the palette)
+    if(!has_selection)
+      show_palette = false;
+
+    if(show_palette)
+    {
+      ImGui::SetNextWindowPos(palette_pos, ImGuiCond_Always);
+      ImGui::SetNextWindowBgAlpha(0.95f);
+
+      ImGuiWindowFlags pal_flags =
+          ImGuiWindowFlags_NoTitleBar |
+          ImGuiWindowFlags_NoResize |
+          ImGuiWindowFlags_AlwaysAutoResize |
+          ImGuiWindowFlags_NoMove |
+          ImGuiWindowFlags_NoSavedSettings |
+          ImGuiWindowFlags_NoDocking; // NOTE: no Tooltip flag (Tooltip => NoInputs)
+
+      ImGui::Begin("##md_format_palette", nullptr, pal_flags);
+      palette_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+      palette_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+      bool applied = false;
+
+      if(ImGui::Button("Italic"))
+      {
+        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "*", "*");
+        applied = true;
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Bold"))
+      {
+        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "**", "**");
+        applied = true;
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Strike"))
+      {
+        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "~~", "~~");
+        applied = true;
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Note"))
+      {
+        apply_note_quote(markdown_text_, fmt.sel_start, fmt.sel_end);
+        applied = true;
+      }
+
+      ImGui::Separator();
+
+      ImGui::ColorEdit3("Color", (float *)&fmt.color, ImGuiColorEditFlags_NoInputs);
+      ImGui::SameLine();
+      if(ImGui::Button("Apply"))
+      {
+        const std::string hex = rgba_to_hex(fmt.color);
+        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end,
+                          "[color=" + hex + "]", "[/color]");
+        applied = true;
+      }
+
+      // Optional: close palette if user clicks outside both editor and palette
+      const bool pal_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+      const bool pal_active = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+      if(!pal_hovered && !pal_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !editor_focused && !editor_active)
+        show_palette = false;
+
+      ImGui::End();
+
+      if(applied)
+      {
+        show_palette = false;
+        refocus_editor = true; // your existing flag, so editor continues working
+      }
+    }
   }
 
   ImGui::EndChild();
