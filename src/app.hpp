@@ -11,6 +11,9 @@ public:
 private:
   void init_sdl_gl();
   void init_imgui();
+  void load_state();
+  void save_state() const;
+  void rename_note_storage_for_title(const std::string &new_title);
   void shutdown();
 
   void frame_begin();
@@ -21,6 +24,10 @@ private:
   void *gl_context_ = nullptr;
 
   bool running_ = true;
+  bool editing_mode_ = false;
+  bool request_exit_edit_mode_ = false;
+  std::string note_title_ = "Note";
+  std::string state_file_path_ = DATA_PATH "/note.md";
 
   std::string markdown_text_ =
       "# Notes (Markdown preview)\n"

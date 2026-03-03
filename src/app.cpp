@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <filesystem>
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -18,8 +21,8 @@
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
-static bool palette_hovered = false;
-static bool palette_focused = false;
+constexpr const char *kDefaultStateFile = DATA_PATH "/note.md";
+constexpr const char *kStateMetaFile = DATA_PATH "/current_note_path.txt";
 struct MdSection
 {
   int level = 0;               // 1..6
@@ -32,6 +35,7 @@ struct MdFormatState
 {
   int sel_start = 0;
   int sel_end = 0;
+  int cursor_pos = 0;
 
   enum class Action
   {
@@ -50,23 +54,6 @@ struct MdEditorUserData
   std::string *text = nullptr;
   MdFormatState *fmt = nullptr;
 };
-
-static void apply_wrap(ImGuiInputTextCallbackData *data, const char *left, const char *right)
-{
-  int a = data->SelectionStart;
-  int b = data->SelectionEnd;
-  if(a == b) return;
-  if(a > b) std::swap(a, b);
-
-  data->InsertChars(b, right);
-  data->InsertChars(a, left);
-
-  // Keep selection around the original text (now shifted by left length)
-  const int l = (int)strlen(left);
-  data->SelectionStart = a + l;
-  data->SelectionEnd = b + l;
-  data->CursorPos = data->SelectionEnd;
-}
 
 static void apply_note_quote(std::string &s, int &sel_a, int &sel_b)
 {
@@ -142,6 +129,7 @@ static int md_editor_cb(ImGuiInputTextCallbackData *data)
   // Track selection continuously
   st->sel_start = data->SelectionStart;
   st->sel_end = data->SelectionEnd;
+  st->cursor_pos = data->CursorPos;
 
   // // Apply a pending action inside the callback (safe)
   // if(st->pending != MdFormatState::Action::None)
@@ -176,6 +164,33 @@ static int md_editor_cb(ImGuiInputTextCallbackData *data)
 
   return 0;
 }
+
+static void normalize_input_text_buffer(std::string &s)
+{
+  // ImGui edits the underlying char buffer directly; keep std::string::size() in sync.
+  if(s.empty()) return;
+  const size_t max_len = s.capacity() + 1;
+  const size_t n = strnlen(s.data(), max_len);
+  if(n <= s.size() || n <= s.capacity()) s.resize(n);
+}
+
+static std::string sanitize_note_filename(std::string title)
+{
+  for(char &c : title)
+  {
+    const bool bad =
+        c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+        c == '"' || c == '<' || c == '>' || c == '|';
+    if(bad) c = '_';
+  }
+
+  auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+  while(!title.empty() && is_space(title.front())) title.erase(title.begin());
+  while(!title.empty() && is_space(title.back())) title.pop_back();
+  if(title.empty()) title = "note";
+  return title;
+}
+
 static bool parse_heading_line(std::string_view line, int &level_out, std::string_view &title_out)
 {
   line = ltrim(line);
@@ -246,6 +261,7 @@ int App::run()
   {
     init_sdl_gl();
     init_imgui();
+    load_state();
 
     while(running_)
     {
@@ -254,6 +270,7 @@ int App::run()
       frame_end();
     }
 
+    save_state();
     shutdown();
     return 0;
   }
@@ -313,7 +330,7 @@ void App::init_imgui()
   // - Roboto-Bold.ttf
   // - Roboto-BoldItalic.ttf
 
-  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Regular.ttf", 16.0f);
+  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Medium.ttf", 16.0f);
   ImFont *font_italic = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Italic.ttf", 16.0f);
   ImFont *font_bold = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Bold.ttf", 16.0f);
 
@@ -360,13 +377,68 @@ void App::shutdown()
   SDL_Quit();
 }
 
+void App::load_state()
+{
+  {
+    std::ifstream meta(kStateMetaFile);
+    std::string saved_path;
+    if(meta && std::getline(meta, saved_path) && !saved_path.empty())
+      state_file_path_ = saved_path;
+    else
+      state_file_path_ = kDefaultStateFile;
+  }
+
+  std::ifstream in(state_file_path_, std::ios::binary);
+  if(!in) return;
+
+  markdown_text_.assign((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+
+  const std::filesystem::path p(state_file_path_);
+  const std::string stem = p.stem().string();
+  if(!stem.empty()) note_title_ = stem;
+}
+
+void App::save_state() const
+{
+  std::ofstream out(state_file_path_, std::ios::binary | std::ios::trunc);
+  if(!out) return;
+  out << markdown_text_;
+
+  std::ofstream meta(kStateMetaFile, std::ios::trunc);
+  if(meta) meta << state_file_path_;
+}
+
+void App::rename_note_storage_for_title(const std::string &new_title)
+{
+  const std::string safe_title = sanitize_note_filename(new_title);
+  std::filesystem::path new_path = std::filesystem::path(DATA_PATH) / (safe_title + ".md");
+
+  if(new_path.string() == state_file_path_)
+  {
+    note_title_ = safe_title;
+    return;
+  }
+
+  std::error_code ec;
+  std::filesystem::path current_path(state_file_path_);
+  if(std::filesystem::exists(current_path, ec))
+  {
+    if(std::filesystem::exists(new_path, ec))
+      std::filesystem::remove(new_path, ec);
+    std::filesystem::rename(current_path, new_path, ec);
+  }
+
+  state_file_path_ = new_path.string();
+  note_title_ = safe_title;
+  save_state();
+}
+
 void App::frame_begin()
 {
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
-    ImGui_ImplSDL2_ProcessEvent(&event);
-
     if(event.type == SDL_QUIT) running_ = false;
     if(event.type == SDL_WINDOWEVENT &&
        event.window.event == SDL_WINDOWEVENT_CLOSE &&
@@ -374,6 +446,17 @@ void App::frame_begin()
     {
       running_ = false;
     }
+
+    // While editing, keep Esc out of InputText so it doesn't cancel/revert the latest edit.
+    if(editing_mode_ &&
+       event.type == SDL_KEYDOWN &&
+       event.key.keysym.sym == SDLK_ESCAPE)
+    {
+      request_exit_edit_mode_ = true;
+      continue;
+    }
+
+    ImGui_ImplSDL2_ProcessEvent(&event);
   }
 
   ImGui_ImplOpenGL3_NewFrame();
@@ -407,51 +490,105 @@ void App::frame_ui()
   ImGui::End();
 
   // --- Single window: "Note" (preview + edit overlay) ---
-  // --- Note window: preview by default, double-click to edit, lose focus to preview ---
-  ImGui::Begin("Note");
-  ImGui::TextUnformatted("Double-click to edit. Click elsewhere to preview.");
-  ImGui::Separator();
+  static float note_window_height = 360.0f;
+  auto compute_edit_window_height = [&]() -> float {
+    const ImGuiStyle &st = ImGui::GetStyle();
+    const float title_bar_h = ImGui::GetFontSize() + st.FramePadding.y * 2.0f;
+    const int line_count = 1 + (int)std::count(markdown_text_.begin(), markdown_text_.end(), '\n');
+    const float text_h = line_count * ImGui::GetTextLineHeightWithSpacing();
+    const float input_h = text_h + st.FramePadding.y * 2.0f + 10.0f;
+    return std::max(140.0f, title_bar_h + st.WindowPadding.y * 2.0f + input_h);
+  };
 
-  static bool editing = false;
+  if(editing_mode_) note_window_height = compute_edit_window_height();
 
-  ImGui::BeginChild("##note_body", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+  ImGui::SetNextWindowSizeConstraints(
+      ImVec2(320.0f, note_window_height),
+      ImVec2(FLT_MAX, note_window_height));
 
-  if(!editing)
+  std::string note_window_label = note_title_ + "###NoteWindow";
+  ImGui::Begin(note_window_label.c_str());
+
+  // Right click on title bar to rename the note window title.
+  static bool open_rename_popup = false;
+  static char rename_buf[256] = {};
+  const ImVec2 win_pos = ImGui::GetWindowPos();
+  const float title_bar_h = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
+  const ImVec2 mouse_pos = ImGui::GetMousePos();
+  const bool mouse_on_title =
+      mouse_pos.x >= win_pos.x &&
+      mouse_pos.x <= (win_pos.x + ImGui::GetWindowWidth()) &&
+      mouse_pos.y >= win_pos.y &&
+      mouse_pos.y <= (win_pos.y + title_bar_h);
+  if(mouse_on_title && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+  {
+    std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
+    open_rename_popup = true;
+  }
+  if(open_rename_popup)
+  {
+    ImGui::OpenPopup("Rename Note");
+    open_rename_popup = false;
+  }
+  if(ImGui::BeginPopup("Rename Note"))
+  {
+    ImGui::TextUnformatted("Nom de la finestra:");
+    ImGui::SetNextItemWidth(260.0f);
+    if(ImGui::InputText("##rename_note_title", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue))
+    {
+      normalize_input_text_buffer(markdown_text_);
+      rename_note_storage_for_title(rename_buf);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Apply"))
+    {
+      normalize_input_text_buffer(markdown_text_);
+      rename_note_storage_for_title(rename_buf);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  static bool show_palette = false;
+  static bool refocus_editor = false;
+  static MdFormatState fmt;
+  static MdEditorUserData ud{&markdown_text_, &fmt};
+  ud.text = &markdown_text_;
+
+  if(!editing_mode_)
   {
     // Preview mode (interactive)
+    const float start_y = ImGui::GetCursorPosY();
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     MarkdownView::render(markdown_text_);
     ImGui::PopTextWrapPos();
+    (void)start_y;
 
     // Enter edit mode only on double click (single click does nothing)
     if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
-      editing = true;
+      editing_mode_ = true;
+      show_palette = false;
       // Next frame, focus the editor widget
-      ImGui::SetKeyboardFocusHere();
+      refocus_editor = true;
     }
   }
   else
   {
     // Plain text editor mode
-    static MdFormatState fmt;
-
-    // Plain text editor mode
-    static MdEditorUserData ud{&markdown_text_, &fmt};
-
     ImGuiInputTextFlags flags =
         ImGuiInputTextFlags_AllowTabInput |
         ImGuiInputTextFlags_CallbackResize |
         ImGuiInputTextFlags_CallbackAlways;
-    static bool refocus_editor = false;
     if(refocus_editor)
     {
       ImGui::SetKeyboardFocusHere();
       refocus_editor = false;
     }
 
-    ImGui::InputTextMultiline(
+    const bool text_changed = ImGui::InputTextMultiline(
         "##md",
         markdown_text_.data(),
         markdown_text_.capacity() + 1,
@@ -459,88 +596,94 @@ void App::frame_ui()
         flags,
         [](ImGuiInputTextCallbackData *data) -> int {
           auto *ud = static_cast<MdEditorUserData *>(data->UserData);
-
-          // Handle resize
           if(data->EventFlag == ImGuiInputTextFlags_CallbackResize)
           {
             ud->text->resize((size_t)data->BufTextLen);
             data->Buf = ud->text->data();
             return 0;
           }
-
-          // CallbackAlways: selection tracking + apply pending formatting
-          // IMPORTANT: md_editor_cb expects UserData = MdFormatState*
-          data->UserData = ud->fmt;
+          data->UserData = ud->fmt; // md_editor_cb expects MdFormatState*
           return md_editor_cb(data);
         },
         &ud);
+    normalize_input_text_buffer(markdown_text_);
+    if(text_changed) save_state();
 
     // After the widget: show popup if selection is non-empty and editor is focused/active
-    const bool editor_focused = ImGui::IsItemFocused();
-    const bool editor_active = ImGui::IsItemActive();
-    const bool editor_engaged = (editor_focused || editor_active);
+    const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
     const int a = fmt.sel_start, b = fmt.sel_end;
     const bool has_selection = (a != b);
+    const int sel_min = (a < b) ? a : b;
+    const int sel_max = (a < b) ? b : a;
+    static int anchor_sel_start = 0;
+    static int anchor_sel_end = 0;
 
-    static bool popup_was_open = false;
-    static ImVec2 popup_pos = ImVec2(0, 0);
     // ---- Clickable floating formatting palette (tooltip-like) ----
-    static bool show_palette = false;
     static ImVec2 palette_pos(0, 0);
+    static bool palette_just_opened = false;
 
-    // When selection appears, show palette and pin position once.
-    if((editor_focused || editor_active) && has_selection && !show_palette)
+    if(has_selection)
     {
-      ImVec2 editor_min = ImGui::GetItemRectMin();
-      palette_pos = ImVec2(editor_min.x + 10.0f, editor_min.y + 10.0f);
-      show_palette = true;
+      anchor_sel_start = sel_min;
+      anchor_sel_end = sel_max;
     }
 
-    // Hide when selection is cleared (but NOT when editor loses focus due to clicking the palette)
-    if(!has_selection)
-      show_palette = false;
+    const bool has_anchor_selection = (anchor_sel_start != anchor_sel_end);
 
-    if(show_palette)
+    // Open palette only with right-click while editing and text is selected.
+    if(editor_hovered &&
+       (has_selection || has_anchor_selection) &&
+       ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    {
+      palette_pos = ImGui::GetMousePos();
+      show_palette = true;
+      palette_just_opened = true;
+    }
+    bool palette_hovered = false;
+    if(show_palette && has_anchor_selection)
     {
       ImGui::SetNextWindowPos(palette_pos, ImGuiCond_Always);
       ImGui::SetNextWindowBgAlpha(0.95f);
+      if(palette_just_opened) ImGui::SetNextWindowFocus();
 
       ImGuiWindowFlags pal_flags =
           ImGuiWindowFlags_NoTitleBar |
           ImGuiWindowFlags_NoResize |
           ImGuiWindowFlags_AlwaysAutoResize |
           ImGuiWindowFlags_NoMove |
+          ImGuiWindowFlags_NoFocusOnAppearing |
+          ImGuiWindowFlags_NoNavFocus |
           ImGuiWindowFlags_NoSavedSettings |
           ImGuiWindowFlags_NoDocking; // NOTE: no Tooltip flag (Tooltip => NoInputs)
 
       ImGui::Begin("##md_format_palette", nullptr, pal_flags);
-      palette_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-      palette_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+      const bool pal_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+      palette_hovered = pal_hovered;
 
       bool applied = false;
 
       if(ImGui::Button("Italic"))
       {
-        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "*", "*");
+        apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
         applied = true;
       }
       ImGui::SameLine();
       if(ImGui::Button("Bold"))
       {
-        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "**", "**");
+        apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
         applied = true;
       }
       ImGui::SameLine();
       if(ImGui::Button("Strike"))
       {
-        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end, "~~", "~~");
+        apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
         applied = true;
       }
       ImGui::SameLine();
       if(ImGui::Button("Note"))
       {
-        apply_note_quote(markdown_text_, fmt.sel_start, fmt.sel_end);
+        apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
         applied = true;
       }
 
@@ -551,28 +694,54 @@ void App::frame_ui()
       if(ImGui::Button("Apply"))
       {
         const std::string hex = rgba_to_hex(fmt.color);
-        apply_wrap_string(markdown_text_, fmt.sel_start, fmt.sel_end,
+        apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end,
                           "[color=" + hex + "]", "[/color]");
         applied = true;
       }
-
-      // Optional: close palette if user clicks outside both editor and palette
-      const bool pal_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-      const bool pal_active = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-      if(!pal_hovered && !pal_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !editor_focused && !editor_active)
-        show_palette = false;
 
       ImGui::End();
 
       if(applied)
       {
-        show_palette = false;
-        refocus_editor = true; // your existing flag, so editor continues working
+        normalize_input_text_buffer(markdown_text_);
+        save_state();
+        fmt.sel_start = anchor_sel_start;
+        fmt.sel_end = anchor_sel_end;
       }
     }
+
+    // Hide when clicking outside tooltip window (or if selection is gone).
+    const bool any_popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    const bool clicked_outside_palette =
+        (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) &&
+        !palette_hovered &&
+        !any_popup_open &&
+        !palette_just_opened;
+    if(show_palette && (!has_anchor_selection || clicked_outside_palette))
+    {
+      show_palette = false;
+      anchor_sel_start = 0;
+      anchor_sel_end = 0;
+    }
+    palette_just_opened = false;
   }
 
-  ImGui::EndChild();
+  // Exit edit mode only with Esc.
+  if(editing_mode_ && request_exit_edit_mode_)
+  {
+    normalize_input_text_buffer(markdown_text_);
+    save_state();
+    editing_mode_ = false;
+    request_exit_edit_mode_ = false;
+    show_palette = false;
+    refocus_editor = false;
+  }
+
+  if(editing_mode_)
+    note_window_height = compute_edit_window_height();
+  else
+    note_window_height = std::max(140.0f, ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y);
+
   ImGui::End();
 }
 
