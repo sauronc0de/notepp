@@ -255,6 +255,13 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
+  void BLOCK_P(bool e) override
+  {
+    // Default imgui_md paragraph spacing is visually large for this app.
+    // Add a small gap only once when leaving a paragraph.
+    if(!e) ImGui::Dummy(ImVec2(0.0f, 2.0f));
+  }
+
   ImFont *get_font() const override
   {
     // imgui_md tracks current state for you:
