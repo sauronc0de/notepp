@@ -1,7 +1,14 @@
 #include "markdown_view.hpp"
+#include "helpers.hpp"
 
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
 #include <functional>
+#include <unordered_map>
 #include <SDL.h>
+#include <SDL_image.h>
+#include <SDL_opengl.h>
 #include <imgui.h>
 #include "imgui_md.h"
 
@@ -28,6 +35,86 @@ struct MdFonts
 };
 
 static MdFonts g_fonts{};
+
+struct TextureRecord
+{
+  GLuint texture_id = 0;
+  ImVec2 size = ImVec2(0, 0);
+  bool loaded = false;
+};
+
+static std::unordered_map<std::string, TextureRecord> g_image_cache{};
+static float g_render_width = 0.0f;
+
+static std::filesystem::path resolve_image_path(std::string_view href)
+{
+  const std::filesystem::path p(href);
+  if(p.is_absolute() && std::filesystem::exists(p)) return p;
+
+  const std::filesystem::path asset_root(ASSETS_PATH);
+  const std::filesystem::path repo_root = asset_root.parent_path();
+
+  std::vector<std::filesystem::path> candidates;
+  candidates.push_back(p);
+  candidates.push_back(repo_root / p);
+  candidates.push_back(asset_root / p);
+
+  if(starts_with(href, "assets/"))
+  {
+    std::filesystem::path rel = p.lexically_relative("assets");
+    candidates.push_back(asset_root / rel);
+  }
+
+  for(const auto &c : candidates)
+  {
+    std::error_code ec;
+    if(std::filesystem::exists(c, ec) && std::filesystem::is_regular_file(c, ec))
+      return c;
+  }
+  return {};
+}
+
+static TextureRecord load_texture_from_file(const std::filesystem::path &file)
+{
+  TextureRecord rec{};
+  if(file.empty()) return rec;
+
+  static bool img_ready = []() {
+    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+    return true;
+  }();
+  (void)img_ready;
+
+  SDL_Surface *loaded = IMG_Load(file.string().c_str());
+  if(!loaded) return rec;
+
+  SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
+  SDL_FreeSurface(loaded);
+  if(!rgba) return rec;
+
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
+  if(tex == 0)
+  {
+    SDL_FreeSurface(rgba);
+    return rec;
+  }
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  rec.texture_id = tex;
+  rec.size = ImVec2((float)rgba->w, (float)rgba->h);
+  rec.loaded = true;
+  SDL_FreeSurface(rgba);
+  return rec;
+}
 
 // Remove a single leading '>' (and one optional following space) from a line
 static std::string_view strip_quote_prefix(std::string_view line)
@@ -255,6 +342,40 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
+  bool get_image(image_info &nfo) const override
+  {
+    if(m_href.empty()) return false;
+    if(starts_with(m_href, "http://") || starts_with(m_href, "https://")) return false;
+
+    auto it = g_image_cache.find(m_href);
+    if(it == g_image_cache.end())
+    {
+      TextureRecord rec = load_texture_from_file(resolve_image_path(m_href));
+      it = g_image_cache.emplace(m_href, rec).first;
+    }
+
+    if(!it->second.loaded || it->second.texture_id == 0) return false;
+
+    const float max_w = std::floor(std::max(8.0f, g_render_width));
+    ImVec2 draw_size = it->second.size;
+    if(draw_size.x > max_w)
+    {
+      const float s = max_w / draw_size.x;
+      draw_size.x = max_w;
+      draw_size.y *= s;
+    }
+    draw_size.x = std::floor(draw_size.x);
+    draw_size.y = std::floor(draw_size.y);
+
+    nfo.texture_id = (ImTextureID)(uintptr_t)it->second.texture_id;
+    nfo.size = draw_size;
+    nfo.uv0 = ImVec2(0, 0);
+    nfo.uv1 = ImVec2(1, 1);
+    nfo.col_tint = ImVec4(1, 1, 1, 1);
+    nfo.col_border = ImVec4(0, 0, 0, 0);
+    return true;
+  }
+
   void BLOCK_P(bool e) override
   {
     // Default imgui_md paragraph spacing is visually large for this app.
@@ -344,6 +465,11 @@ static MyMarkdown &renderer()
 void MarkdownView::set_fonts(ImFont *regular, ImFont *italic, ImFont *bold)
 {
   g_fonts = {regular, italic, bold};
+}
+
+void MarkdownView::set_render_width(float width)
+{
+  g_render_width = width > 0.0f ? width : 0.0f;
 }
 static void render_sections(const MdSection &s,
                             const std::function<void(std::string_view)> &render_body,

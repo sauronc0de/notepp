@@ -507,7 +507,10 @@ void App::frame_ui()
       ImVec2(FLT_MAX, note_window_height));
 
   std::string note_window_label = note_title_ + "###NoteWindow";
-  ImGui::Begin(note_window_label.c_str());
+  ImGui::Begin(
+      note_window_label.c_str(),
+      nullptr,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
   // Right click on title bar to rename the note window title.
   static bool open_rename_popup = false;
@@ -560,6 +563,8 @@ void App::frame_ui()
   {
     // Preview mode (interactive)
     const float start_y = ImGui::GetCursorPosY();
+    const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
+    MarkdownView::set_render_width(preview_w);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     MarkdownView::render(markdown_text_);
     ImGui::PopTextWrapPos();
