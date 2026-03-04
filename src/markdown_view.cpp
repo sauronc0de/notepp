@@ -3,6 +3,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <functional>
 #include <unordered_map>
@@ -168,80 +170,33 @@ static std::vector<Chunk> split_note_blocks(std::string_view in)
       continue;
     }
 
-    // Start of a quote block: gather consecutive quote lines (and blank separators that still start with >)
+    // Start of a quote block: keep consuming lines until an empty line.
+    // Any line starting with '>' is treated as note content (prefix stripped).
     flush_normal();
 
     std::string quote_md;
-    bool saw_nonempty = false;
-    std::string first_content_line;
 
-    // Process first line + subsequent quote lines
+    // Process first line + subsequent lines until blank line.
     size_t j = line_start;
     while(j < in.size())
     {
-      size_t save = j;
       std::string_view l = take_line(j);
-      std::string_view lt = ltrim(l);
-      if(!starts_with(lt, ">"))
+      const std::string_view tl = trim(l);
+      if(tl.empty())
       {
-        j = save;
+        // Blank line closes note mode.
         break;
       }
 
-      std::string_view content = strip_quote_prefix(l);
-      std::string_view content_t = trim(content);
+      std::string_view content = ltrim(l);
+      if(starts_with(content, ">")) content = strip_quote_prefix(l);
 
-      if(!saw_nonempty && !content_t.empty())
-      {
-        first_content_line.assign(content_t.begin(), content_t.end());
-        saw_nonempty = true;
-      }
-
-      // Rebuild markdown content without the quote prefix
       quote_md.append(content.data(), content.size());
       quote_md.push_back('\n');
     }
 
     i = j;
-
-    bool is_note = (trim(first_content_line) == "**Note**");
-
-    if(is_note)
-    {
-      std::string fixed;
-      fixed.reserve(quote_md.size() + 16);
-
-      size_t pos = 0;
-      while(pos < quote_md.size())
-      {
-        size_t e = quote_md.find('\n', pos);
-        if(e == std::string::npos) e = quote_md.size();
-
-        std::string_view line(quote_md.data() + pos, e - pos);
-
-        // Keep line content
-        fixed.append(line.data(), line.size());
-
-        // Line ending handling
-        if(e < quote_md.size())
-        {
-          // If line has any non-space chars -> force hard break
-          if(!trim(line).empty())
-            fixed.append("  \n"); // Markdown hard line break
-          else
-            fixed.push_back('\n'); // keep blank line
-          pos = e + 1;
-        }
-        else
-        {
-          pos = e;
-        }
-      }
-
-      quote_md = std::move(fixed);
-    }
-
-    out.push_back({is_note, std::move(quote_md)});
+    out.push_back({true, std::move(quote_md)});
   }
 
   flush_normal();
@@ -342,6 +297,12 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
+  static void compact_newline(float tighten = 6.0f)
+  {
+    ImGui::NewLine();
+    ImGui::SetCursorPosY(std::max(0.0f, ImGui::GetCursorPosY() - tighten));
+  }
+
   bool get_image(image_info &nfo) const override
   {
     if(m_href.empty()) return false;
@@ -378,9 +339,14 @@ struct MyMarkdown : public imgui_md
 
   void BLOCK_P(bool e) override
   {
-    // Default imgui_md paragraph spacing is visually large for this app.
-    // Add a small gap only once when leaving a paragraph.
-    if(!e) ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    // Extra compact paragraph spacing for dense note-taking.
+    if(!e) ImGui::Dummy(ImVec2(0.0f, 0.0f));
+  }
+
+  void soft_break() override
+  {
+    // Compact line breaks from source markdown.
+    compact_newline(7.0f);
   }
 
   ImFont *get_font() const override
@@ -500,60 +466,115 @@ static void render_sections(const MdSection &s,
   ImGui::PopID();
 }
 
-void MarkdownView::render(std::string_view markdown)
+static void render_inline_md_with_color_spans(std::string_view text)
 {
   auto &md = renderer();
+  auto render_code_chip = [&](std::string_view code, bool colored, ImVec4 color) {
+    if(code.empty()) return;
+    const ImVec2 pad(4.0f, 1.0f);
+    const ImVec2 ts = ImGui::CalcTextSize(code.data(), code.data() + code.size());
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 sz(ts.x + pad.x * 2.0f, ts.y + pad.y * 2.0f);
+    ImGui::Dummy(sz);
 
-  // Helper: render any markdown text with your [color=#...] spans support
-  auto render_with_color_spans = [&](std::string_view text) {
-    struct InlineToken
-    {
-      std::string text;
-      bool colored = false;
-      ImVec4 color{};
-      bool newline = false;
-    };
+    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
+    bg.w = 1.0f;
+    ImU32 bg_col = ImGui::GetColorU32(bg);
+    ImU32 text_col = ImGui::GetColorU32(ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(pos, ImVec2(pos.x + sz.x, pos.y + sz.y), bg_col, 3.0f);
+    dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y), text_col, code.data(), code.data() + code.size());
+  };
 
-    std::vector<InlineToken> tokens;
-    for(auto &seg : split_color_spans(text))
+  auto render_md_fragment = [&](std::string_view frag, bool colored, ImVec4 color) {
+    if(frag.empty()) return;
+    if(colored) ImGui::PushStyleColor(ImGuiCol_Text, color);
+    md.print(frag.data(), frag.data() + frag.size());
+    if(colored) ImGui::PopStyleColor();
+  };
+  struct InlineToken
+  {
+    std::string text;
+    bool colored = false;
+    ImVec4 color{};
+    bool newline = false;
+  };
+
+  std::vector<InlineToken> tokens;
+  for(auto &seg : split_color_spans(text))
+  {
+    size_t start = 0;
+    while(start <= seg.text.size())
     {
-      size_t start = 0;
-      while(start <= seg.text.size())
+      size_t nl = seg.text.find('\n', start);
+      const bool has_nl = (nl != std::string::npos);
+      const size_t end = has_nl ? nl : seg.text.size();
+      if(end > start)
       {
-        size_t nl = seg.text.find('\n', start);
-        const bool has_nl = (nl != std::string::npos);
-        const size_t end = has_nl ? nl : seg.text.size();
-        if(end > start)
-        {
-          tokens.push_back(InlineToken{
-              seg.text.substr(start, end - start),
-              seg.colored,
-              seg.color,
-              false});
-        }
-        if(has_nl) tokens.push_back(InlineToken{"", false, ImVec4{}, true});
-        if(!has_nl) break;
-        start = nl + 1;
+        tokens.push_back(InlineToken{
+            seg.text.substr(start, end - start),
+            seg.colored,
+            seg.color,
+            false});
       }
+      if(has_nl) tokens.push_back(InlineToken{"", false, ImVec4{}, true});
+      if(!has_nl) break;
+      start = nl + 1;
     }
+  }
 
-    for(size_t i = 0; i < tokens.size(); ++i)
-    {
-      const auto &t = tokens[i];
+  for(size_t i = 0; i < tokens.size(); ++i)
+  {
+    const auto &t = tokens[i];
       if(t.newline)
       {
-        ImGui::NewLine();
+        MyMarkdown::compact_newline(7.0f);
         continue;
       }
 
-      if(t.colored) ImGui::PushStyleColor(ImGuiCol_Text, t.color);
-      md.print(t.text.data(), t.text.data() + t.text.size());
-      if(t.colored) ImGui::PopStyleColor();
+      size_t p = 0;
+      bool rendered_any = false;
+      while(p < t.text.size())
+      {
+        size_t bq0 = t.text.find('`', p);
+        if(bq0 == std::string::npos)
+        {
+          render_md_fragment(std::string_view(t.text).substr(p), t.colored, t.color);
+          rendered_any = true;
+          break;
+        }
+
+        render_md_fragment(std::string_view(t.text).substr(p, bq0 - p), t.colored, t.color);
+        rendered_any = true;
+
+        size_t bq1 = t.text.find('`', bq0 + 1);
+        if(bq1 == std::string::npos)
+        {
+          render_md_fragment(std::string_view(t.text).substr(bq0), t.colored, t.color);
+          break;
+        }
+
+        ImGui::SameLine(0.0f, 0.0f);
+        render_code_chip(std::string_view(t.text).substr(bq0 + 1, bq1 - bq0 - 1), t.colored, t.color);
+        p = bq1 + 1;
+        if(p < t.text.size()) ImGui::SameLine(0.0f, 0.0f);
+      }
 
       const bool has_next = (i + 1 < tokens.size());
-      if(has_next && !tokens[i + 1].newline) ImGui::SameLine(0.0f, 0.0f);
+      if(rendered_any && has_next && !tokens[i + 1].newline) ImGui::SameLine(0.0f, 0.0f);
     }
-  };
+}
+
+void MarkdownView::render_inline(std::string_view markdown_inline)
+{
+  render_inline_md_with_color_spans(markdown_inline);
+}
+
+void MarkdownView::render(std::string_view markdown)
+{
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+  // Helper: render any markdown text with your [color=#...] spans support
+  auto render_with_color_spans = [&](std::string_view text) { render_inline_md_with_color_spans(text); };
 
   // Split into (normal markdown) and (note blocks). You already have this helper from earlier:
   // std::vector<Chunk> split_note_blocks(std::string_view)
@@ -573,10 +594,12 @@ void MarkdownView::render(std::string_view markdown)
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
 
-    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
-    bg.w = 1.0f;
+    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+    bg.w = 0.18f;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
-    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::GetStyleColorVec4(ImGuiCol_Border));
+    ImVec4 bcol = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+    bcol.w = 0.75f;
+    ImGui::PushStyleColor(ImGuiCol_Border, bcol);
 
     // Unique ID per note in this render call (no unbounded growth)
     ImGui::PushID(note_idx++);
@@ -607,20 +630,22 @@ void MarkdownView::render(std::string_view markdown)
     ImVec2 rect_min = ImGui::GetItemRectMin();
     ImVec2 rect_max = ImGui::GetItemRectMax();
 
-    ImU32 bg_col = ImGui::GetColorU32(ImGuiCol_FrameBg);
-    ImU32 border_col = ImGui::GetColorU32(ImGuiCol_Border);
+    ImU32 bg_col = ImGui::GetColorU32(bg);
+    ImU32 border_col = ImGui::GetColorU32(bcol);
 
     auto *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(rect_min, rect_max, bg_col, rounding);
     dl->AddRect(rect_min, rect_max, border_col, rounding);
+    dl->AddRectFilled(rect_min, ImVec2(rect_min.x + 5.0f, rect_max.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), rounding);
 
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
     ImGui::PopID();
 
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
 
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
   }
+  ImGui::PopStyleVar();
 }

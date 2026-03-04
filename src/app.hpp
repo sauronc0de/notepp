@@ -22,8 +22,10 @@ private:
   void sync_active_note_meta();
   void rename_note_storage_for_title(const std::string &new_title);
   void rename_note_by_index(int folder_idx, int note_idx, const std::string &new_title);
+  void push_undo_snapshot_from(const std::string &snapshot);
   void push_undo_snapshot();
   void apply_undo_snapshot();
+  void apply_redo_snapshot();
   void shutdown();
 
   void frame_begin();
@@ -37,6 +39,7 @@ private:
   bool editing_mode_ = false;
   bool request_exit_edit_mode_ = false;
   bool request_undo_edit_ = false;
+  bool request_redo_edit_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta
@@ -60,6 +63,7 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   std::vector<std::string> undo_stack_;
+  std::vector<std::string> redo_stack_;
 
   std::string markdown_text_ =
       "# Notes (Markdown preview)\n"

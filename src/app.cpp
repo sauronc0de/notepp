@@ -922,7 +922,7 @@ static bool render_preview_with_task_checkboxes(std::string &markdown)
       }
       ImGui::SameLine();
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(label.data(), label.data() + label.size());
+      MarkdownView::render_inline(std::string(label));
       ImGui::PopID();
       ImGui::PopStyleVar(2);
     }
@@ -1021,9 +1021,10 @@ void App::init_imgui()
   // - Roboto-Bold.ttf
   // - Roboto-BoldItalic.ttf
 
-  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Medium.ttf", 16.0f);
-  ImFont *font_italic = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Italic.ttf", 16.0f);
-  ImFont *font_bold = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Bold.ttf", 16.0f);
+  constexpr float kUiFontSize = 14.0f;
+  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Medium.ttf", kUiFontSize);
+  ImFont *font_italic = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Italic.ttf", kUiFontSize);
+  ImFont *font_bold = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Bold.ttf", kUiFontSize);
 
   // Fallback if you don’t have files yet:
   if(!font_regular) font_regular = io.Fonts->Fonts.front();
@@ -1254,7 +1255,9 @@ void App::load_note_content_for_active()
     save_state();
   }
   undo_stack_.clear();
+  redo_stack_.clear();
   request_undo_edit_ = false;
+  request_redo_edit_ = false;
 }
 
 void App::set_active_note(int folder_idx, int note_idx)
@@ -1345,15 +1348,35 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
 
 void App::push_undo_snapshot()
 {
+  push_undo_snapshot_from(markdown_text_);
+}
+
+void App::push_undo_snapshot_from(const std::string &snapshot)
+{
+  if(!undo_stack_.empty() && undo_stack_.back() == snapshot) return;
   if(undo_stack_.size() >= 64) undo_stack_.erase(undo_stack_.begin());
-  undo_stack_.push_back(markdown_text_);
+  undo_stack_.push_back(snapshot);
+  redo_stack_.clear();
 }
 
 void App::apply_undo_snapshot()
 {
   if(undo_stack_.empty()) return;
+  if(redo_stack_.size() >= 64) redo_stack_.erase(redo_stack_.begin());
+  redo_stack_.push_back(markdown_text_);
   markdown_text_ = undo_stack_.back();
   undo_stack_.pop_back();
+  normalize_input_text_buffer(markdown_text_);
+  save_state();
+}
+
+void App::apply_redo_snapshot()
+{
+  if(redo_stack_.empty()) return;
+  if(undo_stack_.size() >= 64) undo_stack_.erase(undo_stack_.begin());
+  undo_stack_.push_back(markdown_text_);
+  markdown_text_ = redo_stack_.back();
+  redo_stack_.pop_back();
   normalize_input_text_buffer(markdown_text_);
   save_state();
 }
@@ -1377,15 +1400,6 @@ void App::frame_begin()
        event.key.keysym.sym == SDLK_ESCAPE)
     {
       request_exit_edit_mode_ = true;
-      continue;
-    }
-
-    if(editing_mode_ &&
-       event.type == SDL_KEYDOWN &&
-       event.key.keysym.sym == SDLK_z &&
-       (event.key.keysym.mod & KMOD_CTRL))
-    {
-      request_undo_edit_ = true;
       continue;
     }
 
@@ -1859,6 +1873,7 @@ void App::frame_ui()
           refocus_folder_editor = false;
         }
 
+        const std::string before_edit = markdown_text_;
         changed = ImGui::InputTextMultiline(
             "##md_folder",
             markdown_text_.data(),
@@ -1878,7 +1893,11 @@ void App::frame_ui()
             },
             &ud_folder);
         normalize_input_text_buffer(markdown_text_);
-        if(changed) save_state();
+        if(changed)
+        {
+          push_undo_snapshot_from(before_edit);
+          save_state();
+        }
 
         const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         const int a = fmt_folder.sel_start;
@@ -1892,12 +1911,6 @@ void App::frame_ui()
           anchor_sel_end = sel_max;
         }
         (void)editor_hovered;
-
-        if(request_undo_edit_)
-        {
-          apply_undo_snapshot();
-          request_undo_edit_ = false;
-        }
       }
       else
       {
@@ -2084,6 +2097,7 @@ void App::frame_ui()
       refocus_editor = false;
     }
 
+    const std::string before_edit = markdown_text_;
     const bool text_changed = ImGui::InputTextMultiline(
         "##md",
         markdown_text_.data(),
@@ -2103,11 +2117,10 @@ void App::frame_ui()
         },
         &ud);
     normalize_input_text_buffer(markdown_text_);
-    if(text_changed) save_state();
-    if(request_undo_edit_)
+    if(text_changed)
     {
-      apply_undo_snapshot();
-      request_undo_edit_ = false;
+      push_undo_snapshot_from(before_edit);
+      save_state();
     }
 
     // After the widget: show popup if selection is non-empty and editor is focused/active
