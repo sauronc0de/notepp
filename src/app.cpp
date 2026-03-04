@@ -1,11 +1,16 @@
 #include "app.hpp"
 #include "helpers.hpp"
 #include "markdown_view.hpp"
+#include "mermaid_flowchart.hpp"
+#include "mermaid_flowchart.cpp"
 
 #include <stdexcept>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <filesystem>
@@ -275,6 +280,232 @@ static bool parse_task_line(std::string_view line, size_t &check_col_out, std::s
   return true;
 }
 
+struct MermaidPieSlice
+{
+  std::string label;
+  float value = 0.0f;
+};
+
+struct MermaidPieChart
+{
+  std::string title;
+  std::vector<MermaidPieSlice> slices;
+};
+
+static bool parse_mermaid_pie(std::string_view body, MermaidPieChart &out);
+static void render_mermaid_pie_chart(const MermaidPieChart &chart, int id);
+
+static std::string to_lower_copy(std::string_view s)
+{
+  std::string out(s);
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  return out;
+}
+
+static bool is_known_mermaid_type(std::string_view token)
+{
+  const std::string t = to_lower_copy(token);
+  return
+      t == "flowchart" || t == "graph" ||
+      t == "sequencediagram" ||
+      t == "classdiagram" ||
+      t == "statediagram" || t == "statediagram-v2" ||
+      t == "erdiagram" ||
+      t == "journey" ||
+      t == "gantt" ||
+      t == "pie" ||
+      t == "quadrantchart" ||
+      t == "requirementdiagram" ||
+      t == "gitgraph" ||
+      t == "c4context" || t == "c4container" || t == "c4component" || t == "c4dynamic" || t == "c4deployment" ||
+      t == "mindmap" ||
+      t == "timeline" ||
+      t == "zenuml" ||
+      t == "sankey-beta" ||
+      t == "xychart-beta" ||
+      t == "block-beta" ||
+      t == "packet-beta" ||
+      t == "kanban" ||
+      t == "architecture-beta" ||
+      t == "radar-beta" ||
+      t == "treemap";
+}
+
+static bool detect_mermaid_type(std::string_view body, std::string &type_out)
+{
+  size_t p = 0;
+  while(p < body.size())
+  {
+    size_t e = body.find('\n', p);
+    if(e == std::string_view::npos) e = body.size();
+    std::string_view line = trim(body.substr(p, e - p));
+    p = (e < body.size()) ? e + 1 : e;
+
+    if(line.empty()) continue;
+    if(starts_with(line, "%%")) continue; // comment
+    if(starts_with(line, "%%{")) continue; // init block
+
+    size_t sp = line.find_first_of(" \t");
+    std::string_view token = (sp == std::string_view::npos) ? line : line.substr(0, sp);
+    if(!is_known_mermaid_type(token)) return false;
+    type_out = std::string(token);
+    return true;
+  }
+  return false;
+}
+
+static void render_mermaid_placeholder(std::string_view type, std::string_view body, int id)
+{
+  ImGui::PushID(id);
+  ImGui::BeginGroup();
+  ImGui::Text("Mermaid: %.*s", (int)type.size(), type.data());
+  ImGui::Separator();
+  ImGui::TextWrapped("%.*s", (int)body.size(), body.data());
+  ImGui::EndGroup();
+  ImGui::PopID();
+}
+
+static void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
+{
+  const std::string mt = to_lower_copy(mermaid_type);
+  if(mt == "pie")
+  {
+    MermaidPieChart pie;
+    if(parse_mermaid_pie(body, pie))
+      render_mermaid_pie_chart(pie, id);
+    else
+      render_mermaid_placeholder(mermaid_type, body, id);
+    return;
+  }
+
+  if(mt == "flowchart" || mt == "graph")
+  {
+    MermaidFlowchart::Graph g;
+    if(MermaidFlowchart::parse(body, g))
+      MermaidFlowchart::render(g, id);
+    else
+      render_mermaid_placeholder(mermaid_type, body, id);
+    return;
+  }
+
+  render_mermaid_placeholder(mermaid_type, body, id);
+}
+
+static bool parse_mermaid_pie(std::string_view body, MermaidPieChart &out)
+{
+  out = MermaidPieChart{};
+  bool saw_pie = false;
+
+  size_t p = 0;
+  while(p < body.size())
+  {
+    size_t e = body.find('\n', p);
+    if(e == std::string_view::npos) e = body.size();
+    std::string_view line = trim(body.substr(p, e - p));
+    p = (e < body.size()) ? e + 1 : e;
+
+    if(line.empty()) continue;
+
+    if(!saw_pie)
+    {
+      if(!starts_with(line, "pie")) return false;
+      saw_pie = true;
+      std::string_view rest = trim(line.substr(3));
+      if(starts_with(rest, "title "))
+        out.title = std::string(trim(rest.substr(6)));
+      continue;
+    }
+
+    if(starts_with(line, "title "))
+    {
+      out.title = std::string(trim(line.substr(6)));
+      continue;
+    }
+
+    size_t col = line.find(':');
+    if(col == std::string_view::npos) continue;
+
+    std::string_view left = trim(line.substr(0, col));
+    std::string_view right = trim(line.substr(col + 1));
+    if(left.empty() || right.empty()) continue;
+
+    if(left.size() >= 2 && left.front() == '"' && left.back() == '"')
+      left = left.substr(1, left.size() - 2);
+
+    std::string right_s(right);
+    char *end = nullptr;
+    float v = std::strtof(right_s.c_str(), &end);
+    if(end == right_s.c_str()) continue;
+    if(v <= 0.0f) continue;
+
+    out.slices.push_back({std::string(left), v});
+  }
+
+  return saw_pie && !out.slices.empty();
+}
+
+static void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
+{
+  if(!chart.title.empty()) ImGui::TextUnformatted(chart.title.c_str());
+
+  const float avail_w = ImGui::GetContentRegionAvail().x;
+  const float chart_w = std::floor(std::max(120.0f, std::min(240.0f, avail_w * 0.45f)));
+  const float chart_h = chart_w;
+
+  ImGui::PushID(id);
+  ImGui::BeginGroup();
+  const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##pie_canvas", ImVec2(chart_w, chart_h));
+  ImGui::EndGroup();
+
+  ImGui::SameLine();
+  ImGui::BeginGroup();
+
+  const float radius = chart_w * 0.5f - 2.0f;
+  const ImVec2 center(canvas_pos.x + chart_w * 0.5f, canvas_pos.y + chart_h * 0.5f);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+
+  float total = 0.0f;
+  for(const auto &s : chart.slices) total += s.value;
+  if(total <= 0.0f) total = 1.0f;
+
+  float a0 = -3.14159265f * 0.5f;
+  for(size_t i = 0; i < chart.slices.size(); ++i)
+  {
+    const auto &s = chart.slices[i];
+    const float frac = s.value / total;
+    const float a1 = a0 + frac * 2.0f * 3.14159265f;
+
+    float r = 0, g = 0, b = 0;
+    ImGui::ColorConvertHSVtoRGB((float)i / std::max(1.0f, (float)chart.slices.size()), 0.65f, 0.95f, r, g, b);
+    const ImU32 col = ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
+
+    const int seg = std::max(6, (int)(36.0f * frac));
+    std::vector<ImVec2> pts;
+    pts.reserve((size_t)seg + 2);
+    pts.push_back(center);
+    for(int j = 0; j <= seg; ++j)
+    {
+      const float t = a0 + (a1 - a0) * ((float)j / (float)seg);
+      pts.push_back(ImVec2(center.x + std::cos(t) * radius, center.y + std::sin(t) * radius));
+    }
+    dl->AddConvexPolyFilled(pts.data(), (int)pts.size(), col);
+
+    ImGui::PushID((int)i);
+    ImGui::ColorButton("##c", ImVec4(r, g, b, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(10, 10));
+    ImGui::SameLine();
+    ImGui::Text("%s : %.2f", s.label.c_str(), s.value);
+    ImGui::PopID();
+
+    a0 = a1;
+  }
+
+  dl->AddCircle(center, radius, ImGui::GetColorU32(ImGuiCol_Border), 0, 1.0f);
+
+  ImGui::EndGroup();
+  ImGui::PopID();
+}
+
 static bool render_preview_with_task_checkboxes(std::string &markdown)
 {
   bool changed = false;
@@ -296,6 +527,91 @@ static bool render_preview_with_task_checkboxes(std::string &markdown)
     if(!has_newline) line_end = markdown.size();
 
     std::string_view line(markdown.data() + line_start, line_end - line_start);
+    std::string_view tline = trim(line);
+
+    if(tline == "```mermaid")
+    {
+      size_t scan = has_newline ? line_end + 1 : line_end;
+      size_t block_end = markdown.size();
+      std::string body;
+      bool closed = false;
+
+      while(scan < markdown.size())
+      {
+        size_t ls = scan;
+        size_t le = markdown.find('\n', scan);
+        bool ln = (le != std::string::npos);
+        if(!ln) le = markdown.size();
+
+        std::string_view l(markdown.data() + ls, le - ls);
+        if(trim(l) == "```")
+        {
+          block_end = ln ? le + 1 : le;
+          closed = true;
+          break;
+        }
+        body.append(l.data(), l.size());
+        body.push_back('\n');
+        scan = ln ? le + 1 : le;
+      }
+
+      if(closed)
+      {
+        std::string mermaid_type;
+        if(detect_mermaid_type(body, mermaid_type))
+        {
+          flush_chunk();
+          render_mermaid_block(mermaid_type, body, (int)line_start);
+        }
+        else
+        {
+          normal_chunk.append(markdown.data() + line_start, block_end - line_start);
+        }
+        pos = block_end;
+        continue;
+      }
+    }
+
+    {
+      size_t sp = tline.find_first_of(" \t");
+      std::string_view maybe_type = (sp == std::string_view::npos) ? tline : tline.substr(0, sp);
+      if(is_known_mermaid_type(maybe_type))
+    {
+      size_t scan = line_start;
+      size_t block_end = markdown.size();
+      std::string body;
+
+      while(scan < markdown.size())
+      {
+        size_t ls = scan;
+        size_t le = markdown.find('\n', scan);
+        bool ln = (le != std::string::npos);
+        if(!ln) le = markdown.size();
+        std::string_view l(markdown.data() + ls, le - ls);
+        std::string_view tl = trim(l);
+
+        if(tl.empty())
+        {
+          block_end = ln ? le + 1 : le;
+          break;
+        }
+        body.append(l.data(), l.size());
+        body.push_back('\n');
+        scan = ln ? le + 1 : le;
+        block_end = scan;
+      }
+
+      std::string mermaid_type;
+      if(detect_mermaid_type(body, mermaid_type))
+      {
+        flush_chunk();
+        render_mermaid_block(mermaid_type, body, (int)line_start);
+        pos = block_end;
+        continue;
+      }
+    }
+    }
+
     size_t check_col = 0;
     std::string_view label;
     if(parse_task_line(line, check_col, label))
