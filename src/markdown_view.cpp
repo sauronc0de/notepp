@@ -506,18 +506,52 @@ void MarkdownView::render(std::string_view markdown)
 
   // Helper: render any markdown text with your [color=#...] spans support
   auto render_with_color_spans = [&](std::string_view text) {
+    struct InlineToken
+    {
+      std::string text;
+      bool colored = false;
+      ImVec4 color{};
+      bool newline = false;
+    };
+
+    std::vector<InlineToken> tokens;
     for(auto &seg : split_color_spans(text))
     {
-      if(!seg.colored)
+      size_t start = 0;
+      while(start <= seg.text.size())
       {
-        md.print(seg.text.data(), seg.text.data() + seg.text.size());
+        size_t nl = seg.text.find('\n', start);
+        const bool has_nl = (nl != std::string::npos);
+        const size_t end = has_nl ? nl : seg.text.size();
+        if(end > start)
+        {
+          tokens.push_back(InlineToken{
+              seg.text.substr(start, end - start),
+              seg.colored,
+              seg.color,
+              false});
+        }
+        if(has_nl) tokens.push_back(InlineToken{"", false, ImVec4{}, true});
+        if(!has_nl) break;
+        start = nl + 1;
       }
-      else
+    }
+
+    for(size_t i = 0; i < tokens.size(); ++i)
+    {
+      const auto &t = tokens[i];
+      if(t.newline)
       {
-        ImGui::PushStyleColor(ImGuiCol_Text, seg.color);
-        md.print(seg.text.data(), seg.text.data() + seg.text.size());
-        ImGui::PopStyleColor();
+        ImGui::NewLine();
+        continue;
       }
+
+      if(t.colored) ImGui::PushStyleColor(ImGuiCol_Text, t.color);
+      md.print(t.text.data(), t.text.data() + t.text.size());
+      if(t.colored) ImGui::PopStyleColor();
+
+      const bool has_next = (i + 1 < tokens.size());
+      if(has_next && !tokens[i + 1].newline) ImGui::SameLine(0.0f, 0.0f);
     }
   };
 
