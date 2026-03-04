@@ -253,6 +253,79 @@ static MdSection parse_sections(std::string_view md)
   return root;
 }
 
+static bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out)
+{
+  size_t i = 0;
+  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+
+  if(i >= line.size() || (line[i] != '-' && line[i] != '*')) return false;
+  ++i;
+  if(i >= line.size() || line[i] != ' ') return false;
+  ++i;
+  if(i + 2 >= line.size()) return false;
+  if(line[i] != '[' || line[i + 2] != ']') return false;
+
+  const char mark = line[i + 1];
+  if(mark != ' ' && mark != 'x' && mark != 'X') return false;
+
+  check_col_out = i + 1;
+  i += 3;
+  if(i < line.size() && line[i] == ' ') ++i;
+  label_out = line.substr(i);
+  return true;
+}
+
+static bool render_preview_with_task_checkboxes(std::string &markdown)
+{
+  bool changed = false;
+  std::string normal_chunk;
+  normal_chunk.reserve(markdown.size());
+
+  auto flush_chunk = [&]() {
+    if(normal_chunk.empty()) return;
+    MarkdownView::render(normal_chunk);
+    normal_chunk.clear();
+  };
+
+  size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const size_t line_start = pos;
+    size_t line_end = markdown.find('\n', pos);
+    const bool has_newline = (line_end != std::string::npos);
+    if(!has_newline) line_end = markdown.size();
+
+    std::string_view line(markdown.data() + line_start, line_end - line_start);
+    size_t check_col = 0;
+    std::string_view label;
+    if(parse_task_line(line, check_col, label))
+    {
+      flush_chunk();
+
+      bool checked = (line[check_col] == 'x' || line[check_col] == 'X');
+      ImGui::PushID((int)line_start);
+      if(ImGui::Checkbox("##task", &checked))
+      {
+        markdown[line_start + check_col] = checked ? 'x' : ' ';
+        changed = true;
+      }
+      ImGui::SameLine();
+      ImGui::TextUnformatted(label.data(), label.data() + label.size());
+      ImGui::PopID();
+    }
+    else
+    {
+      normal_chunk.append(line.data(), line.size());
+      if(has_newline) normal_chunk.push_back('\n');
+    }
+
+    pos = has_newline ? line_end + 1 : line_end;
+  }
+
+  flush_chunk();
+  return changed;
+}
+
 } // namespace
 
 int App::run()
@@ -566,8 +639,9 @@ void App::frame_ui()
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
     MarkdownView::set_render_width(preview_w);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-    MarkdownView::render(markdown_text_);
+    const bool task_changed = render_preview_with_task_checkboxes(markdown_text_);
     ImGui::PopTextWrapPos();
+    if(task_changed) save_state();
     (void)start_y;
 
     // Enter edit mode only on double click (single click does nothing)
