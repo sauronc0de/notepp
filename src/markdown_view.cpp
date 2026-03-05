@@ -638,6 +638,41 @@ void MarkdownView::render(std::string_view markdown)
     dl->AddRect(rect_min, rect_max, border_col, rounding);
     dl->AddRectFilled(rect_min, ImVec2(rect_min.x + 5.0f, rect_max.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), rounding);
 
+    // Right click on note block -> copy only this note block text
+    ImGui::SetCursorScreenPos(rect_min);
+    ImGui::InvisibleButton("##note_block_ctx", ImVec2(rect_max.x - rect_min.x, rect_max.y - rect_min.y));
+    if(ImGui::BeginPopupContextItem("##note_block_popup", ImGuiPopupFlags_MouseButtonRight))
+    {
+      if(ImGui::MenuItem("Copy note block"))
+      {
+        std::string plain;
+        plain.reserve(c.text.size());
+        size_t p = 0;
+        while(p < c.text.size())
+        {
+          size_t e = c.text.find('\n', p);
+          if(e == std::string::npos) e = c.text.size();
+          std::string_view line(c.text.data() + p, e - p);
+          std::string_view t = ltrim(line);
+          if(starts_with(t, ">"))
+          {
+            t.remove_prefix(1);
+            if(!t.empty() && t.front() == ' ') t.remove_prefix(1);
+            plain.append(t.data(), t.size());
+          }
+          else
+          {
+            plain.append(line.data(), line.size());
+          }
+          if(e < c.text.size()) plain.push_back('\n');
+          p = (e < c.text.size()) ? e + 1 : e;
+        }
+        ImGui::SetClipboardText(plain.c_str());
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(rect_min.x, rect_max.y));
+
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
     ImGui::PopID();

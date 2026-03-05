@@ -55,4 +55,4 @@ add_subdirectory(src)
 
 add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_view.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
-target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md OpenGL::GL)
+target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md OpenGL::GL SDL2_image::SDL2_image)
