@@ -74,6 +74,10 @@ private:
   struct FolderMeta
   {
     std::string name;
+    bool use_custom_color = false;
+    float color_r = 0.0f;
+    float color_g = 0.0f;
+    float color_b = 0.0f;
     std::vector<NoteMeta> notes;
   };
   std::vector<FolderMeta> folders_;

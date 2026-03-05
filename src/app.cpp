@@ -738,6 +738,59 @@ static float clamp01f(float v)
   return v;
 }
 
+struct NoteTheme
+{
+  ImVec4 window_bg;
+  ImVec4 title_bg;
+  ImVec4 title_bg_active;
+  ImVec4 title_bg_collapsed;
+  ImVec4 border;
+};
+
+struct SidebarFlash
+{
+  ImVec4 color;
+  double until = 0.0;
+};
+
+static ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
+{
+  t = clamp01f(t);
+  return ImVec4(
+      a.x + (b.x - a.x) * t,
+      a.y + (b.y - a.y) * t,
+      a.z + (b.z - a.z) * t,
+      a.w + (b.w - a.w) * t);
+}
+
+static ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
+{
+  if(use_custom_color) return ImVec4(clamp01f(color_r), clamp01f(color_g), clamp01f(color_b), 1.0f);
+  ImVec4 c = style.Colors[ImGuiCol_Header];
+  c.w = 1.0f;
+  return c;
+}
+
+static NoteTheme make_note_theme(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
+{
+  const ImVec4 accent = folder_accent_color(use_custom_color, color_r, color_g, color_b, style);
+  const ImVec4 base_bg = style.Colors[ImGuiCol_WindowBg];
+  const ImVec4 border = style.Colors[ImGuiCol_Border];
+
+  NoteTheme t;
+  t.window_bg = mix_color(base_bg, accent, 0.14f);
+  t.window_bg.w = base_bg.w;
+  t.title_bg = mix_color(base_bg, accent, 0.44f);
+  t.title_bg.w = 1.0f;
+  t.title_bg_active = mix_color(base_bg, accent, 0.58f);
+  t.title_bg_active.w = 1.0f;
+  t.title_bg_collapsed = mix_color(base_bg, accent, 0.34f);
+  t.title_bg_collapsed.w = 1.0f;
+  t.border = mix_color(border, accent, 0.50f);
+  t.border.w = 1.0f;
+  return t;
+}
+
 static void load_drawings_state()
 {
   g_folder_drawings.clear();
@@ -1452,6 +1505,10 @@ void App::load_state()
             FolderMeta f;
             f.name = json_find_string(fobj, "name");
             if(f.name.empty()) f.name = "General";
+            f.use_custom_color = json_find_bool(fobj, "use_custom_color", false);
+            f.color_r = (float)json_find_int(fobj, "color_r", 0) / 255.0f;
+            f.color_g = (float)json_find_int(fobj, "color_g", 0) / 255.0f;
+            f.color_b = (float)json_find_int(fobj, "color_b", 0) / 255.0f;
 
             const std::string npat = "\"notes\"";
             size_t nk = fobj.find(npat);
@@ -1546,6 +1603,10 @@ void App::save_index() const
     const auto &f = folders_[fi];
     out << "    {\n";
     out << "      \"name\": \"" << json_escape(f.name) << "\",\n";
+    out << "      \"use_custom_color\": " << (f.use_custom_color ? "true" : "false") << ",\n";
+    out << "      \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_r)) * 255.0f) << ",\n";
+    out << "      \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_g)) * 255.0f) << ",\n";
+    out << "      \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_b)) * 255.0f) << ",\n";
     out << "      \"notes\": [\n";
     for(size_t ni = 0; ni < f.notes.size(); ++ni)
     {
@@ -1964,6 +2025,10 @@ void App::frame_ui()
   static bool open_rename_folder_popup = false;
   static int rename_folder_idx = -1;
   static char rename_folder_buf[256] = {};
+  static bool open_folder_color_popup = false;
+  static int color_folder_idx = -1;
+  static float folder_color_buf[3] = {0.0f, 0.0f, 0.0f};
+  static bool folder_color_use_default = true;
   static int pending_delete_folder_idx = -1;
   static int pending_delete_note_folder_idx = -1;
   static int pending_delete_note_idx = -1;
@@ -1983,6 +2048,7 @@ void App::frame_ui()
   static int pending_move_folder_source_idx = -1;
   static int pending_move_folder_target_idx = -1;
   static int drag_hover_folder_idx = -1;
+  static std::unordered_map<std::string, SidebarFlash> sidebar_flashes;
   struct SidebarSnapshot
   {
     std::vector<FolderMeta> folders;
@@ -2004,6 +2070,36 @@ void App::frame_ui()
     pending_fs_delete_paths_.erase(
         std::remove(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path),
         pending_fs_delete_paths_.end());
+  };
+  auto flash_key_folder = [](const std::string &folder_name) { return std::string("F:") + folder_name; };
+  auto flash_key_note = [](const std::string &note_path) { return std::string("N:") + note_path; };
+  auto flash_mark = [&](const std::string &key, ImVec4 color, double seconds = 2.4) {
+    SidebarFlash fl;
+    fl.color = color;
+    fl.until = ImGui::GetTime() + seconds;
+    sidebar_flashes[key] = fl;
+  };
+  auto flash_mark_folder = [&](const std::string &folder_name, ImVec4 color, double seconds = 2.4) {
+    if(folder_name.empty()) return;
+    flash_mark(flash_key_folder(folder_name), color, seconds);
+  };
+  auto flash_mark_note = [&](const std::string &note_path, ImVec4 color, double seconds = 2.4) {
+    if(note_path.empty()) return;
+    flash_mark(flash_key_note(note_path), color, seconds);
+  };
+  auto flash_current_color = [&](const std::string &key, double now) -> ImVec4 {
+    auto it = sidebar_flashes.find(key);
+    if(it == sidebar_flashes.end()) return ImVec4(0, 0, 0, 0);
+    const double rem = it->second.until - now;
+    if(rem <= 0.0)
+    {
+      sidebar_flashes.erase(it);
+      return ImVec4(0, 0, 0, 0);
+    }
+    const float a = clamp01f((float)(rem / 2.4));
+    ImVec4 c = it->second.color;
+    c.w *= (0.18f + 0.42f * a);
+    return c;
   };
   auto queue_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -2054,6 +2150,8 @@ void App::frame_ui()
     SidebarSnapshot prev = sidebar_undo.back();
     sidebar_undo.pop_back();
     apply_sidebar_snapshot(prev);
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
     return true;
   };
   auto apply_sidebar_redo = [&]() -> bool {
@@ -2063,6 +2161,8 @@ void App::frame_ui()
     SidebarSnapshot next = sidebar_redo.back();
     sidebar_redo.pop_back();
     apply_sidebar_snapshot(next);
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
     return true;
   };
 
@@ -2099,6 +2199,11 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("Rename Folder Sidebar");
     open_rename_folder_popup = false;
+  }
+  if(open_folder_color_popup)
+  {
+    ImGui::OpenPopup("Folder Color Sidebar");
+    open_folder_color_popup = false;
   }
   if(open_paste_note_popup)
   {
@@ -2140,6 +2245,7 @@ void App::frame_ui()
       active_folder_idx_ = (int)folders_.size() - 1;
       active_note_idx_ = -1;
       folder_overview_mode_ = true;
+      flash_mark_folder(candidate, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
       load_note_content_for_active();
       save_index();
       ImGui::CloseCurrentPopup();
@@ -2170,6 +2276,8 @@ void App::frame_ui()
       n.path = make_note_path(f.name, n.title);
       remove_pending_delete_path(n.path);
       f.notes.push_back(std::move(n));
+      flash_mark_note(f.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+      flash_mark_folder(f.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
       active_folder_idx_ = target_folder_idx;
       active_note_idx_ = (int)f.notes.size() - 1;
       force_open_folder_idx = target_folder_idx;
@@ -2193,7 +2301,10 @@ void App::frame_ui()
         {
           const FolderMeta &rf = folders_[(size_t)rename_note_folder_idx];
           if(rename_note_idx >= 0 && rename_note_idx < (int)rf.notes.size())
+          {
             remove_pending_delete_path(rf.notes[(size_t)rename_note_idx].path);
+            flash_mark_note(rf.notes[(size_t)rename_note_idx].path, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+          }
         }
       }
       ImGui::CloseCurrentPopup();
@@ -2258,11 +2369,47 @@ void App::frame_ui()
               g_drawings_dirty = true;
             }
             save_index();
+            flash_mark_folder(rf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
             if(rename_folder_idx == active_folder_idx_) load_note_content_for_active();
           }
         }
       }
       ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  if(ImGui::BeginPopup("Folder Color Sidebar"))
+  {
+    if(color_folder_idx >= 0 && color_folder_idx < (int)folders_.size())
+    {
+      FolderMeta &cf = folders_[(size_t)color_folder_idx];
+      bool changed = false;
+      if(ImGui::Checkbox("Use default", &folder_color_use_default))
+      {
+        push_sidebar_snapshot();
+        changed = true;
+      }
+      if(!folder_color_use_default)
+      {
+        if(ImGui::ColorEdit3("Color", folder_color_buf, ImGuiColorEditFlags_NoInputs))
+        {
+          if(!changed) push_sidebar_snapshot();
+          changed = true;
+        }
+      }
+      if(changed)
+      {
+        cf.use_custom_color = !folder_color_use_default;
+        if(!folder_color_use_default)
+        {
+          cf.color_r = clamp01f(folder_color_buf[0]);
+          cf.color_g = clamp01f(folder_color_buf[1]);
+          cf.color_b = clamp01f(folder_color_buf[2]);
+        }
+        flash_mark_folder(cf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+        save_index();
+      }
     }
     ImGui::EndPopup();
   }
@@ -2325,6 +2472,7 @@ void App::frame_ui()
 
   folder_overview_mode_ = true;
   ensure_default_index();
+  const double now_time = ImGui::GetTime();
   auto folder_parent_path = [](const std::string &full) -> std::string {
     const size_t p = full.rfind('/');
     return (p == std::string::npos) ? std::string{} : full.substr(0, p);
@@ -2366,6 +2514,14 @@ void App::frame_ui()
     if(fi == active_folder_idx_ && folder_overview_mode_) ff |= ImGuiTreeNodeFlags_Selected;
     bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", folder_base_name(f.name).c_str());
     folder_row_rects[(size_t)fi] = SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true};
+    {
+      const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
+      if(flash_col.w > 0.0f)
+      {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(flash_col), 3.0f);
+      }
+    }
     if(drag_hover_folder_idx == fi)
     {
       ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -2466,6 +2622,22 @@ void App::frame_ui()
         std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
         open_rename_folder_popup = true;
       }
+      if(ImGui::MenuItem("Set folder color..."))
+      {
+        color_folder_idx = fi;
+        folder_color_use_default = !f.use_custom_color;
+        folder_color_buf[0] = f.color_r;
+        folder_color_buf[1] = f.color_g;
+        folder_color_buf[2] = f.color_b;
+        open_folder_color_popup = true;
+      }
+      if(ImGui::MenuItem("Reset folder color", nullptr, false, f.use_custom_color))
+      {
+        push_sidebar_snapshot();
+        f.use_custom_color = false;
+        flash_mark_folder(f.name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
+        save_index();
+      }
       if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
       {
         paste_target_folder_idx = fi;
@@ -2527,6 +2699,14 @@ void App::frame_ui()
           request_exit_edit_mode_ = false;
           load_note_content_for_active();
           save_index();
+        }
+        {
+          const ImVec4 flash_col = flash_current_color(flash_key_note(n.path), now_time);
+          if(flash_col.w > 0.0f)
+          {
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(flash_col), 2.0f);
+          }
         }
         folder_note_row_rects[(size_t)fi].push_back(SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
         if(drag_hover_folder_idx == fi)
@@ -2718,6 +2898,7 @@ void App::frame_ui()
         queue_pending_delete_path(df.notes[(size_t)ni].path);
         df.notes.erase(df.notes.begin() + ni);
       }
+      flash_mark_folder(df.name, ImVec4(0.90f, 0.32f, 0.32f, 1.0f));
       // Keep empty folders valid: deleting last note no longer removes the folder.
     }
     ensure_default_index();
@@ -2740,6 +2921,12 @@ void App::frame_ui()
     const int fi = pending_delete_folder_idx;
     if(fi >= 0 && fi < (int)folders_.size())
     {
+      std::string parent_folder_to_mark;
+      {
+        const std::string name = folders_[(size_t)fi].name;
+        const size_t p = name.rfind('/');
+        if(p != std::string::npos) parent_folder_to_mark = name.substr(0, p);
+      }
       const std::string prefix = folders_[(size_t)fi].name;
       std::vector<int> to_remove;
       for(int i = 0; i < (int)folders_.size(); ++i)
@@ -2757,6 +2944,7 @@ void App::frame_ui()
         }
         folders_.erase(folders_.begin() + idx);
       }
+      if(!parent_folder_to_mark.empty()) flash_mark_folder(parent_folder_to_mark, ImVec4(0.90f, 0.32f, 0.32f, 1.0f));
     }
     ensure_default_index();
     normalize_active_indices();
@@ -2789,6 +2977,7 @@ void App::frame_ui()
       new_note.path = make_note_path(pf.name, candidate);
       remove_pending_delete_path(new_note.path);
       pf.notes.push_back(new_note);
+      flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
 
       std::filesystem::create_directories(std::filesystem::path(new_note.path).parent_path());
       std::ofstream out_note(new_note.path, std::ios::binary | std::ios::trunc);
@@ -2804,6 +2993,7 @@ void App::frame_ui()
         new_note.path = make_note_path(pf.name, candidate);
         remove_pending_delete_path(new_note.path);
         pf.notes.push_back(new_note);
+        flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
 
         std::filesystem::create_directories(std::filesystem::path(new_note.path).parent_path());
         std::ofstream out_note(new_note.path, std::ios::binary | std::ios::trunc);
@@ -2818,6 +3008,7 @@ void App::frame_ui()
     editing_mode_ = false;
     request_exit_edit_mode_ = false;
     save_index();
+    flash_mark_folder(pf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
     pending_paste_note_folder_idx = -1;
     paste_target_folder_idx = -1;
   }
@@ -2868,6 +3059,7 @@ void App::frame_ui()
         remove_pending_delete_path(new_path);
         nm.hidden = false;
         dst.notes.push_back(std::move(nm));
+        flash_mark_note(dst.notes.back().path, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
       }
 
       // Source folder may become empty; this is now a valid state.
@@ -2881,6 +3073,7 @@ void App::frame_ui()
       force_open_folder_idx = dst_fi;
       load_note_content_for_active();
       save_index();
+      flash_mark_folder(dst.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
     }
     pending_move_source_folder_idx = -1;
     pending_move_target_folder_idx = -1;
@@ -2977,6 +3170,7 @@ void App::frame_ui()
         if(!drawings_to_reinsert.empty()) g_drawings_dirty = true;
 
         save_index();
+        flash_mark_folder(moved_root, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
         if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
         {
           load_note_content_for_active();
@@ -3682,6 +3876,14 @@ void App::frame_ui()
           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
+      {
+        const NoteTheme nt = make_note_theme(f.use_custom_color, f.color_r, f.color_g, f.color_b, ImGui::GetStyle());
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
+        ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
+        ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
+        ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
+      }
       ImGui::Begin(
           window_id.c_str(),
           &note_window_open,
@@ -4001,6 +4203,7 @@ void App::frame_ui()
       }
 
       ImGui::End();
+      ImGui::PopStyleColor(5);
 
       if(!note_window_open)
       {
@@ -4209,6 +4412,20 @@ void App::frame_ui()
       ImVec2(FLT_MAX, note_window_height));
 
   std::string note_window_label = note_title_ + "###NoteWindow";
+  const FolderMeta &active_folder = folders_[(size_t)active_folder_idx_];
+  {
+    const NoteTheme nt = make_note_theme(
+        active_folder.use_custom_color,
+        active_folder.color_r,
+        active_folder.color_g,
+        active_folder.color_b,
+        ImGui::GetStyle());
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
+    ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
+  }
   ImGui::Begin(
       note_window_label.c_str(),
       nullptr,
@@ -4504,6 +4721,7 @@ void App::frame_ui()
   }
 
   ImGui::End();
+  ImGui::PopStyleColor(5);
 
   if(layout_dirty_ && !ImGui::IsAnyMouseDown())
   {
