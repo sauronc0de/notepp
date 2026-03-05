@@ -21,6 +21,7 @@
 #include <utility>
 
 #include <SDL.h>
+#include <SDL_image.h>
 #include <SDL_opengl.h>
 #include <vector>
 
@@ -721,7 +722,20 @@ struct CopiedNoteItem
   std::string title;
   std::string content;
 };
+struct CopiedFolderEntry
+{
+  std::string rel_path; // "" for root, otherwise "/child..."
+  std::string icon;
+  bool use_custom_color = false;
+  float color_r = 0.0f;
+  float color_g = 0.0f;
+  float color_b = 0.0f;
+  std::vector<CopiedNoteItem> notes;
+};
 static std::vector<CopiedNoteItem> g_copied_notes_batch;
+static bool g_has_copied_folder = false;
+static std::string g_copied_folder_root_name;
+static std::vector<CopiedFolderEntry> g_copied_folder_entries;
 static bool g_clipboard_dirty = false;
 
 static float dist2(ImVec2 a, ImVec2 b)
@@ -752,6 +766,15 @@ struct SidebarFlash
   ImVec4 color;
   double until = 0.0;
 };
+
+struct IconTextureRecord
+{
+  GLuint texture_id = 0;
+  ImVec2 size = ImVec2(0, 0);
+  bool loaded = false;
+};
+
+static std::unordered_map<std::string, IconTextureRecord> g_folder_icon_cache{};
 
 static ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
 {
@@ -789,6 +812,113 @@ static NoteTheme make_note_theme(bool use_custom_color, float color_r, float col
   t.border = mix_color(border, accent, 0.50f);
   t.border.w = 1.0f;
   return t;
+}
+
+static std::filesystem::path folder_icon_path(std::string_view icon_name)
+{
+  if(icon_name.empty()) return {};
+  std::filesystem::path p(icon_name);
+  if(p.is_absolute())
+  {
+    std::error_code ec;
+    if(std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec)) return p;
+  }
+  const std::filesystem::path base = std::filesystem::path(ASSETS_PATH) / "icons" / "folders";
+  std::filesystem::path cand = base / p;
+  std::error_code ec;
+  if(std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) return cand;
+  return {};
+}
+
+static IconTextureRecord load_icon_texture_file(const std::filesystem::path &file)
+{
+  IconTextureRecord rec{};
+  if(file.empty()) return rec;
+
+  static bool img_ready = []() {
+    IMG_Init(IMG_INIT_PNG);
+    return true;
+  }();
+  (void)img_ready;
+
+  SDL_Surface *loaded = IMG_Load(file.string().c_str());
+  if(!loaded) return rec;
+  SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
+  SDL_FreeSurface(loaded);
+  if(!rgba) return rec;
+
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
+  if(tex == 0)
+  {
+    SDL_FreeSurface(rgba);
+    return rec;
+  }
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  rec.texture_id = tex;
+  rec.size = ImVec2((float)rgba->w, (float)rgba->h);
+  rec.loaded = true;
+  SDL_FreeSurface(rgba);
+  return rec;
+}
+
+static ImTextureID get_folder_icon_texture(std::string_view icon_name)
+{
+  if(icon_name.empty()) return (ImTextureID)0;
+  std::string key(icon_name);
+  auto it = g_folder_icon_cache.find(key);
+  if(it == g_folder_icon_cache.end())
+  {
+    IconTextureRecord rec = load_icon_texture_file(folder_icon_path(icon_name));
+    it = g_folder_icon_cache.emplace(key, rec).first;
+  }
+  if(!it->second.loaded || it->second.texture_id == 0) return (ImTextureID)0;
+  return (ImTextureID)(uintptr_t)it->second.texture_id;
+}
+
+static int push_folder_imgui_theme(const NoteTheme &nt, const ImGuiStyle &style)
+{
+  const ImVec4 accent = nt.title_bg_active;
+  ImVec4 soft = mix_color(nt.window_bg, accent, 0.35f);
+  ImVec4 soft_hover = mix_color(nt.window_bg, accent, 0.50f);
+  ImVec4 soft_active = mix_color(nt.window_bg, accent, 0.62f);
+
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
+  ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
+  ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
+  ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
+  ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
+
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, soft);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, soft_hover);
+  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, soft_active);
+  ImGui::PushStyleColor(ImGuiCol_CheckMark, mix_color(accent, ImVec4(1, 1, 1, 1), 0.35f));
+
+  ImGui::PushStyleColor(ImGuiCol_Button, soft);
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, soft_hover);
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, soft_active);
+
+  ImGui::PushStyleColor(ImGuiCol_Header, soft);
+  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, soft_hover);
+  ImGui::PushStyleColor(ImGuiCol_HeaderActive, soft_active);
+
+  ImGui::PushStyleColor(ImGuiCol_Tab, mix_color(style.Colors[ImGuiCol_Tab], accent, 0.45f));
+  ImGui::PushStyleColor(ImGuiCol_TabHovered, mix_color(style.Colors[ImGuiCol_TabHovered], accent, 0.45f));
+  ImGui::PushStyleColor(ImGuiCol_TabActive, mix_color(style.Colors[ImGuiCol_TabActive], accent, 0.45f));
+
+  ImGui::PushStyleColor(ImGuiCol_SliderGrab, mix_color(accent, ImVec4(1, 1, 1, 1), 0.22f));
+  ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, mix_color(accent, ImVec4(1, 1, 1, 1), 0.35f));
+
+  return 20;
 }
 
 static void load_drawings_state()
@@ -1432,6 +1562,16 @@ void App::init_imgui()
 
 void App::shutdown()
 {
+  for(auto &kv : g_folder_icon_cache)
+  {
+    if(kv.second.texture_id != 0)
+    {
+      GLuint tex = kv.second.texture_id;
+      glDeleteTextures(1, &tex);
+    }
+  }
+  g_folder_icon_cache.clear();
+
   std::unordered_set<std::string> alive_paths;
   for(const FolderMeta &f : folders_)
   {
@@ -1505,6 +1645,7 @@ void App::load_state()
             FolderMeta f;
             f.name = json_find_string(fobj, "name");
             if(f.name.empty()) f.name = "General";
+            f.icon = json_find_string(fobj, "icon");
             f.use_custom_color = json_find_bool(fobj, "use_custom_color", false);
             f.color_r = (float)json_find_int(fobj, "color_r", 0) / 255.0f;
             f.color_g = (float)json_find_int(fobj, "color_g", 0) / 255.0f;
@@ -1603,6 +1744,7 @@ void App::save_index() const
     const auto &f = folders_[fi];
     out << "    {\n";
     out << "      \"name\": \"" << json_escape(f.name) << "\",\n";
+    out << "      \"icon\": \"" << json_escape(f.icon) << "\",\n";
     out << "      \"use_custom_color\": " << (f.use_custom_color ? "true" : "false") << ",\n";
     out << "      \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_r)) * 255.0f) << ",\n";
     out << "      \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_g)) * 255.0f) << ",\n";
@@ -1955,6 +2097,22 @@ void App::frame_begin()
       request_redo_draw_ = true;
       continue;
     }
+    if(!editing_mode_ &&
+       event.type == SDL_KEYDOWN &&
+       (event.key.keysym.mod & KMOD_CTRL) &&
+       event.key.keysym.sym == SDLK_c)
+    {
+      request_copy_sidebar_ = true;
+      continue;
+    }
+    if(!editing_mode_ &&
+       event.type == SDL_KEYDOWN &&
+       (event.key.keysym.mod & KMOD_CTRL) &&
+       event.key.keysym.sym == SDLK_v)
+    {
+      request_paste_sidebar_ = true;
+      continue;
+    }
 
     ImGui_ImplSDL2_ProcessEvent(&event);
   }
@@ -2025,6 +2183,9 @@ void App::frame_ui()
   static bool open_rename_folder_popup = false;
   static int rename_folder_idx = -1;
   static char rename_folder_buf[256] = {};
+  static bool open_folder_icon_popup = false;
+  static int icon_folder_idx = -1;
+  static char folder_icon_buf[64] = {};
   static bool open_folder_color_popup = false;
   static int color_folder_idx = -1;
   static float folder_color_buf[3] = {0.0f, 0.0f, 0.0f};
@@ -2199,6 +2360,11 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("Rename Folder Sidebar");
     open_rename_folder_popup = false;
+  }
+  if(open_folder_icon_popup)
+  {
+    ImGui::OpenPopup("Folder Icon Sidebar");
+    open_folder_icon_popup = false;
   }
   if(open_folder_color_popup)
   {
@@ -2379,6 +2545,69 @@ void App::frame_ui()
     ImGui::EndPopup();
   }
 
+  if(ImGui::BeginPopup("Folder Icon Sidebar"))
+  {
+    if(icon_folder_idx >= 0 && icon_folder_idx < (int)folders_.size())
+    {
+      FolderMeta &cf = folders_[(size_t)icon_folder_idx];
+      ImGui::TextUnformatted("Icon/tag (short text):");
+      ImGui::SetNextItemWidth(200.0f);
+      if(ImGui::InputText("##folder_icon", folder_icon_buf, sizeof(folder_icon_buf), ImGuiInputTextFlags_EnterReturnsTrue))
+      {
+        push_sidebar_snapshot();
+        cf.icon = trim(folder_icon_buf);
+        flash_mark_folder(cf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+        save_index();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::Separator();
+      struct IconPreset
+      {
+        const char *file;
+        const char *label;
+      };
+      const IconPreset presets[] = {
+          {"folder.png", "Folder"},
+          {"code.png", "Code"},
+          {"doc.png", "Doc"},
+          {"db.png", "DB"},
+          {"image.png", "Image"},
+          {"config.png", "Config"},
+          {"bug.png", "Bug"},
+          {"star.png", "Star"}};
+      for(size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); ++i)
+      {
+        if(i != 0) ImGui::SameLine();
+        const ImTextureID tex = get_folder_icon_texture(presets[i].file);
+        if(tex)
+        {
+          ImGui::Image(tex, ImVec2(14, 14));
+          ImGui::SameLine(0.0f, 6.0f);
+        }
+        const std::string b = std::string(presets[i].label) + "##icon_" + presets[i].file;
+        if(ImGui::Button(b.c_str()))
+        {
+          push_sidebar_snapshot();
+          cf.icon = presets[i].file;
+          std::snprintf(folder_icon_buf, sizeof(folder_icon_buf), "%s", presets[i].file);
+          flash_mark_folder(cf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+          save_index();
+        }
+      }
+      ImGui::NewLine();
+      ImGui::TextUnformatted("Tip: custom icon path supported (relative to assets/icons/folders).");
+      if(ImGui::Button("Clear icon"))
+      {
+        push_sidebar_snapshot();
+        cf.icon.clear();
+        folder_icon_buf[0] = '\0';
+        flash_mark_folder(cf.name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
+        save_index();
+      }
+    }
+    ImGui::EndPopup();
+  }
+
   if(ImGui::BeginPopup("Folder Color Sidebar"))
   {
     if(color_folder_idx >= 0 && color_folder_idx < (int)folders_.size())
@@ -2469,10 +2698,6 @@ void App::frame_ui()
       g_clipboard_dirty = true;
     }
   };
-
-  folder_overview_mode_ = true;
-  ensure_default_index();
-  const double now_time = ImGui::GetTime();
   auto folder_parent_path = [](const std::string &full) -> std::string {
     const size_t p = full.rfind('/');
     return (p == std::string::npos) ? std::string{} : full.substr(0, p);
@@ -2481,6 +2706,126 @@ void App::frame_ui()
     const size_t p = full.rfind('/');
     return (p == std::string::npos) ? full : full.substr(p + 1);
   };
+  auto folder_exists = [&](const std::string &name) {
+    for(const auto &f : folders_)
+    {
+      if(f.name == name) return true;
+    }
+    return false;
+  };
+  auto make_unique_folder_path = [&](const std::string &parent, const std::string &base) {
+    std::string b = sanitize_note_filename(base.empty() ? "Folder" : base);
+    std::string candidate = parent.empty() ? b : (parent + "/" + b);
+    int suffix = 2;
+    while(folder_exists(candidate))
+    {
+      const std::string ss = b + " " + std::to_string(suffix++);
+      candidate = parent.empty() ? ss : (parent + "/" + ss);
+    }
+    return candidate;
+  };
+  auto copy_folder_to_internal_clipboard = [&](int folder_idx) {
+    if(folder_idx < 0 || folder_idx >= (int)folders_.size()) return;
+    const std::string root = folders_[(size_t)folder_idx].name;
+    g_copied_folder_root_name = root;
+    g_copied_folder_entries.clear();
+    for(const FolderMeta &f : folders_)
+    {
+      if(!(f.name == root || starts_with(f.name, root + "/"))) continue;
+      CopiedFolderEntry e;
+      e.rel_path = f.name.substr(root.size()); // "" or "/child..."
+      e.icon = f.icon;
+      e.use_custom_color = f.use_custom_color;
+      e.color_r = f.color_r;
+      e.color_g = f.color_g;
+      e.color_b = f.color_b;
+      for(const NoteMeta &n : f.notes)
+      {
+        std::ifstream in_note(n.path, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(in_note)), std::istreambuf_iterator<char>());
+        e.notes.push_back(CopiedNoteItem{n.title, std::move(content)});
+      }
+      g_copied_folder_entries.push_back(std::move(e));
+    }
+    g_has_copied_folder = !g_copied_folder_entries.empty();
+  };
+
+  if(request_copy_sidebar_)
+  {
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+    {
+      if(!selected_note_indices.empty())
+      {
+        std::vector<int> to_copy(selected_note_indices.begin(), selected_note_indices.end());
+        std::sort(to_copy.begin(), to_copy.end());
+        copy_notes_to_internal_clipboard(active_folder_idx_, to_copy);
+      }
+      else if(has_active_note())
+      {
+        copy_notes_to_internal_clipboard(active_folder_idx_, std::vector<int>{active_note_idx_});
+      }
+      else
+      {
+        copy_folder_to_internal_clipboard(active_folder_idx_);
+      }
+    }
+    request_copy_sidebar_ = false;
+  }
+  if(request_paste_sidebar_)
+  {
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+    {
+      // If notes are selected (or active note exists), prefer note paste; otherwise paste folder.
+      if(g_has_copied_note && (!selected_note_indices.empty() || has_active_note()))
+      {
+        pending_paste_note_folder_idx = active_folder_idx_;
+      }
+      else if(g_has_copied_folder && !g_copied_folder_entries.empty())
+      {
+        push_sidebar_snapshot();
+        const std::string dst_parent = folders_[(size_t)active_folder_idx_].name;
+        const std::string new_root = make_unique_folder_path(dst_parent, folder_base_name(g_copied_folder_root_name));
+        for(const CopiedFolderEntry &e : g_copied_folder_entries)
+        {
+          FolderMeta nf;
+          nf.name = new_root + e.rel_path;
+          nf.icon = e.icon;
+          nf.use_custom_color = e.use_custom_color;
+          nf.color_r = e.color_r;
+          nf.color_g = e.color_g;
+          nf.color_b = e.color_b;
+          std::unordered_set<std::string> used_titles;
+          for(const CopiedNoteItem &cn : e.notes)
+          {
+            NoteMeta nn;
+            std::string base_title = sanitize_note_filename(cn.title.empty() ? "Note" : cn.title);
+            std::string candidate = base_title;
+            int suffix = 2;
+            while(used_titles.count(candidate) != 0)
+            {
+              candidate = base_title + " " + std::to_string(suffix++);
+            }
+            used_titles.insert(candidate);
+            nn.title = candidate;
+            nn.path = make_note_path(nf.name, nn.title);
+            remove_pending_delete_path(nn.path);
+            std::filesystem::create_directories(std::filesystem::path(nn.path).parent_path());
+            std::ofstream out_note(nn.path, std::ios::binary | std::ios::trunc);
+            if(out_note) out_note << cn.content;
+            nf.notes.push_back(std::move(nn));
+          }
+          folders_.push_back(std::move(nf));
+        }
+        flash_mark_folder(new_root, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+        save_index();
+      }
+    }
+    request_paste_sidebar_ = false;
+  }
+
+  folder_overview_mode_ = true;
+  ensure_default_index();
+  const double now_time = ImGui::GetTime();
   std::unordered_map<std::string, std::vector<int>> folder_children;
   folder_children.reserve(folders_.size() * 2 + 4);
   for(int fi = 0; fi < (int)folders_.size(); ++fi)
@@ -2512,7 +2857,19 @@ void App::frame_ui()
         ImGuiTreeNodeFlags_OpenOnArrow |
         ImGuiTreeNodeFlags_OpenOnDoubleClick;
     if(fi == active_folder_idx_ && folder_overview_mode_) ff |= ImGuiTreeNodeFlags_Selected;
-    bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", folder_base_name(f.name).c_str());
+    const std::string base_name = folder_base_name(f.name);
+    const ImTextureID icon_tex = get_folder_icon_texture(f.icon);
+    if(icon_tex)
+    {
+      ImGui::Image(icon_tex, ImVec2(14.0f, 14.0f));
+      ImGui::SameLine(0.0f, 6.0f);
+    }
+    else if(!f.icon.empty())
+    {
+      ImGui::TextUnformatted(f.icon.c_str());
+      ImGui::SameLine(0.0f, 6.0f);
+    }
+    bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", base_name.c_str());
     folder_row_rects[(size_t)fi] = SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true};
     {
       const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
@@ -2621,6 +2978,12 @@ void App::frame_ui()
         rename_folder_idx = fi;
         std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
         open_rename_folder_popup = true;
+      }
+      if(ImGui::MenuItem("Set folder icon..."))
+      {
+        icon_folder_idx = fi;
+        std::snprintf(folder_icon_buf, sizeof(folder_icon_buf), "%s", f.icon.c_str());
+        open_folder_icon_popup = true;
       }
       if(ImGui::MenuItem("Set folder color..."))
       {
@@ -3876,14 +4239,8 @@ void App::frame_ui()
           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
-      {
-        const NoteTheme nt = make_note_theme(f.use_custom_color, f.color_r, f.color_g, f.color_b, ImGui::GetStyle());
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
-        ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
-        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
-        ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
-        ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
-      }
+      const int folder_theme_count =
+          push_folder_imgui_theme(make_note_theme(f.use_custom_color, f.color_r, f.color_g, f.color_b, ImGui::GetStyle()), ImGui::GetStyle());
       ImGui::Begin(
           window_id.c_str(),
           &note_window_open,
@@ -4203,7 +4560,7 @@ void App::frame_ui()
       }
 
       ImGui::End();
-      ImGui::PopStyleColor(5);
+      ImGui::PopStyleColor(folder_theme_count);
 
       if(!note_window_open)
       {
@@ -4413,19 +4770,14 @@ void App::frame_ui()
 
   std::string note_window_label = note_title_ + "###NoteWindow";
   const FolderMeta &active_folder = folders_[(size_t)active_folder_idx_];
-  {
-    const NoteTheme nt = make_note_theme(
-        active_folder.use_custom_color,
-        active_folder.color_r,
-        active_folder.color_g,
-        active_folder.color_b,
-        ImGui::GetStyle());
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
-    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
-    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
-    ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
-  }
+  const int active_folder_theme_count = push_folder_imgui_theme(
+      make_note_theme(
+          active_folder.use_custom_color,
+          active_folder.color_r,
+          active_folder.color_g,
+          active_folder.color_b,
+          ImGui::GetStyle()),
+      ImGui::GetStyle());
   ImGui::Begin(
       note_window_label.c_str(),
       nullptr,
@@ -4442,6 +4794,12 @@ void App::frame_ui()
       mouse_pos.x <= (win_pos.x + ImGui::GetWindowWidth()) &&
       mouse_pos.y >= win_pos.y &&
       mouse_pos.y <= (win_pos.y + title_bar_h);
+  if(mouse_on_title && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+  {
+    std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
+    ImGui::SetWindowCollapsed(note_window_label.c_str(), false, ImGuiCond_Always);
+    open_rename_popup = true;
+  }
   if(mouse_on_title && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
   {
     std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
@@ -4721,7 +5079,7 @@ void App::frame_ui()
   }
 
   ImGui::End();
-  ImGui::PopStyleColor(5);
+  ImGui::PopStyleColor(active_folder_theme_count);
 
   if(layout_dirty_ && !ImGui::IsAnyMouseDown())
   {

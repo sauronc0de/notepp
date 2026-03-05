@@ -58,6 +58,8 @@ private:
   bool request_redo_draw_ = false;
   bool request_undo_edit_ = false;
   bool request_redo_edit_ = false;
+  bool request_copy_sidebar_ = false;
+  bool request_paste_sidebar_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta
@@ -74,6 +76,7 @@ private:
   struct FolderMeta
   {
     std::string name;
+    std::string icon;
     bool use_custom_color = false;
     float color_r = 0.0f;
     float color_g = 0.0f;
