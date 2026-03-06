@@ -725,7 +725,6 @@ struct CopiedNoteItem
 struct CopiedFolderEntry
 {
   std::string rel_path; // "" for root, otherwise "/child..."
-  std::string icon;
   bool use_custom_color = false;
   float color_r = 0.0f;
   float color_g = 0.0f;
@@ -737,6 +736,7 @@ static bool g_has_copied_folder = false;
 static std::string g_copied_folder_root_name;
 static std::vector<CopiedFolderEntry> g_copied_folder_entries;
 static bool g_clipboard_dirty = false;
+static std::unordered_map<std::string, GLuint> g_toolbar_icon_cache;
 
 static float dist2(ImVec2 a, ImVec2 b)
 {
@@ -767,15 +767,6 @@ struct SidebarFlash
   double until = 0.0;
 };
 
-struct IconTextureRecord
-{
-  GLuint texture_id = 0;
-  ImVec2 size = ImVec2(0, 0);
-  bool loaded = false;
-};
-
-static std::unordered_map<std::string, IconTextureRecord> g_folder_icon_cache{};
-
 static ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
 {
   t = clamp01f(t);
@@ -789,9 +780,8 @@ static ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
 static ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
 {
   if(use_custom_color) return ImVec4(clamp01f(color_r), clamp01f(color_g), clamp01f(color_b), 1.0f);
-  ImVec4 c = style.Colors[ImGuiCol_Header];
-  c.w = 1.0f;
-  return c;
+  (void)style;
+  return ImVec4(0.26f, 0.59f, 0.98f, 1.0f); // ImGui classic default blue
 }
 
 static NoteTheme make_note_theme(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
@@ -814,26 +804,18 @@ static NoteTheme make_note_theme(bool use_custom_color, float color_r, float col
   return t;
 }
 
-static std::filesystem::path folder_icon_path(std::string_view icon_name)
+static ImVec4 with_alpha(ImVec4 c, float a)
 {
-  if(icon_name.empty()) return {};
-  std::filesystem::path p(icon_name);
-  if(p.is_absolute())
-  {
-    std::error_code ec;
-    if(std::filesystem::exists(p, ec) && std::filesystem::is_regular_file(p, ec)) return p;
-  }
-  const std::filesystem::path base = std::filesystem::path(ASSETS_PATH) / "icons" / "folders";
-  std::filesystem::path cand = base / p;
-  std::error_code ec;
-  if(std::filesystem::exists(cand, ec) && std::filesystem::is_regular_file(cand, ec)) return cand;
-  return {};
+  c.w = a;
+  return c;
 }
 
-static IconTextureRecord load_icon_texture_file(const std::filesystem::path &file)
+static ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
 {
-  IconTextureRecord rec{};
-  if(file.empty()) return rec;
+  if(icon_name.empty()) return (ImTextureID)0;
+  std::string key(icon_name);
+  auto it = g_toolbar_icon_cache.find(key);
+  if(it != g_toolbar_icon_cache.end()) return (ImTextureID)(uintptr_t)it->second;
 
   static bool img_ready = []() {
     IMG_Init(IMG_INIT_PNG);
@@ -841,20 +823,33 @@ static IconTextureRecord load_icon_texture_file(const std::filesystem::path &fil
   }();
   (void)img_ready;
 
-  SDL_Surface *loaded = IMG_Load(file.string().c_str());
-  if(!loaded) return rec;
+  const std::filesystem::path p = std::filesystem::path(ASSETS_PATH) / "icons" / key;
+  SDL_Surface *loaded = IMG_Load(p.string().c_str());
+  if(!loaded) return (ImTextureID)0;
   SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
   SDL_FreeSurface(loaded);
-  if(!rgba) return rec;
+  if(!rgba) return (ImTextureID)0;
+  // Force toolbar icons to white monochrome while preserving alpha.
+  {
+    Uint8 *px = static_cast<Uint8 *>(rgba->pixels);
+    const int count = rgba->w * rgba->h;
+    for(int i = 0; i < count; ++i)
+    {
+      Uint8 *p4 = px + i * 4; // RGBA32
+      if(p4[3] == 0) continue;
+      p4[0] = 255;
+      p4[1] = 255;
+      p4[2] = 255;
+    }
+  }
 
   GLuint tex = 0;
   glGenTextures(1, &tex);
   if(tex == 0)
   {
     SDL_FreeSurface(rgba);
-    return rec;
+    return (ImTextureID)0;
   }
-
   glBindTexture(GL_TEXTURE_2D, tex);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -863,26 +858,10 @@ static IconTextureRecord load_icon_texture_file(const std::filesystem::path &fil
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
   glBindTexture(GL_TEXTURE_2D, 0);
-
-  rec.texture_id = tex;
-  rec.size = ImVec2((float)rgba->w, (float)rgba->h);
-  rec.loaded = true;
   SDL_FreeSurface(rgba);
-  return rec;
-}
 
-static ImTextureID get_folder_icon_texture(std::string_view icon_name)
-{
-  if(icon_name.empty()) return (ImTextureID)0;
-  std::string key(icon_name);
-  auto it = g_folder_icon_cache.find(key);
-  if(it == g_folder_icon_cache.end())
-  {
-    IconTextureRecord rec = load_icon_texture_file(folder_icon_path(icon_name));
-    it = g_folder_icon_cache.emplace(key, rec).first;
-  }
-  if(!it->second.loaded || it->second.texture_id == 0) return (ImTextureID)0;
-  return (ImTextureID)(uintptr_t)it->second.texture_id;
+  g_toolbar_icon_cache.emplace(key, tex);
+  return (ImTextureID)(uintptr_t)tex;
 }
 
 static int push_folder_imgui_theme(const NoteTheme &nt, const ImGuiStyle &style)
@@ -1544,14 +1523,50 @@ void App::init_imgui()
   // - Roboto-BoldItalic.ttf
 
   constexpr float kUiFontSize = 14.0f;
+  auto merge_emoji_fallback = [&](const char *emoji_font_path) {
+    ImFontConfig emoji_cfg;
+    emoji_cfg.MergeMode = true;
+    emoji_cfg.PixelSnapH = true;
+    emoji_cfg.GlyphMinAdvanceX = kUiFontSize; // keep inline width stable
+    static const ImWchar emoji_ranges[] = {
+        0x200D, 0x200D,   // ZWJ
+        0x2600, 0x27BF,   // misc symbols + dingbats
+        0xFE0E, 0xFE0F,   // variation selectors
+        0x1F300, 0x1FAFF, // emoji blocks
+        0};
+    io.Fonts->AddFontFromFileTTF(emoji_font_path, kUiFontSize, &emoji_cfg, emoji_ranges);
+  };
+
   ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Medium.ttf", kUiFontSize);
+  if(!font_regular) font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/opensans.ttf", kUiFontSize);
+  if(font_regular)
+  {
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
+  }
+
   ImFont *font_italic = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Italic.ttf", kUiFontSize);
+  if(font_italic)
+  {
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
+  }
+
   ImFont *font_bold = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Bold.ttf", kUiFontSize);
+  if(font_bold)
+  {
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
+  }
 
   // Fallback if you don’t have files yet:
   if(!font_regular) font_regular = io.Fonts->Fonts.front();
   if(!font_italic) font_italic = font_regular;
   if(!font_bold) font_bold = font_regular;
+
+  // Ensure all ImGui widgets (including InputTextMultiline editor) use this font atlas entry.
+  // Without this, ImGui may keep using AddFontDefault() and render unknown glyphs as '?'.
+  io.FontDefault = font_regular;
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
@@ -1568,15 +1583,15 @@ void App::init_imgui()
 
 void App::shutdown()
 {
-  for(auto &kv : g_folder_icon_cache)
+  for(auto &kv : g_toolbar_icon_cache)
   {
-    if(kv.second.texture_id != 0)
+    if(kv.second != 0)
     {
-      GLuint tex = kv.second.texture_id;
+      GLuint tex = kv.second;
       glDeleteTextures(1, &tex);
     }
   }
-  g_folder_icon_cache.clear();
+  g_toolbar_icon_cache.clear();
 
   std::unordered_set<std::string> alive_paths;
   for(const FolderMeta &f : folders_)
@@ -1651,7 +1666,6 @@ void App::load_state()
             FolderMeta f;
             f.name = json_find_string(fobj, "name");
             if(f.name.empty()) f.name = "General";
-            f.icon = json_find_string(fobj, "icon");
             f.use_custom_color = json_find_bool(fobj, "use_custom_color", false);
             f.color_r = (float)json_find_int(fobj, "color_r", 0) / 255.0f;
             f.color_g = (float)json_find_int(fobj, "color_g", 0) / 255.0f;
@@ -1750,7 +1764,6 @@ void App::save_index() const
     const auto &f = folders_[fi];
     out << "    {\n";
     out << "      \"name\": \"" << json_escape(f.name) << "\",\n";
-    out << "      \"icon\": \"" << json_escape(f.icon) << "\",\n";
     out << "      \"use_custom_color\": " << (f.use_custom_color ? "true" : "false") << ",\n";
     out << "      \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_r)) * 255.0f) << ",\n";
     out << "      \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, f.color_g)) * 255.0f) << ",\n";
@@ -2189,9 +2202,6 @@ void App::frame_ui()
   static bool open_rename_folder_popup = false;
   static int rename_folder_idx = -1;
   static char rename_folder_buf[256] = {};
-  static bool open_folder_icon_popup = false;
-  static int icon_folder_idx = -1;
-  static char folder_icon_buf[64] = {};
   static bool open_folder_color_popup = false;
   static int color_folder_idx = -1;
   static float folder_color_buf[3] = {0.0f, 0.0f, 0.0f};
@@ -2265,7 +2275,7 @@ void App::frame_ui()
     }
     const float a = clamp01f((float)(rem / 2.4));
     ImVec4 c = it->second.color;
-    c.w *= (0.18f + 0.42f * a);
+    c.w *= (0.55f + 0.45f * a);
     return c;
   };
   auto queue_pending_delete_path = [&](const std::string &path) {
@@ -2366,11 +2376,6 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("Rename Folder Sidebar");
     open_rename_folder_popup = false;
-  }
-  if(open_folder_icon_popup)
-  {
-    ImGui::OpenPopup("Folder Icon Sidebar");
-    open_folder_icon_popup = false;
   }
   if(open_folder_color_popup)
   {
@@ -2551,69 +2556,6 @@ void App::frame_ui()
     ImGui::EndPopup();
   }
 
-  if(ImGui::BeginPopup("Folder Icon Sidebar"))
-  {
-    if(icon_folder_idx >= 0 && icon_folder_idx < (int)folders_.size())
-    {
-      FolderMeta &cf = folders_[(size_t)icon_folder_idx];
-      ImGui::TextUnformatted("Icon/tag (short text):");
-      ImGui::SetNextItemWidth(200.0f);
-      if(ImGui::InputText("##folder_icon", folder_icon_buf, sizeof(folder_icon_buf), ImGuiInputTextFlags_EnterReturnsTrue))
-      {
-        push_sidebar_snapshot();
-        cf.icon = trim(folder_icon_buf);
-        flash_mark_folder(cf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
-        save_index();
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::Separator();
-      struct IconPreset
-      {
-        const char *file;
-        const char *label;
-      };
-      const IconPreset presets[] = {
-          {"folder.png", "Folder"},
-          {"code.png", "Code"},
-          {"doc.png", "Doc"},
-          {"db.png", "DB"},
-          {"image.png", "Image"},
-          {"config.png", "Config"},
-          {"bug.png", "Bug"},
-          {"star.png", "Star"}};
-      for(size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); ++i)
-      {
-        if(i != 0) ImGui::SameLine();
-        const ImTextureID tex = get_folder_icon_texture(presets[i].file);
-        if(tex)
-        {
-          ImGui::Image(tex, ImVec2(14, 14));
-          ImGui::SameLine(0.0f, 6.0f);
-        }
-        const std::string b = std::string(presets[i].label) + "##icon_" + presets[i].file;
-        if(ImGui::Button(b.c_str()))
-        {
-          push_sidebar_snapshot();
-          cf.icon = presets[i].file;
-          std::snprintf(folder_icon_buf, sizeof(folder_icon_buf), "%s", presets[i].file);
-          flash_mark_folder(cf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
-          save_index();
-        }
-      }
-      ImGui::NewLine();
-      ImGui::TextUnformatted("Tip: custom icon path supported (relative to assets/icons/folders).");
-      if(ImGui::Button("Clear icon"))
-      {
-        push_sidebar_snapshot();
-        cf.icon.clear();
-        folder_icon_buf[0] = '\0';
-        flash_mark_folder(cf.name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
-        save_index();
-      }
-    }
-    ImGui::EndPopup();
-  }
-
   if(ImGui::BeginPopup("Folder Color Sidebar"))
   {
     if(color_folder_idx >= 0 && color_folder_idx < (int)folders_.size())
@@ -2740,7 +2682,6 @@ void App::frame_ui()
       if(!(f.name == root || starts_with(f.name, root + "/"))) continue;
       CopiedFolderEntry e;
       e.rel_path = f.name.substr(root.size()); // "" or "/child..."
-      e.icon = f.icon;
       e.use_custom_color = f.use_custom_color;
       e.color_r = f.color_r;
       e.color_g = f.color_g;
@@ -2795,7 +2736,6 @@ void App::frame_ui()
         {
           FolderMeta nf;
           nf.name = new_root + e.rel_path;
-          nf.icon = e.icon;
           nf.use_custom_color = e.use_custom_color;
           nf.color_r = e.color_r;
           nf.color_g = e.color_g;
@@ -2831,6 +2771,17 @@ void App::frame_ui()
 
   folder_overview_mode_ = true;
   ensure_default_index();
+  normalize_active_indices();
+  const ImGuiStyle &sidebar_style = ImGui::GetStyle();
+  const ImVec4 sidebar_select_gray(0.35f, 0.37f, 0.40f, 1.0f);
+  const ImVec4 sidebar_hover_fill = with_alpha(sidebar_select_gray, 0.20f);
+  const ImVec4 sidebar_hover_stroke = with_alpha(sidebar_select_gray, 0.82f);
+  const ImVec4 sidebar_note_hover_fill = with_alpha(sidebar_select_gray, 0.14f);
+  const ImVec4 sidebar_note_hover_stroke = with_alpha(sidebar_select_gray, 0.50f);
+  ImGui::PushStyleColor(ImGuiCol_Header, with_alpha(sidebar_select_gray, 0.32f));
+  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, with_alpha(sidebar_select_gray, 0.40f));
+  ImGui::PushStyleColor(ImGuiCol_HeaderActive, with_alpha(sidebar_select_gray, 0.50f));
+  ImGui::PushStyleColor(ImGuiCol_NavHighlight, with_alpha(sidebar_select_gray, 0.92f));
   const double now_time = ImGui::GetTime();
   std::unordered_map<std::string, std::vector<int>> folder_children;
   folder_children.reserve(folders_.size() * 2 + 4);
@@ -2863,39 +2814,27 @@ void App::frame_ui()
         ImGuiTreeNodeFlags_OpenOnDoubleClick;
     if(fi == active_folder_idx_ && folder_overview_mode_) ff |= ImGuiTreeNodeFlags_Selected;
     const std::string base_name = folder_base_name(f.name);
-    const ImTextureID icon_tex = get_folder_icon_texture(f.icon);
-    if(icon_tex)
-    {
-      ImGui::Image(icon_tex, ImVec2(14.0f, 14.0f));
-      ImGui::SameLine(0.0f, 6.0f);
-    }
-    else if(!f.icon.empty())
-    {
-      ImGui::TextUnformatted(f.icon.c_str());
-      ImGui::SameLine(0.0f, 6.0f);
-    }
+    const ImVec4 tri_col = folder_accent_color(f.use_custom_color, f.color_r, f.color_g, f.color_b, sidebar_style);
+    const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
+    ImVec4 tree_text_col = tri_col;
+    if(flash_col.w > 0.0f) tree_text_col = mix_color(tree_text_col, flash_col, 0.75f);
+    tree_text_col.w = 1.0f;
+    ImGui::PushStyleColor(ImGuiCol_Text, tree_text_col);
     bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", base_name.c_str());
+    ImGui::PopStyleColor();
     folder_row_rects[(size_t)fi] = SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true};
-    {
-      const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
-      if(flash_col.w > 0.0f)
-      {
-        ImDrawList *dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(flash_col), 3.0f);
-      }
-    }
     if(drag_hover_folder_idx == fi)
     {
       ImDrawList *dl = ImGui::GetWindowDrawList();
       dl->AddRectFilled(
           ImGui::GetItemRectMin(),
           ImGui::GetItemRectMax(),
-          ImGui::GetColorU32(ImVec4(0.25f, 0.55f, 0.95f, 0.18f)),
+          ImGui::GetColorU32(sidebar_hover_fill),
           3.0f);
       dl->AddRect(
           ImGui::GetItemRectMin(),
           ImGui::GetItemRectMax(),
-          ImGui::GetColorU32(ImVec4(0.30f, 0.70f, 1.0f, 0.80f)),
+          ImGui::GetColorU32(sidebar_hover_stroke),
           3.0f,
           0,
           1.2f);
@@ -2962,6 +2901,7 @@ void App::frame_ui()
       folder_overview_mode_ = true;
       editing_mode_ = false;
       request_exit_edit_mode_ = false;
+      request_cancel_draw_tools_ = true;
       save_index();
     }
 
@@ -2983,12 +2923,6 @@ void App::frame_ui()
         rename_folder_idx = fi;
         std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
         open_rename_folder_popup = true;
-      }
-      if(ImGui::MenuItem("Set folder icon..."))
-      {
-        icon_folder_idx = fi;
-        std::snprintf(folder_icon_buf, sizeof(folder_icon_buf), "%s", f.icon.c_str());
-        open_folder_icon_popup = true;
       }
       if(ImGui::MenuItem("Set folder color..."))
       {
@@ -3027,6 +2961,13 @@ void App::frame_ui()
         const bool note_selected =
             (fi == active_folder_idx_) && (selected_note_indices.count(ni) != 0);
         const std::string note_item_label = n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
+        const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
+        if(note_flash_col.w > 0.0f)
+        {
+          ImVec4 note_text_col = mix_color(ImGui::GetStyleColorVec4(ImGuiCol_Text), note_flash_col, 0.78f);
+          note_text_col.w = 1.0f;
+          ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);
+        }
         if(ImGui::Selectable(note_item_label.c_str(), note_selected))
         {
           const bool ctrl = ImGui::GetIO().KeyCtrl;
@@ -3065,17 +3006,11 @@ void App::frame_ui()
           force_open_folder_idx = fi;
           editing_mode_ = false;
           request_exit_edit_mode_ = false;
+          request_cancel_draw_tools_ = true;
           load_note_content_for_active();
           save_index();
         }
-        {
-          const ImVec4 flash_col = flash_current_color(flash_key_note(n.path), now_time);
-          if(flash_col.w > 0.0f)
-          {
-            ImDrawList *dl = ImGui::GetWindowDrawList();
-            dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(flash_col), 2.0f);
-          }
-        }
+        if(note_flash_col.w > 0.0f) ImGui::PopStyleColor();
         folder_note_row_rects[(size_t)fi].push_back(SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
         if(drag_hover_folder_idx == fi)
         {
@@ -3083,7 +3018,7 @@ void App::frame_ui()
           dl->AddRectFilled(
               ImGui::GetItemRectMin(),
               ImGui::GetItemRectMax(),
-              ImGui::GetColorU32(ImVec4(0.25f, 0.55f, 0.95f, 0.12f)),
+              ImGui::GetColorU32(sidebar_note_hover_fill),
               2.0f);
         }
         if(ImGui::BeginDragDropTarget())
@@ -3236,14 +3171,14 @@ void App::frame_ui()
     const SidebarRect &fr = folder_row_rects[(size_t)drag_hover_folder_idx];
     if(fr.valid)
     {
-      dl->AddRectFilled(fr.min, fr.max, ImGui::GetColorU32(ImVec4(0.25f, 0.55f, 0.95f, 0.18f)), 3.0f);
-      dl->AddRect(fr.min, fr.max, ImGui::GetColorU32(ImVec4(0.30f, 0.70f, 1.0f, 0.80f)), 3.0f, 0, 1.2f);
+      dl->AddRectFilled(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_fill), 3.0f);
+      dl->AddRect(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_stroke), 3.0f, 0, 1.2f);
     }
     for(const SidebarRect &nr : folder_note_row_rects[(size_t)drag_hover_folder_idx])
     {
       if(!nr.valid) continue;
-      dl->AddRectFilled(nr.min, nr.max, ImGui::GetColorU32(ImVec4(0.25f, 0.55f, 0.95f, 0.12f)), 2.0f);
-      dl->AddRect(nr.min, nr.max, ImGui::GetColorU32(ImVec4(0.30f, 0.70f, 1.0f, 0.45f)), 2.0f, 0, 1.0f);
+      dl->AddRectFilled(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_fill), 2.0f);
+      dl->AddRect(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_stroke), 2.0f, 0, 1.0f);
     }
   }
   if(pending_delete_note_folder_idx >= 0 &&
@@ -3549,6 +3484,7 @@ void App::frame_ui()
     pending_move_folder_target_idx = -1;
   }
   force_open_folder_idx = -1;
+  ImGui::PopStyleColor(4);
   ImGui::End();
 
   auto read_file_text = [](const std::string &path) -> std::string {
@@ -3582,6 +3518,7 @@ void App::frame_ui()
     static ImVec2 box_apply_end(0, 0);
     static bool select_drag_active = false;
     static ImVec2 select_drag_last_mouse(0, 0);
+    static std::string topbar_tooltip_text;
     struct SelectionSnapshot
     {
       std::vector<NoteMeta> notes;
@@ -3595,6 +3532,7 @@ void App::frame_ui()
     ensure_default_index();
     normalize_active_indices();
     FolderMeta &f = folders_[(size_t)active_folder_idx_];
+    const ImVec4 neutral_sel(0.68f, 0.70f, 0.73f, 1.0f);
     for(auto it = selected_note_indices.begin(); it != selected_note_indices.end();)
     {
       const int idx = *it;
@@ -3649,6 +3587,7 @@ void App::frame_ui()
       stroke_in_progress = false;
       request_cancel_draw_tools_ = false;
     }
+    topbar_tooltip_text.clear();
     auto push_draw_snapshot = [&](const std::string &folder_key) {
       auto &u = g_draw_undo[folder_key];
       auto &r = g_draw_redo[folder_key];
@@ -3741,11 +3680,40 @@ void App::frame_ui()
               ImGuiWindowFlags_NoResize |
               ImGuiWindowFlags_NoSavedSettings |
               ImGuiWindowFlags_NoDocking);
+      const ImVec4 top_btn(0.20f, 0.21f, 0.23f, 1.0f);
+      const ImVec4 top_btn_hov(0.29f, 0.30f, 0.33f, 1.0f);
+      const ImVec4 top_btn_act(0.38f, 0.40f, 0.43f, 1.0f);
+      const ImVec4 top_frame(0.16f, 0.17f, 0.19f, 1.0f);
+      const ImVec4 top_frame_hov(0.24f, 0.25f, 0.27f, 1.0f);
+      const ImVec4 top_frame_act(0.31f, 0.33f, 0.36f, 1.0f);
+      ImGui::PushStyleColor(ImGuiCol_Button, top_btn);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, top_btn_hov);
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, top_btn_act);
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, top_frame);
+      ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, top_frame_hov);
+      ImGui::PushStyleColor(ImGuiCol_FrameBgActive, top_frame_act);
+      ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.32f, 0.36f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.94f, 0.96f, 1.0f));
 
       if(editing_mode_)
       {
+        const ImTextureID ic_italic = get_toolbar_icon_texture("italic.png");
+        const ImTextureID ic_bold = get_toolbar_icon_texture("bold.png");
+        const ImTextureID ic_strike = get_toolbar_icon_texture("strike.png");
+        const ImTextureID ic_note = get_toolbar_icon_texture("note.png");
+        const ImTextureID ic_color = get_toolbar_icon_texture("color-brush.png");
+        const ImTextureID ic_task = get_toolbar_icon_texture("to-do-list.png");
+        auto tool_button = [&](const char *id, ImTextureID tex, const char *fallback, const char *tooltip) -> bool {
+          bool pressed = false;
+          if(tex)
+            pressed = ImGui::ImageButton(id, tex, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1));
+          else
+            pressed = ImGui::Button(fallback);
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = tooltip;
+          return pressed;
+        };
         ImGui::BeginDisabled(!has_anchor_selection);
-        if(ImGui::Button("Italic"))
+        if(tool_button("##tb_italic", ic_italic, "Italic", "Italic"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
@@ -3753,7 +3721,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(ImGui::Button("Bold"))
+        if(tool_button("##tb_bold", ic_bold, "Bold", "Bold"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
@@ -3761,7 +3729,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(ImGui::Button("Strike"))
+        if(tool_button("##tb_strike", ic_strike, "Strike", "Strike"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
@@ -3769,7 +3737,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(ImGui::Button("Note"))
+        if(tool_button("##tb_note", ic_note, "Note", "Note quote"))
         {
           push_undo_snapshot();
           apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
@@ -3779,7 +3747,7 @@ void App::frame_ui()
         ImGui::SameLine();
         ImGui::ColorEdit3("##top_color", (float *)&fmt_folder.color, ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
-        if(ImGui::Button("Color Apply"))
+        if(tool_button("##tb_color_apply", ic_color, "Color", "Apply color"))
         {
           push_undo_snapshot();
           const std::string hex = rgba_to_hex(fmt_folder.color);
@@ -3789,7 +3757,7 @@ void App::frame_ui()
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if(ImGui::Button("Task List"))
+        if(tool_button("##tb_task", ic_task, "Task", "Task list"))
         {
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
@@ -3801,34 +3769,43 @@ void App::frame_ui()
 
       if(!editing_mode_)
       {
-        auto mode_button = [](const char *label, bool active) -> bool {
+        const ImTextureID mouse_icon = get_toolbar_icon_texture("cursor.png");
+        const ImTextureID draw_icon = get_toolbar_icon_texture("pencil.png");
+        const ImTextureID erase_icon = get_toolbar_icon_texture("erase.png");
+        auto mode_button = [&](const char *id, ImTextureID icon, const char *fallback, const char *tooltip, bool active) -> bool {
           if(active)
           {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.78f, 0.95f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.52f, 0.86f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.17f, 0.37f, 0.66f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.47f, 0.49f, 0.53f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.56f, 0.58f, 0.62f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.63f, 0.65f, 0.69f, 1.0f));
           }
-          const bool pressed = ImGui::Button(label);
+          const bool pressed = icon
+                                   ? ImGui::ImageButton(id, icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                                   : ImGui::Button(fallback);
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          {
+            topbar_tooltip_text = tooltip;
+          }
           if(active) ImGui::PopStyleColor(3);
           return pressed;
         };
 
         const bool mouse_mode = !draw_mode && !erase_mode;
-        if(mode_button("Mouse", mouse_mode))
+        if(mode_button("##mode_mouse_icon", mouse_icon, "Mouse", "Mouse", mouse_mode))
         {
           draw_mode = false;
           erase_mode = false;
           stroke_in_progress = false;
         }
         ImGui::SameLine();
-        if(mode_button("Draw", draw_mode))
+        if(mode_button("##mode_draw_icon", draw_icon, "Draw", "Draw", draw_mode))
         {
           draw_mode = true;
           erase_mode = false;
           stroke_in_progress = false;
         }
         ImGui::SameLine();
-        if(mode_button("Erase", erase_mode))
+        if(mode_button("##mode_erase_icon", erase_icon, "Erase", "Erase", erase_mode))
         {
           erase_mode = true;
           draw_mode = false;
@@ -3836,15 +3813,21 @@ void App::frame_ui()
         }
         ImGui::SameLine();
       }
+      const ImTextureID clear_icon = !editing_mode_ ? get_toolbar_icon_texture("delete-bin.png") : (ImTextureID)0;
       if(!editing_mode_) ImGui::ColorEdit3("##draw_color", (float *)&draw_color, ImGuiColorEditFlags_NoInputs);
       if(!editing_mode_) ImGui::SameLine();
-      if(!editing_mode_ && ImGui::Button("Clear drawing"))
+      if(!editing_mode_ &&
+         (clear_icon
+              ? ImGui::ImageButton("##clear_draw_icon", clear_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+              : ImGui::Button("Clear drawing")))
       {
         push_draw_snapshot(f.name);
         g_folder_drawings[f.name].clear();
         stroke_in_progress = false;
         g_drawings_dirty = true;
       }
+      if(!editing_mode_ && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Clear drawing";
+      ImGui::PopStyleColor(8);
       ImGui::End();
       ImGui::PopStyleVar(2);
     }
@@ -4021,14 +4004,12 @@ void App::frame_ui()
       return false;
     };
 
-    const bool interacting_with_widget =
-        ImGui::IsAnyItemActive() ||
-        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    const bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if(!draw_mode && !erase_mode && !editing_mode_)
     {
       if(notes_bg_hovered &&
          !mouse_over_note_area &&
-         !interacting_with_widget &&
+         !popup_open &&
          ImGui::IsMouseClicked(ImGuiMouseButton_Left))
       {
         const bool ctrl = ImGui::GetIO().KeyCtrl;
@@ -4068,10 +4049,6 @@ void App::frame_ui()
           box_select_start = mouse;
           box_select_end = mouse;
         }
-      }
-      if(box_selecting && interacting_with_widget)
-      {
-        box_selecting = false;
       }
       if(box_selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left))
       {
@@ -4191,8 +4168,8 @@ void App::frame_ui()
       const ImVec2 rmin(std::min(box_select_start.x, box_select_end.x), std::min(box_select_start.y, box_select_end.y));
       const ImVec2 rmax(std::max(box_select_start.x, box_select_end.x), std::max(box_select_start.y, box_select_end.y));
       ImDrawList *fg = ImGui::GetForegroundDrawList();
-      fg->AddRectFilled(rmin, rmax, ImGui::GetColorU32(ImVec4(0.2f, 0.45f, 0.9f, 0.15f)));
-      fg->AddRect(rmin, rmax, ImGui::GetColorU32(ImVec4(0.2f, 0.65f, 1.0f, 0.95f)), 0.0f, 0, 1.5f);
+      fg->AddRectFilled(rmin, rmax, ImGui::GetColorU32(with_alpha(neutral_sel, 0.18f)));
+      fg->AddRect(rmin, rmax, ImGui::GetColorU32(with_alpha(neutral_sel, 0.95f)), 0.0f, 0, 1.5f);
     }
     ImGui::End();
 
@@ -4273,16 +4250,6 @@ void App::frame_ui()
           mouse_pos.x <= (win_pos.x + ImGui::GetWindowWidth()) &&
           mouse_pos.y >= win_pos.y &&
           mouse_pos.y <= (win_pos.y + title_bar_h);
-      // Double-click title -> rename note title (and avoid default collapse toggle).
-      if(mouse_on_title && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-      {
-        rename_win_folder_idx = active_folder_idx_;
-        rename_win_note_idx = ni;
-        std::snprintf(rename_win_buf, sizeof(rename_win_buf), "%s", n.title.c_str());
-        focus_rename_win_input = true;
-        ImGui::SetWindowCollapsed(window_id.c_str(), false, ImGuiCond_Always);
-        open_rename_win_popup = true;
-      }
       if(mouse_on_title && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
       {
         ImGui::OpenPopup(actions_popup_id.c_str());
@@ -4543,7 +4510,7 @@ void App::frame_ui()
         ImGui::GetForegroundDrawList()->AddRect(
             pos,
             ImVec2(pos.x + size.x, pos.y + size.y),
-            ImGui::GetColorU32(ImVec4(0.2f, 0.65f, 1.0f, 0.95f)),
+            ImGui::GetColorU32(with_alpha(neutral_sel, 0.95f)),
             0.0f,
             0,
             2.0f);
@@ -4711,6 +4678,19 @@ void App::frame_ui()
         }
         g_drawings_dirty = true;
       }
+    }
+
+    if(!topbar_tooltip_text.empty())
+    {
+      ImDrawList *fg = ImGui::GetForegroundDrawList();
+      const ImVec2 m = ImGui::GetMousePos();
+      const ImVec2 pad(8.0f, 5.0f);
+      const ImVec2 text_sz = ImGui::CalcTextSize(topbar_tooltip_text.c_str());
+      const ImVec2 pmin(m.x + 14.0f, m.y + 16.0f);
+      const ImVec2 pmax(pmin.x + text_sz.x + pad.x * 2.0f, pmin.y + text_sz.y + pad.y * 2.0f);
+      fg->AddRectFilled(pmin, pmax, ImGui::GetColorU32(ImVec4(0.10f, 0.10f, 0.12f, 0.96f)), 5.0f);
+      fg->AddRect(pmin, pmax, ImGui::GetColorU32(ImVec4(0.55f, 0.57f, 0.62f, 0.95f)), 5.0f, 0, 1.0f);
+      fg->AddText(ImVec2(pmin.x + pad.x, pmin.y + pad.y), ImGui::GetColorU32(ImVec4(0.96f, 0.96f, 0.98f, 1.0f)), topbar_tooltip_text.c_str());
     }
 
     if(editing_mode_ && request_exit_edit_mode_)

@@ -76,7 +76,6 @@ private:
   struct FolderMeta
   {
     std::string name;
-    std::string icon;
     bool use_custom_color = false;
     float color_r = 0.0f;
     float color_g = 0.0f;
