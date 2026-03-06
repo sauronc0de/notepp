@@ -297,7 +297,7 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
-  static void compact_newline(float tighten = 6.0f)
+  static void compact_newline(float tighten = 4.0f)
   {
     ImGui::NewLine();
     ImGui::SetCursorPosY(std::max(0.0f, ImGui::GetCursorPosY() - tighten));
@@ -346,7 +346,7 @@ struct MyMarkdown : public imgui_md
   void soft_break() override
   {
     // Compact line breaks from source markdown.
-    compact_newline(7.0f);
+    compact_newline(4.0f);
   }
 
   ImFont *get_font() const override
@@ -528,7 +528,7 @@ static void render_inline_md_with_color_spans(std::string_view text)
     const auto &t = tokens[i];
       if(t.newline)
       {
-        MyMarkdown::compact_newline(7.0f);
+        MyMarkdown::compact_newline(4.0f);
         continue;
       }
 
@@ -565,6 +565,157 @@ static void render_inline_md_with_color_spans(std::string_view text)
     }
 }
 
+static std::vector<std::string> split_md_table_cells(std::string_view line)
+{
+  std::vector<std::string> cells;
+  std::string_view t = trim(line);
+  if(t.empty() || t.find('|') == std::string_view::npos) return cells;
+
+  if(!t.empty() && t.front() == '|') t.remove_prefix(1);
+  if(!t.empty() && t.back() == '|') t.remove_suffix(1);
+
+  size_t start = 0;
+  while(start <= t.size())
+  {
+    size_t sep = t.find('|', start);
+    const size_t end = (sep == std::string_view::npos) ? t.size() : sep;
+    cells.emplace_back(trim(t.substr(start, end - start)));
+    if(sep == std::string_view::npos) break;
+    start = sep + 1;
+  }
+  return cells;
+}
+
+static bool is_md_table_separator(std::string_view line, size_t expected_cols)
+{
+  const std::vector<std::string> parts = split_md_table_cells(line);
+  if(parts.size() != expected_cols || parts.empty()) return false;
+
+  for(const std::string &p : parts)
+  {
+    std::string_view s = trim(p);
+    if(s.empty()) return false;
+    if(s.front() == ':') s.remove_prefix(1);
+    if(!s.empty() && s.back() == ':') s.remove_suffix(1);
+    if(s.size() < 3) return false;
+    for(char c : s)
+    {
+      if(c != '-') return false;
+    }
+  }
+  return true;
+}
+
+static void render_md_table(const std::vector<std::string> &header, const std::vector<std::vector<std::string>> &rows, int table_id)
+{
+  if(header.empty()) return;
+  const int cols = (int)header.size();
+  const ImGuiTableFlags flags =
+      ImGuiTableFlags_Borders |
+      ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_SizingStretchSame |
+      ImGuiTableFlags_NoHostExtendX;
+
+  ImGui::PushID(table_id);
+  ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.22f, 0.23f, 0.26f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(1.0f, 1.0f, 1.0f, 0.04f));
+  if(ImGui::BeginTable("##md_table", cols, flags))
+  {
+    for(int c = 0; c < cols; ++c) ImGui::TableSetupColumn(header[(size_t)c].c_str());
+    ImGui::TableHeadersRow();
+
+    for(const auto &r : rows)
+    {
+      ImGui::TableNextRow();
+      for(int c = 0; c < cols; ++c)
+      {
+        ImGui::TableSetColumnIndex(c);
+        if((size_t)c < r.size())
+          render_inline_md_with_color_spans(r[(size_t)c]);
+      }
+    }
+    ImGui::EndTable();
+  }
+  ImGui::PopStyleColor(2);
+  ImGui::PopID();
+}
+
+static void render_markdown_block_with_tables(std::string_view text)
+{
+  auto &md = renderer();
+  auto render_non_table = [&](std::string_view block) {
+    if(block.empty()) return;
+    if(block.find("[color=") == std::string_view::npos)
+    {
+      md.print(block.data(), block.data() + block.size());
+    }
+    else
+    {
+      render_inline_md_with_color_spans(block);
+    }
+  };
+
+  std::string normal_acc;
+  int table_id = 0;
+
+  size_t pos = 0;
+  while(pos < text.size())
+  {
+    size_t line_end = text.find('\n', pos);
+    const bool has_nl = (line_end != std::string_view::npos);
+    if(!has_nl) line_end = text.size();
+    std::string_view line = text.substr(pos, line_end - pos);
+
+    const std::vector<std::string> header = split_md_table_cells(line);
+    std::vector<std::vector<std::string>> rows;
+
+    if(header.size() >= 2)
+    {
+      size_t sep_start = has_nl ? (line_end + 1) : text.size();
+      if(sep_start < text.size())
+      {
+        size_t sep_end = text.find('\n', sep_start);
+        const bool sep_has_nl = (sep_end != std::string_view::npos);
+        if(!sep_has_nl) sep_end = text.size();
+        std::string_view sep_line = text.substr(sep_start, sep_end - sep_start);
+        if(is_md_table_separator(sep_line, header.size()))
+        {
+          size_t scan = sep_has_nl ? (sep_end + 1) : text.size();
+          while(scan < text.size())
+          {
+            size_t row_end = text.find('\n', scan);
+            const bool row_has_nl = (row_end != std::string_view::npos);
+            if(!row_has_nl) row_end = text.size();
+            std::string_view row_line = text.substr(scan, row_end - scan);
+            const std::vector<std::string> row_cells = split_md_table_cells(row_line);
+            if(row_cells.size() != header.size()) break;
+            rows.push_back(row_cells);
+            if(!row_has_nl)
+            {
+              scan = text.size();
+              break;
+            }
+            scan = row_end + 1;
+          }
+
+          render_non_table(normal_acc);
+          normal_acc.clear();
+          render_md_table(header, rows, table_id++);
+
+          pos = scan;
+          continue;
+        }
+      }
+    }
+
+    normal_acc.append(line.data(), line.size());
+    if(has_nl) normal_acc.push_back('\n');
+    pos = has_nl ? (line_end + 1) : text.size();
+  }
+
+  render_non_table(normal_acc);
+}
+
 void MarkdownView::render_inline(std::string_view markdown_inline)
 {
   render_inline_md_with_color_spans(markdown_inline);
@@ -573,8 +724,7 @@ void MarkdownView::render_inline(std::string_view markdown_inline)
 void MarkdownView::render(std::string_view markdown)
 {
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
-  // Helper: render any markdown text with your [color=#...] spans support
-  auto render_with_color_spans = [&](std::string_view text) { render_inline_md_with_color_spans(text); };
+  auto render_with_color_spans = [&](std::string_view text) { render_markdown_block_with_tables(text); };
 
   // Split into (normal markdown) and (note blocks). You already have this helper from earlier:
   // std::vector<Chunk> split_note_blocks(std::string_view)
