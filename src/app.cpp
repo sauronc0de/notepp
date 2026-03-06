@@ -3531,6 +3531,7 @@ void App::frame_ui()
     static bool select_drag_active = false;
     static ImVec2 select_drag_last_mouse(0, 0);
     static std::string topbar_tooltip_text;
+    static bool note_drag_snapshot_taken = false;
     struct SelectionSnapshot
     {
       std::vector<NoteMeta> notes;
@@ -3544,7 +3545,7 @@ void App::frame_ui()
     ensure_default_index();
     normalize_active_indices();
     FolderMeta &f = folders_[(size_t)active_folder_idx_];
-    const ImVec4 neutral_sel(0.68f, 0.70f, 0.73f, 1.0f);
+    const ImVec4 neutral_sel(0.26f, 0.59f, 0.98f, 1.0f);
     for(auto it = selected_note_indices.begin(); it != selected_note_indices.end();)
     {
       const int idx = *it;
@@ -3626,6 +3627,7 @@ void App::frame_ui()
       request_cancel_draw_tools_ = false;
     }
     topbar_tooltip_text.clear();
+    if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)) note_drag_snapshot_taken = false;
     auto push_draw_snapshot = [&](const std::string &folder_key) {
       auto &u = g_draw_undo[folder_key];
       auto &r = g_draw_redo[folder_key];
@@ -3875,6 +3877,7 @@ void App::frame_ui()
                 : ImGui::Button("Reset pos")) &&
            !f.notes.empty())
         {
+          push_selection_snapshot();
           reset_note_positions();
         }
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Reset positions";
@@ -3968,17 +3971,17 @@ void App::frame_ui()
     }
     if(request_undo_draw_)
     {
-      if(!apply_sidebar_undo())
+      if(!apply_selection_undo())
       {
-        if(!apply_selection_undo()) apply_draw_undo(f.name);
+        if(!apply_sidebar_undo()) apply_draw_undo(f.name);
       }
       request_undo_draw_ = false;
     }
     if(request_redo_draw_)
     {
-      if(!apply_sidebar_redo())
+      if(!apply_selection_redo())
       {
-        if(!apply_selection_redo()) apply_draw_redo(f.name);
+        if(!apply_sidebar_redo()) apply_draw_redo(f.name);
       }
       request_redo_draw_ = false;
     }
@@ -4611,7 +4614,7 @@ void App::frame_ui()
       note_rects.push_back(NoteRectInfo{ni, pos, ImVec2(pos.x + size.x, pos.y + size.y)});
       if(selected_note_indices.count(ni) != 0)
       {
-        ImGui::GetForegroundDrawList()->AddRect(
+        ImGui::GetWindowDrawList()->AddRect(
             pos,
             ImVec2(pos.x + size.x, pos.y + size.y),
             ImGui::GetColorU32(with_alpha(neutral_sel, 0.95f)),
@@ -4636,6 +4639,13 @@ void App::frame_ui()
       }
 
       const ImVec2 note_delta(effective_pos.x - old_pos_x, effective_pos.y - old_pos_y);
+      if((std::fabs(note_delta.x) > 0.01f || std::fabs(note_delta.y) > 0.01f) &&
+         ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f) &&
+         !note_drag_snapshot_taken)
+      {
+        push_selection_snapshot();
+        note_drag_snapshot_taken = true;
+      }
       if(selected_note_indices.count(ni) != 0 &&
          (std::fabs(note_delta.x) > 0.01f || std::fabs(note_delta.y) > 0.01f) &&
          ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f))
@@ -4759,7 +4769,6 @@ void App::frame_ui()
     {
       if(!layout_locked_)
       {
-        push_selection_snapshot();
         for(int idx : selected_note_indices)
         {
           if(idx == pending_group_mover) continue;
