@@ -1319,6 +1319,12 @@ static bool render_preview_with_task_checkboxes(std::string &markdown)
         if(header_stack.back().open) ImGui::TreePop();
         header_stack.pop_back();
       }
+      // If any parent header is closed, nested headers must stay hidden too.
+      if(!all_headers_open())
+      {
+        pos = has_newline ? line_end + 1 : line_end;
+        continue;
+      }
       ImGuiTreeNodeFlags hf = ImGuiTreeNodeFlags_SpanAvailWidth;
       bool open = ImGui::TreeNodeEx(
           (void *)(intptr_t)((int)line_start + 0x10000),
@@ -2646,7 +2652,7 @@ void App::frame_ui()
   if(ImGui::BeginPopup("Paste Note"))
   {
     ImGui::SetNextItemWidth(240.0f);
-      if(ImGui::InputText("Name", paste_note_buf, sizeof(paste_note_buf),
+    if(ImGui::InputText("Name", paste_note_buf, sizeof(paste_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       pending_paste_note_folder_idx = std::max(0, paste_target_folder_idx);
@@ -2847,8 +2853,7 @@ void App::frame_ui()
   std::vector<SidebarRect> folder_row_rects(folders_.size());
   std::vector<std::vector<SidebarRect>> folder_note_row_rects(folders_.size());
   for(size_t i = 0; i < folders_.size(); ++i) folder_note_row_rects[i].reserve(folders_[i].notes.size());
-  auto render_folder_node = [&](auto &&self, int fi) -> void
-  {
+  auto render_folder_node = [&](auto &&self, int fi) -> void {
     FolderMeta &f = folders_[(size_t)fi];
     if(fi == force_open_folder_idx) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     ImGuiTreeNodeFlags ff =
@@ -4016,9 +4021,15 @@ void App::frame_ui()
       return false;
     };
 
+    const bool interacting_with_widget =
+        ImGui::IsAnyItemActive() ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if(!draw_mode && !erase_mode && !editing_mode_)
     {
-      if(notes_bg_hovered && !mouse_over_note_area && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+      if(notes_bg_hovered &&
+         !mouse_over_note_area &&
+         !interacting_with_widget &&
+         ImGui::IsMouseClicked(ImGuiMouseButton_Left))
       {
         const bool ctrl = ImGui::GetIO().KeyCtrl;
         int hovered_selected_stroke = -1;
@@ -4057,6 +4068,10 @@ void App::frame_ui()
           box_select_start = mouse;
           box_select_end = mouse;
         }
+      }
+      if(box_selecting && interacting_with_widget)
+      {
+        box_selecting = false;
       }
       if(box_selecting && ImGui::IsMouseDown(ImGuiMouseButton_Left))
       {
