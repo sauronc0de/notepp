@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
 
@@ -2155,6 +2156,7 @@ void App::frame_ui()
   // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
   const float explorer_w = 280.0f;
+  const bool dock_drag_active = GImGui->MovingWindow != nullptr;
   const float workspace_top_h = folder_overview_mode_ ? 32.0f : 0.0f;
   const ImVec2 workspace_pos(vp->Pos.x + explorer_w, vp->Pos.y + workspace_top_h);
   const ImVec2 workspace_size(
@@ -2200,7 +2202,8 @@ void App::frame_ui()
           ImGuiWindowFlags_NoResize |
           ImGuiWindowFlags_NoCollapse |
           ImGuiWindowFlags_NoSavedSettings |
-          ImGuiWindowFlags_NoDocking);
+          ImGuiWindowFlags_NoDocking |
+          (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
   ImGui::PopStyleColor();
   static char new_folder_buf[128] = {};
   static char new_note_buf[128] = {};
@@ -3720,7 +3723,8 @@ void App::frame_ui()
               ImGuiWindowFlags_NoMove |
               ImGuiWindowFlags_NoResize |
               ImGuiWindowFlags_NoSavedSettings |
-              ImGuiWindowFlags_NoDocking);
+              ImGuiWindowFlags_NoDocking |
+              (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
       ImGui::PopStyleColor();
       // Blue accents close to default ImGui dark style.
       const ImVec4 top_btn(0.26f, 0.59f, 0.98f, 0.45f);
@@ -3928,6 +3932,7 @@ void App::frame_ui()
             ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking |
+            (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0) |
             ImGuiWindowFlags_NoBringToFrontOnFocus |
             ImGuiWindowFlags_NoNavFocus |
             ImGuiWindowFlags_NoBackground);
@@ -4629,10 +4634,12 @@ void App::frame_ui()
       }
 
       ImVec2 effective_pos = pos;
+      const bool allow_platform_windows = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
       const ImVec2 clamped_pos(
           std::max(bg_p0.x, std::min(pos.x, std::max(bg_p0.x, bg_p1.x - size.x))),
           std::max(bg_p0.y, std::min(pos.y, std::max(bg_p0.y, bg_p1.y - size.y))));
-      if(std::fabs(clamped_pos.x - pos.x) > 0.01f || std::fabs(clamped_pos.y - pos.y) > 0.01f)
+      if(!allow_platform_windows &&
+         (std::fabs(clamped_pos.x - pos.x) > 0.01f || std::fabs(clamped_pos.y - pos.y) > 0.01f))
       {
         ImGui::SetWindowPos(window_id.c_str(), clamped_pos, ImGuiCond_Always);
         effective_pos = clamped_pos;
@@ -4849,6 +4856,7 @@ void App::frame_ui()
     state_file_path_.clear();
     if(request_rename_selected_) request_rename_selected_ = false;
 
+    ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520.0f, 180.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin(
         "Note###NoteWindowEmpty",
@@ -4882,12 +4890,13 @@ void App::frame_ui()
   }
   else
   {
+    ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520.0f, note_window_height), ImGuiCond_FirstUseEver);
   }
 
   ImGui::SetNextWindowSizeConstraints(
-      ImVec2(320.0f, note_window_height),
-      ImVec2(FLT_MAX, note_window_height));
+      ImVec2(320.0f, 140.0f),
+      ImVec2(FLT_MAX, FLT_MAX));
 
   std::string note_window_label = note_title_ + "###NoteWindow";
   const int active_folder_theme_count = push_folder_imgui_theme(
@@ -5186,15 +5195,17 @@ void App::frame_ui()
   {
     const ImVec2 pos = ImGui::GetWindowPos();
     const ImVec2 size = ImGui::GetWindowSize();
+    const bool is_docked = ImGui::IsWindowDocked();
+    const float stored_height = is_docked ? size.y : note_window_height;
     auto changed_f = [](float a, float b) { return std::fabs(a - b) > 0.5f; };
     if(changed_f(active_note.pos_x, pos.x) || changed_f(active_note.pos_y, pos.y) ||
-       changed_f(active_note.width, size.x) || changed_f(active_note.height, note_window_height) ||
+       changed_f(active_note.width, size.x) || changed_f(active_note.height, stored_height) ||
        !active_note.has_layout)
     {
       active_note.pos_x = pos.x;
       active_note.pos_y = pos.y;
       active_note.width = size.x;
-      active_note.height = note_window_height;
+      active_note.height = stored_height;
       active_note.has_layout = true;
       layout_dirty_ = true;
     }
