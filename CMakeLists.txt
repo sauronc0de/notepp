@@ -1,4 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
+
+# CMake 4 removed compatibility with policy versions older than 3.5.
+# Some fetched third-party dependencies still declare older minimums.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 set(ProjectName "Notepp")
 project(${ProjectName} LANGUAGES C CXX)
 
@@ -54,6 +61,6 @@ add_subdirectory(libraries)
 add_subdirectory(examples)
 add_subdirectory(src)
 
-add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_view.cpp)
+add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md OpenGL::GL SDL2_image::SDL2_image)

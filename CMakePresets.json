@@ -12,15 +12,37 @@
         "CCACHE_BASEDIR": "${sourceDir}"
       },
       "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "config-linux",
+      "displayName": "Base (Ninja, Linux)",
+      "description": "General build on Linux/WSL with GCC",
+      "hidden": true,
+      "inherits": "config-base",
+      "cacheVariables": {
         "CMAKE_C_COMPILER": "/usr/bin/gcc-11",
-        "CMAKE_CXX_COMPILER": "/usr/bin/g++-11",
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++-11"
+      }
+    },
+    {
+      "name": "config-mingw",
+      "displayName": "Base (Ninja, MinGW-UCRT)",
+      "description": "Windows build using MSYS2 UCRT64 GCC toolchain",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
       "name": "develop_gui",
       "displayName": "🐲 Develop",
-      "inherits": "config-base",
+      "inherits": "config-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ENABLE_LOG": "ON",
@@ -37,7 +59,7 @@
     {
       "name": "develop_console",
       "displayName": "⌨️ Develop",
-      "inherits": "config-base",
+      "inherits": "config-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ENABLE_LOG": "ON",
@@ -52,7 +74,7 @@
     {
       "name": "Release",
       "displayName": "✅ Release",
-      "inherits": "config-base",
+      "inherits": "config-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "ENABLE_LOG": "OFF",
@@ -66,9 +88,23 @@
       }
     },
     {
+      "name": "Release_mingw",
+      "displayName": "✅ Release (MinGW)",
+      "inherits": "config-mingw",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_LOG": "OFF",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_UNITY_BUILD": "OFF",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "",
+        "CMAKE_SHARED_LINKER_FLAGS_RELEASE": ""
+      }
+    },
+    {
       "name": "Test",
       "displayName": "🧪 Test",
-      "inherits": "config-base",
+      "inherits": "config-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "ENABLE_TEST": "ON",
@@ -101,6 +137,11 @@
       "jobs": 0
     },
     {
+      "name": "Release_mingw",
+      "configurePreset": "Release_mingw",
+      "jobs": 0
+    },
+    {
       "name": "Test",
       "configurePreset": "Test",
       "jobs": 16
@@ -126,6 +167,14 @@
     {
       "name": "Release",
       "configurePreset": "Release",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "Release_mingw",
+      "configurePreset": "Release_mingw",
       "output": {
         "shortProgress": true,
         "outputOnFailure": true

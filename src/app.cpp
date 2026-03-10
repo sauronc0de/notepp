@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "helpers.hpp"
+#include "markdown_sections.hpp"
 #include "markdown_view.hpp"
 #include "mermaid_flowchart.hpp"
 #include "mermaid_flowchart.cpp"
@@ -37,14 +38,6 @@ constexpr const char *kLegacyStateMetaFile = DATA_PATH "/current_note_path.txt";
 constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
 constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
 constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
-struct MdSection
-{
-  int level = 0;               // 1..6
-  std::string title;           // heading text
-  std::string body;            // markdown until next heading of same/higher level
-  std::vector<MdSection> kids; // nested headings
-};
-
 struct MdFormatState
 {
   int sel_start = 0;
@@ -604,68 +597,6 @@ static std::vector<std::string_view> json_array_objects(std::string_view arr)
     p = e + 1;
   }
   return out;
-}
-
-static bool parse_heading_line(std::string_view line, int &level_out, std::string_view &title_out)
-{
-  line = ltrim(line);
-  int level = 0;
-  while(level < 6 && level < (int)line.size() && line[level] == '#') level++;
-  if(level == 0) return false;
-
-  // require a space after hashes (common markdown rule)
-  if((size_t)level >= line.size() || line[(size_t)level] != ' ') return false;
-
-  std::string_view title = trim(line.substr((size_t)level + 1));
-  if(title.empty()) title = "(untitled)";
-
-  level_out = level;
-  title_out = title;
-  return true;
-}
-
-static MdSection parse_sections(std::string_view md)
-{
-  MdSection root; // level 0
-  std::vector<MdSection *> stack;
-  stack.push_back(&root);
-
-  size_t pos = 0;
-  auto take_line = [&](size_t &p) -> std::string_view {
-    if(p >= md.size()) return {};
-    size_t e = md.find('\n', p);
-    if(e == std::string_view::npos) e = md.size();
-    auto line = md.substr(p, e - p);
-    p = (e < md.size()) ? e + 1 : e;
-    return line;
-  };
-
-  while(pos < md.size())
-  {
-    std::string_view line = take_line(pos);
-
-    int level = 0;
-    std::string_view title;
-    if(parse_heading_line(line, level, title))
-    {
-      // pop until parent has lower level
-      while(!stack.empty() && stack.back()->level >= level) stack.pop_back();
-      if(stack.empty()) stack.push_back(&root);
-
-      // create node under current parent
-      stack.back()->kids.push_back(MdSection{level, std::string(title), {}, {}});
-      MdSection *added = &stack.back()->kids.back();
-      stack.push_back(added);
-    }
-    else
-    {
-      // normal content belongs to current section
-      stack.back()->body.append(line.data(), line.size());
-      stack.back()->body.push_back('\n');
-    }
-  }
-
-  return root;
 }
 
 static bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out)

@@ -1,5 +1,6 @@
 #include "markdown_view.hpp"
 #include "helpers.hpp"
+#include "markdown_sections.hpp"
 
 #include <cmath>
 #include <cstdint>
