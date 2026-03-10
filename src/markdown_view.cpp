@@ -533,36 +533,68 @@ static void render_inline_md_with_color_spans(std::string_view text)
         continue;
       }
 
+      std::string_view token_text(t.text);
+      size_t token_trimmed_start = 0;
+      while(token_trimmed_start < token_text.size() && token_text[token_trimmed_start] == ' ') ++token_trimmed_start;
+      size_t token_trimmed_end = token_text.size();
+      while(token_trimmed_end > token_trimmed_start && token_text[token_trimmed_end - 1] == ' ') --token_trimmed_end;
+      const int leading_spaces = (int)token_trimmed_start;
+      const int trailing_spaces = (int)(token_text.size() - token_trimmed_end);
+      token_text = token_text.substr(token_trimmed_start, token_trimmed_end - token_trimmed_start);
+
       size_t p = 0;
-      bool rendered_any = false;
-      while(p < t.text.size())
+      bool emitted_inline = false;
+      if(leading_spaces > 0)
       {
-        size_t bq0 = t.text.find('`', p);
+        const float sw = ImGui::CalcTextSize(" ").x;
+        if(sw > 0.0f)
+        {
+          ImGui::Dummy(ImVec2(sw * (float)leading_spaces, 0.0f));
+          emitted_inline = true;
+          if(!token_text.empty()) ImGui::SameLine(0.0f, 0.0f);
+        }
+      }
+      while(p < token_text.size())
+      {
+        size_t bq0 = token_text.find('`', p);
         if(bq0 == std::string::npos)
         {
-          render_md_fragment(std::string_view(t.text).substr(p), t.colored, t.color);
-          rendered_any = true;
+          render_md_fragment(token_text.substr(p), t.colored, t.color);
+          emitted_inline = true;
           break;
         }
 
-        render_md_fragment(std::string_view(t.text).substr(p, bq0 - p), t.colored, t.color);
-        rendered_any = true;
+        render_md_fragment(token_text.substr(p, bq0 - p), t.colored, t.color);
+        emitted_inline = true;
 
-        size_t bq1 = t.text.find('`', bq0 + 1);
+        size_t bq1 = token_text.find('`', bq0 + 1);
         if(bq1 == std::string::npos)
         {
-          render_md_fragment(std::string_view(t.text).substr(bq0), t.colored, t.color);
+          render_md_fragment(token_text.substr(bq0), t.colored, t.color);
+          emitted_inline = true;
           break;
         }
 
         ImGui::SameLine(0.0f, 0.0f);
-        render_code_chip(std::string_view(t.text).substr(bq0 + 1, bq1 - bq0 - 1), t.colored, t.color);
+        render_code_chip(token_text.substr(bq0 + 1, bq1 - bq0 - 1), t.colored, t.color);
         p = bq1 + 1;
-        if(p < t.text.size()) ImGui::SameLine(0.0f, 0.0f);
+        if(p < token_text.size()) ImGui::SameLine(0.0f, 0.0f);
       }
 
       const bool has_next = (i + 1 < tokens.size());
-      if(rendered_any && has_next && !tokens[i + 1].newline) ImGui::SameLine(0.0f, 0.0f);
+      if(has_next && !tokens[i + 1].newline)
+      {
+        if(emitted_inline) ImGui::SameLine(0.0f, 0.0f);
+        if(trailing_spaces > 0)
+        {
+          const float sw = ImGui::CalcTextSize(" ").x;
+          if(sw > 0.0f)
+          {
+            ImGui::Dummy(ImVec2(sw * (float)trailing_spaces, 0.0f));
+            ImGui::SameLine(0.0f, 0.0f);
+          }
+        }
+      }
     }
 }
 

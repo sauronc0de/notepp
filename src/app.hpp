@@ -60,6 +60,7 @@ private:
   bool request_redo_edit_ = false;
   bool request_copy_sidebar_ = false;
   bool request_paste_sidebar_ = false;
+  bool layout_locked_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta

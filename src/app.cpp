@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
 
@@ -36,6 +37,7 @@ constexpr const char *kGlslVersion = "#version 150";
 constexpr const char *kDefaultStateFile = DATA_PATH "/note.md";
 constexpr const char *kLegacyStateMetaFile = DATA_PATH "/current_note_path.txt";
 constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
+constexpr const char *kImGuiIniFile = DATA_PATH "/imgui_layout.ini";
 constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
 constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
 struct MdFormatState
@@ -1496,8 +1498,17 @@ void App::init_imgui()
   io.FontDefault = font_regular;
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  io.IniFilename = kImGuiIniFile;
 
   ImGui::StyleColorsDark();
+  if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+  {
+    ImGuiStyle &style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+  }
 
   if(!ImGui_ImplSDL2_InitForOpenGL(window_, gl_context_))
     throw std::runtime_error("ImGui_ImplSDL2_InitForOpenGL failed");
@@ -1541,6 +1552,7 @@ void App::shutdown()
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
   {
+    ImGui::SaveIniSettingsToDisk(kImGuiIniFile);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -1568,6 +1580,7 @@ void App::load_state()
   active_folder_idx_ = 0;
   active_note_idx_ = 0;
   folder_overview_mode_ = false;
+  layout_locked_ = false;
 
   std::ifstream in_index(kIndexFile);
   if(in_index)
@@ -1576,6 +1589,7 @@ void App::load_state()
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
     active_note_idx_ = json_find_int(doc, "active_note", 0);
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
+    layout_locked_ = json_find_bool(doc, "layout_locked", false);
 
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
@@ -1685,6 +1699,7 @@ void App::save_index() const
   out << "  \"active_folder\": " << active_folder_idx_ << ",\n";
   out << "  \"active_note\": " << active_note_idx_ << ",\n";
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
+  out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
   out << "  \"folders\": [\n";
   for(size_t fi = 0; fi < folders_.size(); ++fi)
   {
@@ -2069,10 +2084,17 @@ void App::frame_begin()
 }
 void App::frame_ui()
 {
-  // --- Dock host ---
+  // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(vp->Pos);
-  ImGui::SetNextWindowSize(vp->Size);
+  const float explorer_w = 280.0f;
+  const bool dock_drag_active = GImGui->MovingWindow != nullptr;
+  const float workspace_top_h = folder_overview_mode_ ? 32.0f : 0.0f;
+  const ImVec2 workspace_pos(vp->Pos.x + explorer_w, vp->Pos.y + workspace_top_h);
+  const ImVec2 workspace_size(
+      std::max(200.0f, vp->Size.x - explorer_w),
+      std::max(100.0f, vp->Size.y - workspace_top_h));
+  ImGui::SetNextWindowPos(workspace_pos);
+  ImGui::SetNextWindowSize(workspace_size);
   ImGui::SetNextWindowViewport(vp->ID);
 
   ImGuiWindowFlags host_flags =
@@ -2094,7 +2116,6 @@ void App::frame_ui()
   ImGui::End();
 
   // --- Explorer window: static left sidebar ---
-  const float explorer_w = 280.0f;
   const ImVec4 base_bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
   auto clamp01 = [](float v) { return std::max(0.0f, std::min(1.0f, v)); };
   const ImVec4 explorer_bg(
@@ -2112,7 +2133,8 @@ void App::frame_ui()
           ImGuiWindowFlags_NoResize |
           ImGuiWindowFlags_NoCollapse |
           ImGuiWindowFlags_NoSavedSettings |
-          ImGuiWindowFlags_NoDocking);
+          ImGuiWindowFlags_NoDocking |
+          (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
   ImGui::PopStyleColor();
   static char new_folder_buf[128] = {};
   static char new_note_buf[128] = {};
@@ -2386,6 +2408,7 @@ void App::frame_ui()
       active_folder_idx_ = target_folder_idx;
       active_note_idx_ = (int)f.notes.size() - 1;
       force_open_folder_idx = target_folder_idx;
+      load_note_content_for_active();
       save_index();
       ImGui::CloseCurrentPopup();
     }
@@ -3429,6 +3452,7 @@ void App::frame_ui()
     static MdFormatState fmt_folder;
     static bool draw_mode = false;
     static bool erase_mode = false;
+    static bool drawings_visible = true;
     static bool stroke_in_progress = false;
     static bool erase_snapshot_taken = false;
     static ImVec4 draw_color = ImVec4(1.0f, 0.3f, 0.1f, 1.0f);
@@ -3441,6 +3465,7 @@ void App::frame_ui()
     static bool select_drag_active = false;
     static ImVec2 select_drag_last_mouse(0, 0);
     static std::string topbar_tooltip_text;
+    static bool note_drag_snapshot_taken = false;
     struct SelectionSnapshot
     {
       std::vector<NoteMeta> notes;
@@ -3454,7 +3479,7 @@ void App::frame_ui()
     ensure_default_index();
     normalize_active_indices();
     FolderMeta &f = folders_[(size_t)active_folder_idx_];
-    const ImVec4 neutral_sel(0.68f, 0.70f, 0.73f, 1.0f);
+    const ImVec4 neutral_sel(0.26f, 0.59f, 0.98f, 1.0f);
     for(auto it = selected_note_indices.begin(); it != selected_note_indices.end();)
     {
       const int idx = *it;
@@ -3463,6 +3488,32 @@ void App::frame_ui()
       else
         ++it;
     }
+    bool request_reset_layout = false;
+    auto reset_note_positions = [&]() {
+      const float top_bar_h = 32.0f;
+      const float canvas_x = vp->Pos.x + explorer_w + 14.0f;
+      const float canvas_y = vp->Pos.y + top_bar_h + 14.0f;
+      const float canvas_w = std::max(280.0f, vp->Size.x - explorer_w - 28.0f);
+      const float base_w = std::max(340.0f, std::min(520.0f, canvas_w * 0.45f));
+      const float gap = 14.0f;
+      const int cols = std::max(1, (int)((canvas_w + gap) / (base_w + gap)));
+
+      for(int i = 0; i < (int)f.notes.size(); ++i)
+      {
+        NoteMeta &n = f.notes[(size_t)i];
+        const int col = i % cols;
+        const int row = i / cols;
+        n.hidden = false;
+        n.has_layout = true;
+        n.width = base_w;
+        n.height = std::max(170.0f, n.height);
+        n.pos_x = canvas_x + (base_w + gap) * (float)col;
+        n.pos_y = canvas_y + (n.height + gap) * (float)row;
+      }
+      request_reset_layout = true;
+      layout_dirty_ = true;
+      save_index();
+    };
     if(request_rename_selected_)
     {
       int target_note_idx = -1;
@@ -3510,6 +3561,7 @@ void App::frame_ui()
       request_cancel_draw_tools_ = false;
     }
     topbar_tooltip_text.clear();
+    if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)) note_drag_snapshot_taken = false;
     auto push_draw_snapshot = [&](const std::string &folder_key) {
       auto &u = g_draw_undo[folder_key];
       auto &r = g_draw_redo[folder_key];
@@ -3594,6 +3646,7 @@ void App::frame_ui()
       ImGui::SetNextWindowSize(ImVec2(std::max(200.0f, vp->Size.x - explorer_w), bar_h), ImGuiCond_Always);
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, explorer_bg);
       ImGui::Begin(
           "##FormatTopBar",
           nullptr,
@@ -3601,13 +3654,16 @@ void App::frame_ui()
               ImGuiWindowFlags_NoMove |
               ImGuiWindowFlags_NoResize |
               ImGuiWindowFlags_NoSavedSettings |
-              ImGuiWindowFlags_NoDocking);
-      const ImVec4 top_btn(0.20f, 0.21f, 0.23f, 1.0f);
-      const ImVec4 top_btn_hov(0.29f, 0.30f, 0.33f, 1.0f);
-      const ImVec4 top_btn_act(0.38f, 0.40f, 0.43f, 1.0f);
-      const ImVec4 top_frame(0.16f, 0.17f, 0.19f, 1.0f);
-      const ImVec4 top_frame_hov(0.24f, 0.25f, 0.27f, 1.0f);
-      const ImVec4 top_frame_act(0.31f, 0.33f, 0.36f, 1.0f);
+              ImGuiWindowFlags_NoDocking |
+              (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
+      ImGui::PopStyleColor();
+      // Blue accents close to default ImGui dark style.
+      const ImVec4 top_btn(0.26f, 0.59f, 0.98f, 0.45f);
+      const ImVec4 top_btn_hov(0.26f, 0.59f, 0.98f, 0.86f);
+      const ImVec4 top_btn_act(0.06f, 0.53f, 0.98f, 1.0f);
+      const ImVec4 top_frame(0.18f, 0.24f, 0.34f, 0.92f);
+      const ImVec4 top_frame_hov(0.22f, 0.34f, 0.52f, 0.96f);
+      const ImVec4 top_frame_act(0.12f, 0.42f, 0.74f, 1.0f);
       ImGui::PushStyleColor(ImGuiCol_Button, top_btn);
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, top_btn_hov);
       ImGui::PushStyleColor(ImGuiCol_ButtonActive, top_btn_act);
@@ -3694,6 +3750,10 @@ void App::frame_ui()
         const ImTextureID mouse_icon = get_toolbar_icon_texture("cursor.png");
         const ImTextureID draw_icon = get_toolbar_icon_texture("pencil.png");
         const ImTextureID erase_icon = get_toolbar_icon_texture("erase.png");
+        const ImTextureID clear_icon = get_toolbar_icon_texture("delete-bin.png");
+        const ImTextureID reset_icon = get_toolbar_icon_texture("focus.png");
+        const ImTextureID lock_icon = get_toolbar_icon_texture(layout_locked_ ? "unlock.png" : "lock.png");
+        const ImTextureID show_icon = get_toolbar_icon_texture(drawings_visible ? "hide.png" : "show.png");
         auto mode_button = [&](const char *id, ImTextureID icon, const char *fallback, const char *tooltip, bool active) -> bool {
           if(active)
           {
@@ -3720,6 +3780,7 @@ void App::frame_ui()
           stroke_in_progress = false;
         }
         ImGui::SameLine();
+        ImGui::BeginDisabled(!drawings_visible);
         if(mode_button("##mode_draw_icon", draw_icon, "Draw", "Draw", draw_mode))
         {
           draw_mode = true;
@@ -3734,21 +3795,57 @@ void App::frame_ui()
           stroke_in_progress = false;
         }
         ImGui::SameLine();
+        if((clear_icon
+                ? ImGui::ImageButton("##clear_draw_icon", clear_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                : ImGui::Button("Clear drawing")))
+        {
+          push_draw_snapshot(f.name);
+          g_folder_drawings[f.name].clear();
+          stroke_in_progress = false;
+          g_drawings_dirty = true;
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Clear drawing";
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if((reset_icon
+                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                : ImGui::Button("Reset pos")) &&
+           !f.notes.empty())
+        {
+          push_selection_snapshot();
+          reset_note_positions();
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Reset positions";
+        ImGui::SameLine();
+        if(lock_icon
+               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               : ImGui::Button(layout_locked_ ? "Unlock" : "Lock"))
+        {
+          layout_locked_ = !layout_locked_;
+          save_index();
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          topbar_tooltip_text = layout_locked_ ? "Unlock note moving" : "Lock note moving";
+        ImGui::SameLine();
+        if(show_icon
+               ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               : ImGui::Button(drawings_visible ? "Hide draw" : "Show draw"))
+        {
+          drawings_visible = !drawings_visible;
+          stroke_in_progress = false;
+          if(!drawings_visible)
+          {
+            draw_mode = false;
+            erase_mode = false;
+            selected_stroke_indices.clear();
+          }
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          topbar_tooltip_text = drawings_visible ? "Hide drawings" : "Show drawings";
+        ImGui::SameLine();
       }
-      const ImTextureID clear_icon = !editing_mode_ ? get_toolbar_icon_texture("delete-bin.png") : (ImTextureID)0;
       if(!editing_mode_) ImGui::ColorEdit3("##draw_color", (float *)&draw_color, ImGuiColorEditFlags_NoInputs);
       if(!editing_mode_) ImGui::SameLine();
-      if(!editing_mode_ &&
-         (clear_icon
-              ? ImGui::ImageButton("##clear_draw_icon", clear_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-              : ImGui::Button("Clear drawing")))
-      {
-        push_draw_snapshot(f.name);
-        g_folder_drawings[f.name].clear();
-        stroke_in_progress = false;
-        g_drawings_dirty = true;
-      }
-      if(!editing_mode_ && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Clear drawing";
       ImGui::PopStyleColor(8);
       ImGui::End();
       ImGui::PopStyleVar(2);
@@ -3766,6 +3863,7 @@ void App::frame_ui()
             ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking |
+            (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0) |
             ImGuiWindowFlags_NoBringToFrontOnFocus |
             ImGuiWindowFlags_NoNavFocus |
             ImGuiWindowFlags_NoBackground);
@@ -3809,17 +3907,17 @@ void App::frame_ui()
     }
     if(request_undo_draw_)
     {
-      if(!apply_sidebar_undo())
+      if(!apply_selection_undo())
       {
-        if(!apply_selection_undo()) apply_draw_undo(f.name);
+        if(!apply_sidebar_undo()) apply_draw_undo(f.name);
       }
       request_undo_draw_ = false;
     }
     if(request_redo_draw_)
     {
-      if(!apply_sidebar_redo())
+      if(!apply_selection_redo())
       {
-        if(!apply_selection_redo()) apply_draw_redo(f.name);
+        if(!apply_sidebar_redo()) apply_draw_redo(f.name);
       }
       request_redo_draw_ = false;
     }
@@ -3842,7 +3940,8 @@ void App::frame_ui()
       }
     }
 
-    if((draw_mode || erase_mode) &&
+    if(drawings_visible &&
+       (draw_mode || erase_mode) &&
        !editing_mode_ &&
        mouse_in_bg_canvas &&
        ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -3927,7 +4026,7 @@ void App::frame_ui()
     };
 
     const bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-    if(!draw_mode && !erase_mode && !editing_mode_)
+    if(drawings_visible && !draw_mode && !erase_mode && !editing_mode_)
     {
       if(notes_bg_hovered &&
          !mouse_over_note_area &&
@@ -3991,7 +4090,7 @@ void App::frame_ui()
     if(select_drag_active && ImGui::IsMouseDown(ImGuiMouseButton_Left))
     {
       const ImVec2 d(mouse.x - select_drag_last_mouse.x, mouse.y - select_drag_last_mouse.y);
-      if(std::fabs(d.x) > 0.001f || std::fabs(d.y) > 0.001f)
+      if(!layout_locked_ && (std::fabs(d.x) > 0.001f || std::fabs(d.y) > 0.001f))
       {
         for(int idx : selected_note_indices)
         {
@@ -4036,6 +4135,7 @@ void App::frame_ui()
         ++it;
     }
 
+    if(drawings_visible)
     {
       ImDrawList *dl = ImGui::GetForegroundDrawList();
       dl->PushClipRect(bg_p0, bg_p1, true);
@@ -4136,22 +4236,26 @@ void App::frame_ui()
       }
       const std::string window_id = n.title + "###FolderNote_" + note_uid;
 
+      if(request_reset_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
       if(n.has_layout)
       {
-        ImGui::SetNextWindowPos(ImVec2(n.pos_x, n.pos_y), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, n.width), std::max(140.0f, n.height)), ImGuiCond_FirstUseEver);
+        const ImGuiCond cond = request_reset_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+        ImGui::SetNextWindowPos(ImVec2(n.pos_x, n.pos_y), cond);
+        ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, n.width), std::max(140.0f, n.height)), cond);
       }
       else
       {
         const ImVec2 base(340.0f + 40.0f * (float)(ni % 3), 180.0f + 40.0f * (float)(ni % 3));
-        ImGui::SetNextWindowPos(base, ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(520.0f, 260.0f), ImGuiCond_FirstUseEver);
+        const ImGuiCond cond = request_reset_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+        ImGui::SetNextWindowPos(base, cond);
+        ImGui::SetNextWindowSize(ImVec2(520.0f, 260.0f), cond);
       }
 
       bool note_window_open = true;
       ImGuiWindowFlags note_flags =
-          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings;
+          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
+      if(layout_locked_) note_flags |= ImGuiWindowFlags_NoMove;
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
       const int folder_theme_count =
           push_folder_imgui_theme(make_note_theme(n.use_custom_color, n.color_r, n.color_g, n.color_b, ImGui::GetStyle()), ImGui::GetStyle());
@@ -4446,7 +4550,7 @@ void App::frame_ui()
       note_rects.push_back(NoteRectInfo{ni, pos, ImVec2(pos.x + size.x, pos.y + size.y)});
       if(selected_note_indices.count(ni) != 0)
       {
-        ImGui::GetForegroundDrawList()->AddRect(
+        ImGui::GetWindowDrawList()->AddRect(
             pos,
             ImVec2(pos.x + size.x, pos.y + size.y),
             ImGui::GetColorU32(with_alpha(neutral_sel, 0.95f)),
@@ -4460,7 +4564,26 @@ void App::frame_ui()
         ImGui::SetWindowSize(ImVec2(size.x, auto_h));
       }
 
-      const ImVec2 note_delta(pos.x - old_pos_x, pos.y - old_pos_y);
+      ImVec2 effective_pos = pos;
+      const bool allow_platform_windows = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+      const ImVec2 clamped_pos(
+          std::max(bg_p0.x, std::min(pos.x, std::max(bg_p0.x, bg_p1.x - size.x))),
+          std::max(bg_p0.y, std::min(pos.y, std::max(bg_p0.y, bg_p1.y - size.y))));
+      if(!allow_platform_windows &&
+         (std::fabs(clamped_pos.x - pos.x) > 0.01f || std::fabs(clamped_pos.y - pos.y) > 0.01f))
+      {
+        ImGui::SetWindowPos(window_id.c_str(), clamped_pos, ImGuiCond_Always);
+        effective_pos = clamped_pos;
+      }
+
+      const ImVec2 note_delta(effective_pos.x - old_pos_x, effective_pos.y - old_pos_y);
+      if((std::fabs(note_delta.x) > 0.01f || std::fabs(note_delta.y) > 0.01f) &&
+         ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f) &&
+         !note_drag_snapshot_taken)
+      {
+        push_selection_snapshot();
+        note_drag_snapshot_taken = true;
+      }
       if(selected_note_indices.count(ni) != 0 &&
          (std::fabs(note_delta.x) > 0.01f || std::fabs(note_delta.y) > 0.01f) &&
          ImGui::IsMouseDragging(ImGuiMouseButton_Left, 1.0f))
@@ -4470,10 +4593,10 @@ void App::frame_ui()
       }
 
       auto changed_f = [](float a, float b) { return std::fabs(a - b) > 0.5f; };
-      if(changed_f(n.pos_x, pos.x) || changed_f(n.pos_y, pos.y) || changed_f(n.width, size.x) || changed_f(n.height, auto_h) || !n.has_layout)
+      if(changed_f(n.pos_x, effective_pos.x) || changed_f(n.pos_y, effective_pos.y) || changed_f(n.width, size.x) || changed_f(n.height, auto_h) || !n.has_layout)
       {
-        n.pos_x = pos.x;
-        n.pos_y = pos.y;
+        n.pos_x = effective_pos.x;
+        n.pos_y = effective_pos.y;
         n.width = size.x;
         n.height = auto_h;
         n.has_layout = true;
@@ -4582,42 +4705,44 @@ void App::frame_ui()
     if(pending_group_mover >= 0 &&
        (std::fabs(pending_group_delta.x) > 0.01f || std::fabs(pending_group_delta.y) > 0.01f))
     {
-      push_selection_snapshot();
-      for(int idx : selected_note_indices)
+      if(!layout_locked_)
       {
-        if(idx == pending_group_mover) continue;
-        if(idx < 0 || idx >= (int)f.notes.size()) continue;
-        NoteMeta &sn = f.notes[(size_t)idx];
-        if(sn.hidden) continue;
-        sn.pos_x += pending_group_delta.x;
-        sn.pos_y += pending_group_delta.y;
-        std::string sn_uid = sn.path;
-        for(char &c : sn_uid)
+        for(int idx : selected_note_indices)
         {
-          if(c == '#') c = '_';
-        }
-        const std::string sid = sn.title + "###FolderNote_" + sn_uid;
-        ImGui::SetWindowPos(sid.c_str(), ImVec2(sn.pos_x, sn.pos_y), ImGuiCond_Always);
-        layout_dirty_ = true;
-      }
-
-      if(!selected_stroke_indices.empty())
-      {
-        push_selection_snapshot();
-        auto &folder_strokes_move = g_folder_drawings[f.name];
-        for(int si : selected_stroke_indices)
-        {
-          if(si < 0 || si >= (int)folder_strokes_move.size()) continue;
-          auto &s = folder_strokes_move[(size_t)si];
-          for(ImVec2 &pn : s.points)
+          if(idx == pending_group_mover) continue;
+          if(idx < 0 || idx >= (int)f.notes.size()) continue;
+          NoteMeta &sn = f.notes[(size_t)idx];
+          if(sn.hidden) continue;
+          sn.pos_x += pending_group_delta.x;
+          sn.pos_y += pending_group_delta.y;
+          std::string sn_uid = sn.path;
+          for(char &c : sn_uid)
           {
-            pn.x += pending_group_delta.x;
-            pn.y += pending_group_delta.y;
+            if(c == '#') c = '_';
           }
+          const std::string sid = sn.title + "###FolderNote_" + sn_uid;
+          ImGui::SetWindowPos(sid.c_str(), ImVec2(sn.pos_x, sn.pos_y), ImGuiCond_Always);
+          layout_dirty_ = true;
         }
-        g_drawings_dirty = true;
+
+        if(!selected_stroke_indices.empty())
+        {
+          auto &folder_strokes_move = g_folder_drawings[f.name];
+          for(int si : selected_stroke_indices)
+          {
+            if(si < 0 || si >= (int)folder_strokes_move.size()) continue;
+            auto &s = folder_strokes_move[(size_t)si];
+            for(ImVec2 &pn : s.points)
+            {
+              pn.x += pending_group_delta.x;
+              pn.y += pending_group_delta.y;
+            }
+          }
+          g_drawings_dirty = true;
+        }
       }
     }
+    request_reset_layout = false;
 
     if(!topbar_tooltip_text.empty())
     {
@@ -4662,6 +4787,7 @@ void App::frame_ui()
     state_file_path_.clear();
     if(request_rename_selected_) request_rename_selected_ = false;
 
+    ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520.0f, 180.0f), ImGuiCond_FirstUseEver);
     ImGui::Begin(
         "Note###NoteWindowEmpty",
@@ -4695,12 +4821,13 @@ void App::frame_ui()
   }
   else
   {
+    ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520.0f, note_window_height), ImGuiCond_FirstUseEver);
   }
 
   ImGui::SetNextWindowSizeConstraints(
-      ImVec2(320.0f, note_window_height),
-      ImVec2(FLT_MAX, note_window_height));
+      ImVec2(320.0f, 140.0f),
+      ImVec2(FLT_MAX, FLT_MAX));
 
   std::string note_window_label = note_title_ + "###NoteWindow";
   const int active_folder_theme_count = push_folder_imgui_theme(
@@ -4714,7 +4841,9 @@ void App::frame_ui()
   ImGui::Begin(
       note_window_label.c_str(),
       nullptr,
-      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
+      ImGuiWindowFlags_NoScrollbar |
+          ImGuiWindowFlags_NoScrollWithMouse |
+          (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
 
   // Right click on title bar to rename the note window title.
   static bool open_rename_popup = false;
@@ -4997,15 +5126,17 @@ void App::frame_ui()
   {
     const ImVec2 pos = ImGui::GetWindowPos();
     const ImVec2 size = ImGui::GetWindowSize();
+    const bool is_docked = ImGui::IsWindowDocked();
+    const float stored_height = is_docked ? size.y : note_window_height;
     auto changed_f = [](float a, float b) { return std::fabs(a - b) > 0.5f; };
     if(changed_f(active_note.pos_x, pos.x) || changed_f(active_note.pos_y, pos.y) ||
-       changed_f(active_note.width, size.x) || changed_f(active_note.height, note_window_height) ||
+       changed_f(active_note.width, size.x) || changed_f(active_note.height, stored_height) ||
        !active_note.has_layout)
     {
       active_note.pos_x = pos.x;
       active_note.pos_y = pos.y;
       active_note.width = size.x;
-      active_note.height = note_window_height;
+      active_note.height = stored_height;
       active_note.has_layout = true;
       layout_dirty_ = true;
     }
@@ -5035,5 +5166,14 @@ void App::frame_end()
   glClear(GL_COLOR_BUFFER_BIT);
 
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  ImGuiIO &io = ImGui::GetIO();
+  if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+  {
+    SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
+    SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+    SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+  }
   SDL_GL_SwapWindow(window_);
 }
