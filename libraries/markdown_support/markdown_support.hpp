@@ -1,0 +1,56 @@
+#pragma once
+
+#include <string>
+#include <string_view>
+#include <utility>
+
+#include <imgui.h>
+
+namespace MarkdownSupport
+{
+struct MdFormatState
+{
+  int sel_start = 0;
+  int sel_end = 0;
+  int cursor_pos = 0;
+
+  enum class Action
+  {
+    None,
+    Italic,
+    Bold,
+    Strike,
+    Code,
+    Color
+  } pending = Action::None;
+
+  ImVec4 color = ImVec4(1.0f, 0.6f, 0.2f, 1.0f);
+  int selection_anchor = 0;
+  int last_cursor_pos = 0;
+  bool pending_select_range = false;
+  int pending_sel_start = 0;
+  int pending_sel_end = 0;
+  bool typing_word_group = false;
+  bool deleting_word_group = false;
+  int last_edit_cursor = -1;
+};
+
+struct MdEditorUserData
+{
+  std::string *text = nullptr;
+  MdFormatState *fmt = nullptr;
+};
+
+void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt);
+void apply_note_quote(std::string &s, int &sel_a, int &sel_b);
+void apply_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &left, const std::string &right);
+void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &hex_color);
+std::string rgba_to_hex(ImVec4 c);
+std::pair<int, int> line_bounds_from_cursor(const std::string &text, int cursor_pos);
+bool should_push_word_granular_undo(const std::string &before, const std::string &after, MdFormatState &st);
+int md_editor_cb(ImGuiInputTextCallbackData *data);
+void normalize_input_text_buffer(std::string &s);
+bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out);
+bool render_preview_with_task_checkboxes(std::string &markdown);
+} // namespace MarkdownSupport
+

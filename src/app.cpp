@@ -1,17 +1,17 @@
 #include "app.hpp"
 #include "helpers.hpp"
 #include "markdown_sections.hpp"
+#include "markdown_support.hpp"
 #include "markdown_view.hpp"
-#include "mermaid_flowchart.hpp"
-#include "mermaid_flowchart.cpp"
+#include "note_ui.hpp"
+#include "string_utils.hpp"
+#include "tiny_json.hpp"
 
 #include <stdexcept>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
-#include <cctype>
 #include <cmath>
-#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <filesystem>
@@ -22,7 +22,6 @@
 #include <utility>
 
 #include <SDL.h>
-#include <SDL_image.h>
 #include <SDL_opengl.h>
 #include <vector>
 
@@ -30,6 +29,38 @@
 #include <imgui_internal.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
+
+using MarkdownSupport::MdEditorUserData;
+using MarkdownSupport::MdFormatState;
+using MarkdownSupport::apply_color_wrap_string;
+using MarkdownSupport::apply_note_quote;
+using MarkdownSupport::apply_wrap_string;
+using MarkdownSupport::insert_checklist_item_at_cursor;
+using MarkdownSupport::line_bounds_from_cursor;
+using MarkdownSupport::md_editor_cb;
+using MarkdownSupport::normalize_input_text_buffer;
+using MarkdownSupport::render_preview_with_task_checkboxes;
+using MarkdownSupport::rgba_to_hex;
+using MarkdownSupport::should_push_word_granular_undo;
+
+using NoteCore::clamp01f;
+using NoteCore::sanitize_note_filename;
+
+using NoteUi::clear_toolbar_icon_cache;
+using NoteUi::folder_accent_color;
+using NoteUi::get_toolbar_icon_texture;
+using NoteUi::make_note_theme;
+using NoteUi::mix_color;
+using NoteUi::push_folder_imgui_theme;
+using NoteUi::with_alpha;
+
+using TinyJson::find_matching;
+using TinyJson::json_array_objects;
+using TinyJson::json_escape;
+using TinyJson::json_find_bool;
+using TinyJson::json_find_int;
+using TinyJson::json_find_string;
+using TinyJson::json_unescape;
 
 namespace
 {
@@ -40,600 +71,6 @@ constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
 constexpr const char *kImGuiIniFile = DATA_PATH "/imgui_layout.ini";
 constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
 constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
-struct MdFormatState
-{
-  int sel_start = 0;
-  int sel_end = 0;
-  int cursor_pos = 0;
-
-  enum class Action
-  {
-    None,
-    Italic,
-    Bold,
-    Strike,
-    Code,
-    Color
-  } pending = Action::None;
-  ImVec4 color = ImVec4(1, 0.6f, 0.2f, 1); // default
-
-  int selection_anchor = 0;
-  int last_cursor_pos = 0;
-  bool pending_select_range = false;
-  int pending_sel_start = 0;
-  int pending_sel_end = 0;
-  bool typing_word_group = false;
-  bool deleting_word_group = false;
-  int last_edit_cursor = -1;
-};
-
-struct MdEditorUserData
-{
-  std::string *text = nullptr;
-  MdFormatState *fmt = nullptr;
-};
-
-static bool extract_checklist_prefix(std::string_view line, std::string &prefix_out)
-{
-  size_t i = 0;
-  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-  if(i >= line.size()) return false;
-  const size_t indent_end = i;
-
-  const char bullet = line[i];
-  if(bullet != '-' && bullet != '*') return false;
-  ++i;
-  if(i >= line.size() || line[i] != ' ') return false;
-  ++i;
-  if(i + 2 >= line.size()) return false;
-  if(line[i] != '[' || line[i + 2] != ']') return false;
-  const char mark = line[i + 1];
-  if(mark != ' ' && mark != 'x' && mark != 'X') return false;
-
-  i += 3;
-  if(i < line.size() && line[i] == ' ') ++i;
-
-  prefix_out.assign(line.substr(0, indent_end));
-  prefix_out.push_back(bullet);
-  prefix_out.append(" [ ] ");
-  return true;
-}
-
-static bool extract_quote_prefix(std::string_view line, std::string &prefix_out)
-{
-  size_t i = 0;
-  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-  if(i >= line.size()) return false;
-  const size_t indent_end = i;
-  if(line[i] != '>') return false;
-  ++i;
-  if(i < line.size() && line[i] == ' ') ++i;
-
-  prefix_out.assign(line.substr(0, indent_end));
-  prefix_out.append("> ");
-  return true;
-}
-
-static bool is_empty_checklist_line(std::string_view line)
-{
-  size_t i = 0;
-  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-  if(i >= line.size()) return false;
-  const char bullet = line[i];
-  if(bullet != '-' && bullet != '*') return false;
-  ++i;
-  if(i >= line.size() || line[i] != ' ') return false;
-  ++i;
-  if(i + 2 >= line.size()) return false;
-  if(line[i] != '[' || line[i + 2] != ']') return false;
-  const char mark = line[i + 1];
-  if(mark != ' ' && mark != 'x' && mark != 'X') return false;
-  i += 3;
-  if(i < line.size() && line[i] == ' ') ++i;
-  return trim(line.substr(i)).empty();
-}
-
-static bool is_empty_quote_line(std::string_view line)
-{
-  size_t i = 0;
-  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-  if(i >= line.size() || line[i] != '>') return false;
-  ++i;
-  if(i < line.size() && line[i] == ' ') ++i;
-  return trim(line.substr(i)).empty();
-}
-
-static void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt)
-{
-  int p = std::max(0, std::min(fmt.cursor_pos, (int)text.size()));
-  std::string ins = "- [ ] ";
-  if(p > 0 && text[(size_t)p - 1] != '\n') ins = "\n" + ins;
-  text.insert((size_t)p, ins);
-  p += (int)ins.size();
-  fmt.cursor_pos = p;
-  fmt.sel_start = p;
-  fmt.sel_end = p;
-}
-
-static void apply_note_quote(std::string &s, int &sel_a, int &sel_b)
-{
-  int a = sel_a, b = sel_b;
-  if(a == b) return;
-  if(a > b) std::swap(a, b);
-
-  a = std::max(0, std::min(a, (int)s.size()));
-  b = std::max(0, std::min(b, (int)s.size()));
-
-  // Expand to full lines for nicer behavior
-  while(a > 0 && s[(size_t)a - 1] != '\n') --a;
-  while(b < (int)s.size() && s[(size_t)b] != '\n') ++b;
-
-  // Count lines and insert "> " at each line start.
-  // We insert from start to end while tracking the shifting offset.
-  int offset = 0;
-  for(int i = a; i <= b;)
-  {
-    const int insert_pos = i + offset;
-    s.insert((size_t)insert_pos, "> ");
-    offset += 2;
-
-    // Move to next line start
-    size_t nl = s.find('\n', (size_t)(insert_pos + 2));
-    if(nl == std::string::npos) break;
-    i = (int)nl + 1 - offset; // convert back to original coordinate space
-    if(i > b) break;
-  }
-
-  // Update selection to include the inserted prefixes
-  sel_a = a;
-  sel_b = b + offset;
-}
-
-static void apply_wrap_string(std::string &s, int &sel_a, int &sel_b,
-                              const std::string &left, const std::string &right)
-{
-  int a = sel_a, b = sel_b;
-  if(a == b) return;
-  if(a > b) std::swap(a, b);
-
-  a = std::max(0, std::min(a, (int)s.size()));
-  b = std::max(0, std::min(b, (int)s.size()));
-
-  // Insert right first (at higher index)
-  s.insert((size_t)b, right);
-  s.insert((size_t)a, left);
-
-  // Update selection to remain around the original content
-  a += (int)left.size();
-  b += (int)left.size();
-  sel_a = a;
-  sel_b = b;
-}
-
-static void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &hex_color)
-{
-  int a = sel_a, b = sel_b;
-  if(a == b) return;
-  if(a > b) std::swap(a, b);
-  a = std::max(0, std::min(a, (int)s.size()));
-  b = std::max(0, std::min(b, (int)s.size()));
-
-  // Keep trailing EOL outside color tags to avoid accidental visual line jumps.
-  while(b > a && (s[(size_t)b - 1] == '\n' || s[(size_t)b - 1] == '\r')) --b;
-  if(a == b) return;
-
-  sel_a = a;
-  sel_b = b;
-  apply_wrap_string(s, sel_a, sel_b, "[color=" + hex_color + "]", "[/color]");
-}
-
-static std::string rgba_to_hex(ImVec4 c)
-{
-  auto clamp01 = [](float v) { return v < 0 ? 0.f : (v > 1 ? 1.f : v); };
-  int r = (int)(clamp01(c.x) * 255.0f + 0.5f);
-  int g = (int)(clamp01(c.y) * 255.0f + 0.5f);
-  int b = (int)(clamp01(c.z) * 255.0f + 0.5f);
-
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", r, g, b);
-  return std::string(buf);
-}
-
-static std::pair<int, int> line_bounds_from_cursor(const std::string &text, int cursor_pos)
-{
-  int c = std::max(0, std::min(cursor_pos, (int)text.size()));
-  int line_start = c;
-  while(line_start > 0 && text[(size_t)line_start - 1] != '\n') --line_start;
-
-  int line_end = c;
-  while(line_end < (int)text.size() && text[(size_t)line_end] != '\n') ++line_end;
-  return {line_start, line_end};
-}
-
-static bool is_word_char(char c)
-{
-  const unsigned char uc = (unsigned char)c;
-  return std::isalnum(uc) || c == '_';
-}
-
-static bool should_push_word_granular_undo(
-    const std::string &before,
-    const std::string &after,
-    MdFormatState &st)
-{
-  const size_t nb = before.size();
-  const size_t na = after.size();
-
-  auto reset_groups = [&]() {
-    st.typing_word_group = false;
-    st.deleting_word_group = false;
-  };
-
-  if(before == after) return false;
-
-  // Find first differing index.
-  size_t i = 0;
-  while(i < nb && i < na && before[i] == after[i]) ++i;
-
-  // Single-char insert.
-  if(na == nb + 1)
-  {
-    const char c = after[i];
-    st.deleting_word_group = false;
-    if(!is_word_char(c))
-    {
-      st.typing_word_group = false;
-      st.last_edit_cursor = st.cursor_pos;
-      return false;
-    }
-
-    const bool contiguous = (st.last_edit_cursor >= 0 && st.cursor_pos == st.last_edit_cursor + 1);
-    const bool start_group = !st.typing_word_group || !contiguous;
-    st.typing_word_group = true;
-    st.last_edit_cursor = st.cursor_pos;
-    return start_group;
-  }
-
-  // Single-char delete.
-  if(nb == na + 1)
-  {
-    const char c = before[i];
-    st.typing_word_group = false;
-    if(!is_word_char(c))
-    {
-      st.deleting_word_group = false;
-      st.last_edit_cursor = st.cursor_pos;
-      return false;
-    }
-
-    const bool contiguous =
-        (st.last_edit_cursor >= 0) &&
-        (st.cursor_pos == st.last_edit_cursor || st.cursor_pos == st.last_edit_cursor - 1);
-    const bool start_group = !st.deleting_word_group || !contiguous;
-    st.deleting_word_group = true;
-    st.last_edit_cursor = st.cursor_pos;
-    return start_group;
-  }
-
-  // Paste/replace/multi-char edit: keep as single undo step.
-  reset_groups();
-  st.last_edit_cursor = st.cursor_pos;
-  return true;
-}
-
-static int md_editor_cb(ImGuiInputTextCallbackData *data)
-{
-  auto *st = static_cast<MdFormatState *>(data->UserData);
-
-  if(st->pending_select_range)
-  {
-    int a = std::max(0, std::min(st->pending_sel_start, data->BufTextLen));
-    int b = std::max(0, std::min(st->pending_sel_end, data->BufTextLen));
-    data->SelectionStart = a;
-    data->SelectionEnd = b;
-    data->CursorPos = b;
-    st->sel_start = a;
-    st->sel_end = b;
-    st->cursor_pos = b;
-    st->pending_select_range = false;
-  }
-
-  // Track selection continuously
-  st->sel_start = data->SelectionStart;
-  st->sel_end = data->SelectionEnd;
-  st->cursor_pos = data->CursorPos;
-  if(st->sel_start == st->sel_end) st->selection_anchor = st->cursor_pos;
-  st->last_cursor_pos = st->cursor_pos;
-
-  if(data->EventFlag == ImGuiInputTextFlags_CallbackEdit)
-  {
-    const int c = data->CursorPos;
-    if(c > 0 && data->Buf[(size_t)c - 1] == '\n')
-    {
-      const int line_end = c - 1;
-      int line_start = line_end - 1;
-      while(line_start >= 0 && data->Buf[(size_t)line_start] != '\n') --line_start;
-      ++line_start;
-
-      std::string_view prev(data->Buf + line_start, (size_t)(line_end - line_start));
-      std::string prefix;
-      if(extract_checklist_prefix(prev, prefix))
-      {
-        if(is_empty_checklist_line(prev))
-        {
-          // Enter on empty checklist item exits the list: remove the marker from previous line.
-          data->DeleteChars(line_start, line_end - line_start);
-          data->CursorPos = line_start + 1; // keep cursor after the newline
-          data->SelectionStart = data->SelectionEnd = data->CursorPos;
-          st->cursor_pos = data->CursorPos;
-          st->sel_start = st->sel_end = st->cursor_pos;
-        }
-        else
-        {
-          data->InsertChars(c, prefix.c_str());
-          data->CursorPos = c + (int)prefix.size();
-          data->SelectionStart = data->SelectionEnd = data->CursorPos;
-          st->cursor_pos = data->CursorPos;
-          st->sel_start = st->sel_end = st->cursor_pos;
-        }
-      }
-      else if(extract_quote_prefix(prev, prefix))
-      {
-        if(is_empty_quote_line(prev))
-        {
-          // Enter on empty quote line exits quote mode.
-          data->DeleteChars(line_start, line_end - line_start);
-          data->CursorPos = line_start + 1;
-          data->SelectionStart = data->SelectionEnd = data->CursorPos;
-          st->cursor_pos = data->CursorPos;
-          st->sel_start = st->sel_end = st->cursor_pos;
-        }
-        else
-        {
-          data->InsertChars(c, prefix.c_str());
-          data->CursorPos = c + (int)prefix.size();
-          data->SelectionStart = data->SelectionEnd = data->CursorPos;
-          st->cursor_pos = data->CursorPos;
-          st->sel_start = st->sel_end = st->cursor_pos;
-        }
-      }
-    }
-  }
-
-  // // Apply a pending action inside the callback (safe)
-  // if(st->pending != MdFormatState::Action::None)
-  // {
-  //   switch(st->pending)
-  //   {
-  //   case MdFormatState::Action::Italic:
-  //     apply_wrap(data, "*", "*");
-  //     break;
-  //   case MdFormatState::Action::Bold:
-  //     apply_wrap(data, "**", "**");
-  //     break;
-  //   case MdFormatState::Action::Strike:
-  //     apply_wrap(data, "~~", "~~");
-  //     break;
-  //   case MdFormatState::Action::Code:
-  //     apply_wrap(data, "`", "`");
-  //     break;
-  //   case MdFormatState::Action::Color: {
-  //     const std::string hex = rgba_to_hex(st->color);
-  //     const std::string left = "[color=" + hex + "]";
-  //     const char *right = "[/color]";
-  //     apply_wrap(data, left.c_str(), right);
-  //   }
-  //   break;
-  //   default:
-  //     break;
-  //   }
-
-  //   st->pending = MdFormatState::Action::None;
-  // }
-
-  return 0;
-}
-
-static void normalize_input_text_buffer(std::string &s)
-{
-  // ImGui edits the underlying char buffer directly; keep std::string::size() in sync.
-  if(s.empty()) return;
-  const size_t max_len = s.capacity() + 1;
-  const size_t n = strnlen(s.data(), max_len);
-  if(n <= s.size() || n <= s.capacity()) s.resize(n);
-}
-
-static std::string sanitize_note_filename(std::string title)
-{
-  for(char &c : title)
-  {
-    const bool bad =
-        c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
-        c == '"' || c == '<' || c == '>' || c == '|';
-    if(bad) c = '_';
-  }
-
-  auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-  while(!title.empty() && is_space(title.front())) title.erase(title.begin());
-  while(!title.empty() && is_space(title.back())) title.pop_back();
-  if(title.empty()) title = "note";
-  return title;
-}
-
-static std::string json_escape(std::string_view s)
-{
-  std::string out;
-  out.reserve(s.size() + 8);
-  for(char c : s)
-  {
-    switch(c)
-    {
-    case '\\':
-      out += "\\\\";
-      break;
-    case '"':
-      out += "\\\"";
-      break;
-    case '\n':
-      out += "\\n";
-      break;
-    case '\r':
-      out += "\\r";
-      break;
-    case '\t':
-      out += "\\t";
-      break;
-    default:
-      out.push_back(c);
-      break;
-    }
-  }
-  return out;
-}
-
-static std::string json_unescape(std::string_view s)
-{
-  std::string out;
-  out.reserve(s.size());
-  for(size_t i = 0; i < s.size(); ++i)
-  {
-    if(s[i] == '\\' && i + 1 < s.size())
-    {
-      char n = s[i + 1];
-      if(n == 'n')
-        out.push_back('\n');
-      else if(n == 'r')
-        out.push_back('\r');
-      else if(n == 't')
-        out.push_back('\t');
-      else
-        out.push_back(n);
-      ++i;
-    }
-    else
-    {
-      out.push_back(s[i]);
-    }
-  }
-  return out;
-}
-
-static size_t find_matching(std::string_view s, size_t start, char open, char close)
-{
-  if(start >= s.size() || s[start] != open) return std::string::npos;
-  int depth = 0;
-  bool in_string = false;
-  for(size_t i = start; i < s.size(); ++i)
-  {
-    char c = s[i];
-    if(c == '"' && (i == 0 || s[i - 1] != '\\')) in_string = !in_string;
-    if(in_string) continue;
-    if(c == open)
-      ++depth;
-    else if(c == close)
-    {
-      --depth;
-      if(depth == 0) return i;
-    }
-  }
-  return std::string::npos;
-}
-
-static std::string json_find_string(std::string_view obj, std::string_view key)
-{
-  const std::string pat = "\"" + std::string(key) + "\"";
-  size_t k = obj.find(pat);
-  if(k == std::string::npos) return {};
-  size_t q1 = obj.find('"', k + pat.size());
-  if(q1 == std::string::npos) return {};
-  size_t q2 = q1 + 1;
-  while(q2 < obj.size())
-  {
-    if(obj[q2] == '"' && obj[q2 - 1] != '\\') break;
-    ++q2;
-  }
-  if(q2 >= obj.size()) return {};
-  return json_unescape(obj.substr(q1 + 1, q2 - q1 - 1));
-}
-
-static int json_find_int(std::string_view obj, std::string_view key, int defv)
-{
-  const std::string pat = "\"" + std::string(key) + "\"";
-  size_t k = obj.find(pat);
-  if(k == std::string::npos) return defv;
-  size_t c = obj.find(':', k + pat.size());
-  if(c == std::string::npos) return defv;
-  size_t b = c + 1;
-  while(b < obj.size() && (obj[b] == ' ' || obj[b] == '\t' || obj[b] == '\n' || obj[b] == '\r')) ++b;
-  size_t e = b;
-  while(e < obj.size() && (obj[e] == '-' || (obj[e] >= '0' && obj[e] <= '9'))) ++e;
-  if(e <= b) return defv;
-  return std::atoi(std::string(obj.substr(b, e - b)).c_str());
-}
-
-static bool json_find_bool(std::string_view obj, std::string_view key, bool defv)
-{
-  const std::string pat = "\"" + std::string(key) + "\"";
-  size_t k = obj.find(pat);
-  if(k == std::string::npos) return defv;
-  size_t c = obj.find(':', k + pat.size());
-  if(c == std::string::npos) return defv;
-  size_t b = c + 1;
-  while(b < obj.size() && (obj[b] == ' ' || obj[b] == '\t' || obj[b] == '\n' || obj[b] == '\r')) ++b;
-  if(obj.substr(b, 4) == "true") return true;
-  if(obj.substr(b, 5) == "false") return false;
-  return defv;
-}
-
-static std::vector<std::string_view> json_array_objects(std::string_view arr)
-{
-  std::vector<std::string_view> out;
-  size_t p = 0;
-  while(p < arr.size())
-  {
-    size_t b = arr.find('{', p);
-    if(b == std::string::npos) break;
-    size_t e = find_matching(arr, b, '{', '}');
-    if(e == std::string::npos) break;
-    out.push_back(arr.substr(b, e - b + 1));
-    p = e + 1;
-  }
-  return out;
-}
-
-static bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out)
-{
-  size_t i = 0;
-  while(i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
-
-  if(i >= line.size() || (line[i] != '-' && line[i] != '*')) return false;
-  ++i;
-  if(i >= line.size() || line[i] != ' ') return false;
-  ++i;
-  if(i + 2 >= line.size()) return false;
-  if(line[i] != '[' || line[i + 2] != ']') return false;
-
-  const char mark = line[i + 1];
-  if(mark != ' ' && mark != 'x' && mark != 'X') return false;
-
-  check_col_out = i + 1;
-  i += 3;
-  if(i < line.size() && line[i] == ' ') ++i;
-  label_out = line.substr(i);
-  return true;
-}
-
-struct MermaidPieSlice
-{
-  std::string label;
-  float value = 0.0f;
-};
-
-struct MermaidPieChart
-{
-  std::string title;
-  std::vector<MermaidPieSlice> slices;
-};
 
 struct FreeStroke
 {
@@ -642,52 +79,16 @@ struct FreeStroke
   ImVec4 color = ImVec4(1.0f, 0.3f, 0.1f, 1.0f);
 };
 
-static std::unordered_map<std::string, std::vector<FreeStroke>> g_folder_drawings;
-static std::unordered_map<std::string, std::vector<std::vector<FreeStroke>>> g_draw_undo;
-static std::unordered_map<std::string, std::vector<std::vector<FreeStroke>>> g_draw_redo;
-static std::unordered_set<std::string> g_drawings_legacy_checked;
-static bool g_drawings_dirty = false;
-static bool g_has_copied_note = false;
-static std::string g_copied_note_title;
-static std::string g_copied_note_content;
 struct CopiedNoteItem
 {
   std::string title;
   std::string content;
 };
+
 struct CopiedFolderEntry
 {
-  std::string rel_path; // "" for root, otherwise "/child..."
+  std::string rel_path;
   std::vector<CopiedNoteItem> notes;
-};
-static std::vector<CopiedNoteItem> g_copied_notes_batch;
-static bool g_has_copied_folder = false;
-static std::string g_copied_folder_root_name;
-static std::vector<CopiedFolderEntry> g_copied_folder_entries;
-static bool g_clipboard_dirty = false;
-static std::unordered_map<std::string, GLuint> g_toolbar_icon_cache;
-
-static float dist2(ImVec2 a, ImVec2 b)
-{
-  const float dx = a.x - b.x;
-  const float dy = a.y - b.y;
-  return dx * dx + dy * dy;
-}
-
-static float clamp01f(float v)
-{
-  if(v < 0.0f) return 0.0f;
-  if(v > 1.0f) return 1.0f;
-  return v;
-}
-
-struct NoteTheme
-{
-  ImVec4 window_bg;
-  ImVec4 title_bg;
-  ImVec4 title_bg_active;
-  ImVec4 title_bg_collapsed;
-  ImVec4 border;
 };
 
 struct SidebarFlash
@@ -696,140 +97,28 @@ struct SidebarFlash
   double until = 0.0;
 };
 
-static ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
+std::unordered_map<std::string, std::vector<FreeStroke>> g_folder_drawings;
+std::unordered_map<std::string, std::vector<std::vector<FreeStroke>>> g_draw_undo;
+std::unordered_map<std::string, std::vector<std::vector<FreeStroke>>> g_draw_redo;
+std::unordered_set<std::string> g_drawings_legacy_checked;
+bool g_drawings_dirty = false;
+bool g_has_copied_note = false;
+std::string g_copied_note_title;
+std::string g_copied_note_content;
+std::vector<CopiedNoteItem> g_copied_notes_batch;
+bool g_has_copied_folder = false;
+std::string g_copied_folder_root_name;
+std::vector<CopiedFolderEntry> g_copied_folder_entries;
+bool g_clipboard_dirty = false;
+
+float dist2(ImVec2 a, ImVec2 b)
 {
-  t = clamp01f(t);
-  return ImVec4(
-      a.x + (b.x - a.x) * t,
-      a.y + (b.y - a.y) * t,
-      a.z + (b.z - a.z) * t,
-      a.w + (b.w - a.w) * t);
+  const float dx = a.x - b.x;
+  const float dy = a.y - b.y;
+  return dx * dx + dy * dy;
 }
 
-static ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
-{
-  if(use_custom_color) return ImVec4(clamp01f(color_r), clamp01f(color_g), clamp01f(color_b), 1.0f);
-  (void)style;
-  return ImVec4(0.26f, 0.59f, 0.98f, 1.0f); // ImGui classic default blue
-}
-
-static NoteTheme make_note_theme(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
-{
-  const ImVec4 accent = folder_accent_color(use_custom_color, color_r, color_g, color_b, style);
-  const ImVec4 base_bg = style.Colors[ImGuiCol_WindowBg];
-  const ImVec4 border = style.Colors[ImGuiCol_Border];
-
-  NoteTheme t;
-  t.window_bg = mix_color(base_bg, accent, 0.14f);
-  t.window_bg.w = base_bg.w;
-  t.title_bg = mix_color(base_bg, accent, 0.44f);
-  t.title_bg.w = 1.0f;
-  t.title_bg_active = mix_color(base_bg, accent, 0.58f);
-  t.title_bg_active.w = 1.0f;
-  t.title_bg_collapsed = mix_color(base_bg, accent, 0.34f);
-  t.title_bg_collapsed.w = 1.0f;
-  t.border = mix_color(border, accent, 0.50f);
-  t.border.w = 1.0f;
-  return t;
-}
-
-static ImVec4 with_alpha(ImVec4 c, float a)
-{
-  c.w = a;
-  return c;
-}
-
-static ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
-{
-  if(icon_name.empty()) return (ImTextureID)0;
-  std::string key(icon_name);
-  auto it = g_toolbar_icon_cache.find(key);
-  if(it != g_toolbar_icon_cache.end()) return (ImTextureID)(uintptr_t)it->second;
-
-  static bool img_ready = []() {
-    IMG_Init(IMG_INIT_PNG);
-    return true;
-  }();
-  (void)img_ready;
-
-  const std::filesystem::path p = std::filesystem::path(ASSETS_PATH) / "icons" / key;
-  SDL_Surface *loaded = IMG_Load(p.string().c_str());
-  if(!loaded) return (ImTextureID)0;
-  SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
-  SDL_FreeSurface(loaded);
-  if(!rgba) return (ImTextureID)0;
-  // Force toolbar icons to white monochrome while preserving alpha.
-  {
-    Uint8 *px = static_cast<Uint8 *>(rgba->pixels);
-    const int count = rgba->w * rgba->h;
-    for(int i = 0; i < count; ++i)
-    {
-      Uint8 *p4 = px + i * 4; // RGBA32
-      if(p4[3] == 0) continue;
-      p4[0] = 255;
-      p4[1] = 255;
-      p4[2] = 255;
-    }
-  }
-
-  GLuint tex = 0;
-  glGenTextures(1, &tex);
-  if(tex == 0)
-  {
-    SDL_FreeSurface(rgba);
-    return (ImTextureID)0;
-  }
-  glBindTexture(GL_TEXTURE_2D, tex);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
-  glBindTexture(GL_TEXTURE_2D, 0);
-  SDL_FreeSurface(rgba);
-
-  g_toolbar_icon_cache.emplace(key, tex);
-  return (ImTextureID)(uintptr_t)tex;
-}
-
-static int push_folder_imgui_theme(const NoteTheme &nt, const ImGuiStyle &style)
-{
-  const ImVec4 accent = nt.title_bg_active;
-  ImVec4 soft = mix_color(nt.window_bg, accent, 0.35f);
-  ImVec4 soft_hover = mix_color(nt.window_bg, accent, 0.50f);
-  ImVec4 soft_active = mix_color(nt.window_bg, accent, 0.62f);
-
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, nt.window_bg);
-  ImGui::PushStyleColor(ImGuiCol_TitleBg, nt.title_bg);
-  ImGui::PushStyleColor(ImGuiCol_TitleBgActive, nt.title_bg_active);
-  ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, nt.title_bg_collapsed);
-  ImGui::PushStyleColor(ImGuiCol_Border, nt.border);
-
-  ImGui::PushStyleColor(ImGuiCol_FrameBg, soft);
-  ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, soft_hover);
-  ImGui::PushStyleColor(ImGuiCol_FrameBgActive, soft_active);
-  ImGui::PushStyleColor(ImGuiCol_CheckMark, mix_color(accent, ImVec4(1, 1, 1, 1), 0.35f));
-
-  ImGui::PushStyleColor(ImGuiCol_Button, soft);
-  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, soft_hover);
-  ImGui::PushStyleColor(ImGuiCol_ButtonActive, soft_active);
-
-  ImGui::PushStyleColor(ImGuiCol_Header, soft);
-  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, soft_hover);
-  ImGui::PushStyleColor(ImGuiCol_HeaderActive, soft_active);
-
-  ImGui::PushStyleColor(ImGuiCol_Tab, mix_color(style.Colors[ImGuiCol_Tab], accent, 0.45f));
-  ImGui::PushStyleColor(ImGuiCol_TabHovered, mix_color(style.Colors[ImGuiCol_TabHovered], accent, 0.45f));
-  ImGui::PushStyleColor(ImGuiCol_TabActive, mix_color(style.Colors[ImGuiCol_TabActive], accent, 0.45f));
-
-  ImGui::PushStyleColor(ImGuiCol_SliderGrab, mix_color(accent, ImVec4(1, 1, 1, 1), 0.22f));
-  ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, mix_color(accent, ImVec4(1, 1, 1, 1), 0.35f));
-
-  return 20;
-}
-
-static void load_drawings_state()
+void load_drawings_state()
 {
   g_folder_drawings.clear();
   g_draw_undo.clear();
@@ -859,7 +148,10 @@ static void load_drawings_state()
 
     std::istringstream hs(line.substr(2));
     float thickness = 2.2f;
-    float cr = 1.0f, cg = 0.2f, cb = 0.2f, ca = 1.0f;
+    float cr = 1.0f;
+    float cg = 0.2f;
+    float cb = 0.2f;
+    float ca = 1.0f;
     int count = 0;
     if(!(hs >> thickness)) continue;
 
@@ -877,9 +169,8 @@ static void load_drawings_state()
 
     FreeStroke s;
     s.thickness = thickness;
-    // Keep strokes clearly visible even if older files saved very low alpha.
     s.color = ImVec4(clamp01f(cr), clamp01f(cg), clamp01f(cb), std::max(0.75f, clamp01f(ca)));
-    s.points.reserve((size_t)count);
+    s.points.reserve(static_cast<size_t>(count));
 
     for(int i = 0; i < count; ++i)
     {
@@ -902,15 +193,13 @@ static void load_drawings_state()
   g_drawings_dirty = false;
 }
 
-static void save_drawings_state()
+void save_drawings_state()
 {
   std::ofstream out(kDrawingsFile, std::ios::trunc);
   if(!out) return;
 
-  for(const auto &kv : g_folder_drawings)
+  for(const auto &[folder, strokes] : g_folder_drawings)
   {
-    const std::string &folder = kv.first;
-    const auto &strokes = kv.second;
     if(strokes.empty()) continue;
 
     out << "F\t" << json_escape(folder) << "\n";
@@ -933,7 +222,7 @@ static void save_drawings_state()
   g_drawings_dirty = false;
 }
 
-static void load_note_clipboard()
+void load_note_clipboard()
 {
   g_has_copied_note = false;
   g_copied_note_title.clear();
@@ -942,6 +231,7 @@ static void load_note_clipboard()
 
   std::ifstream in(kClipboardFile, std::ios::binary);
   if(!in) return;
+
   const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   g_has_copied_note = json_find_bool(doc, "has_note", false);
   g_copied_note_title = json_find_string(doc, "title");
@@ -954,7 +244,7 @@ static void load_note_clipboard()
   g_clipboard_dirty = false;
 }
 
-static void save_note_clipboard()
+void save_note_clipboard()
 {
   std::ofstream out(kClipboardFile, std::ios::trunc);
   if(!out) return;
@@ -966,414 +256,6 @@ static void save_note_clipboard()
   out << "}\n";
   g_clipboard_dirty = false;
 }
-
-static bool parse_mermaid_pie(std::string_view body, MermaidPieChart &out);
-static void render_mermaid_pie_chart(const MermaidPieChart &chart, int id);
-
-static std::string to_lower_copy(std::string_view s)
-{
-  std::string out(s);
-  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-  return out;
-}
-
-static bool is_known_mermaid_type(std::string_view token)
-{
-  const std::string t = to_lower_copy(token);
-  return t == "flowchart" || t == "graph" ||
-         t == "sequencediagram" ||
-         t == "classdiagram" ||
-         t == "statediagram" || t == "statediagram-v2" ||
-         t == "erdiagram" ||
-         t == "journey" ||
-         t == "gantt" ||
-         t == "pie" ||
-         t == "quadrantchart" ||
-         t == "requirementdiagram" ||
-         t == "gitgraph" ||
-         t == "c4context" || t == "c4container" || t == "c4component" || t == "c4dynamic" || t == "c4deployment" ||
-         t == "mindmap" ||
-         t == "timeline" ||
-         t == "zenuml" ||
-         t == "sankey-beta" ||
-         t == "xychart-beta" ||
-         t == "block-beta" ||
-         t == "packet-beta" ||
-         t == "kanban" ||
-         t == "architecture-beta" ||
-         t == "radar-beta" ||
-         t == "treemap";
-}
-
-static bool detect_mermaid_type(std::string_view body, std::string &type_out)
-{
-  size_t p = 0;
-  while(p < body.size())
-  {
-    size_t e = body.find('\n', p);
-    if(e == std::string_view::npos) e = body.size();
-    std::string_view line = trim(body.substr(p, e - p));
-    p = (e < body.size()) ? e + 1 : e;
-
-    if(line.empty()) continue;
-    if(starts_with(line, "%%")) continue;  // comment
-    if(starts_with(line, "%%{")) continue; // init block
-
-    size_t sp = line.find_first_of(" \t");
-    std::string_view token = (sp == std::string_view::npos) ? line : line.substr(0, sp);
-    if(!is_known_mermaid_type(token)) return false;
-    type_out = std::string(token);
-    return true;
-  }
-  return false;
-}
-
-static void render_mermaid_placeholder(std::string_view type, std::string_view body, int id)
-{
-  ImGui::PushID(id);
-  ImGui::BeginGroup();
-  ImGui::Text("Mermaid: %.*s", (int)type.size(), type.data());
-  ImGui::Separator();
-  ImGui::TextWrapped("%.*s", (int)body.size(), body.data());
-  ImGui::EndGroup();
-  ImGui::PopID();
-}
-
-static void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
-{
-  const std::string mt = to_lower_copy(mermaid_type);
-  if(mt == "pie")
-  {
-    MermaidPieChart pie;
-    if(parse_mermaid_pie(body, pie))
-      render_mermaid_pie_chart(pie, id);
-    else
-      render_mermaid_placeholder(mermaid_type, body, id);
-    return;
-  }
-
-  if(mt == "flowchart" || mt == "graph")
-  {
-    MermaidFlowchart::Graph g;
-    if(MermaidFlowchart::parse(body, g))
-      MermaidFlowchart::render(g, id);
-    else
-      render_mermaid_placeholder(mermaid_type, body, id);
-    return;
-  }
-
-  render_mermaid_placeholder(mermaid_type, body, id);
-}
-
-static bool parse_mermaid_pie(std::string_view body, MermaidPieChart &out)
-{
-  out = MermaidPieChart{};
-  bool saw_pie = false;
-
-  size_t p = 0;
-  while(p < body.size())
-  {
-    size_t e = body.find('\n', p);
-    if(e == std::string_view::npos) e = body.size();
-    std::string_view line = trim(body.substr(p, e - p));
-    p = (e < body.size()) ? e + 1 : e;
-
-    if(line.empty()) continue;
-
-    if(!saw_pie)
-    {
-      if(!starts_with(line, "pie")) return false;
-      saw_pie = true;
-      std::string_view rest = trim(line.substr(3));
-      if(starts_with(rest, "title "))
-        out.title = std::string(trim(rest.substr(6)));
-      continue;
-    }
-
-    if(starts_with(line, "title "))
-    {
-      out.title = std::string(trim(line.substr(6)));
-      continue;
-    }
-
-    size_t col = line.find(':');
-    if(col == std::string_view::npos) continue;
-
-    std::string_view left = trim(line.substr(0, col));
-    std::string_view right = trim(line.substr(col + 1));
-    if(left.empty() || right.empty()) continue;
-
-    if(left.size() >= 2 && left.front() == '"' && left.back() == '"')
-      left = left.substr(1, left.size() - 2);
-
-    std::string right_s(right);
-    char *end = nullptr;
-    float v = std::strtof(right_s.c_str(), &end);
-    if(end == right_s.c_str()) continue;
-    if(v <= 0.0f) continue;
-
-    out.slices.push_back({std::string(left), v});
-  }
-
-  return saw_pie && !out.slices.empty();
-}
-
-static void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
-{
-  if(!chart.title.empty()) ImGui::TextUnformatted(chart.title.c_str());
-
-  const float avail_w = ImGui::GetContentRegionAvail().x;
-  const float chart_w = std::floor(std::max(120.0f, std::min(240.0f, avail_w * 0.45f)));
-  const float chart_h = chart_w;
-
-  ImGui::PushID(id);
-  ImGui::BeginGroup();
-  const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##pie_canvas", ImVec2(chart_w, chart_h));
-  ImGui::EndGroup();
-
-  ImGui::SameLine();
-  ImGui::BeginGroup();
-
-  const float radius = chart_w * 0.5f - 2.0f;
-  const ImVec2 center(canvas_pos.x + chart_w * 0.5f, canvas_pos.y + chart_h * 0.5f);
-  ImDrawList *dl = ImGui::GetWindowDrawList();
-
-  float total = 0.0f;
-  for(const auto &s : chart.slices) total += s.value;
-  if(total <= 0.0f) total = 1.0f;
-
-  float a0 = -3.14159265f * 0.5f;
-  for(size_t i = 0; i < chart.slices.size(); ++i)
-  {
-    const auto &s = chart.slices[i];
-    const float frac = s.value / total;
-    const float a1 = a0 + frac * 2.0f * 3.14159265f;
-
-    float r = 0, g = 0, b = 0;
-    ImGui::ColorConvertHSVtoRGB((float)i / std::max(1.0f, (float)chart.slices.size()), 0.65f, 0.95f, r, g, b);
-    const ImU32 col = ImGui::GetColorU32(ImVec4(r, g, b, 1.0f));
-
-    const int seg = std::max(6, (int)(36.0f * frac));
-    std::vector<ImVec2> pts;
-    pts.reserve((size_t)seg + 2);
-    pts.push_back(center);
-    for(int j = 0; j <= seg; ++j)
-    {
-      const float t = a0 + (a1 - a0) * ((float)j / (float)seg);
-      pts.push_back(ImVec2(center.x + std::cos(t) * radius, center.y + std::sin(t) * radius));
-    }
-    dl->AddConvexPolyFilled(pts.data(), (int)pts.size(), col);
-
-    ImGui::PushID((int)i);
-    ImGui::ColorButton("##c", ImVec4(r, g, b, 1.0f), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(10, 10));
-    ImGui::SameLine();
-    ImGui::Text("%s : %.2f", s.label.c_str(), s.value);
-    ImGui::PopID();
-
-    a0 = a1;
-  }
-
-  dl->AddCircle(center, radius, ImGui::GetColorU32(ImGuiCol_Border), 0, 1.0f);
-
-  ImGui::EndGroup();
-  ImGui::PopID();
-}
-
-static bool render_preview_with_task_checkboxes(std::string &markdown)
-{
-  bool changed = false;
-  std::string normal_chunk;
-  normal_chunk.reserve(markdown.size());
-  struct HeaderUi
-  {
-    int level = 0;
-    bool open = false;
-  };
-  std::vector<HeaderUi> header_stack;
-
-  auto flush_chunk = [&]() {
-    if(normal_chunk.empty()) return;
-    MarkdownView::render(normal_chunk);
-    normal_chunk.clear();
-  };
-
-  auto all_headers_open = [&]() -> bool {
-    for(const auto &h : header_stack)
-    {
-      if(!h.open) return false;
-    }
-    return true;
-  };
-
-  size_t pos = 0;
-  while(pos < markdown.size())
-  {
-    const size_t line_start = pos;
-    size_t line_end = markdown.find('\n', pos);
-    const bool has_newline = (line_end != std::string::npos);
-    if(!has_newline) line_end = markdown.size();
-
-    std::string_view line(markdown.data() + line_start, line_end - line_start);
-    std::string_view tline = trim(line);
-
-    int heading_level = 0;
-    std::string_view heading_title;
-    if(parse_heading_line(line, heading_level, heading_title))
-    {
-      flush_chunk();
-      while(!header_stack.empty() && header_stack.back().level >= heading_level)
-      {
-        if(header_stack.back().open) ImGui::TreePop();
-        header_stack.pop_back();
-      }
-      // If any parent header is closed, nested headers must stay hidden too.
-      if(!all_headers_open())
-      {
-        pos = has_newline ? line_end + 1 : line_end;
-        continue;
-      }
-      ImGuiTreeNodeFlags hf = ImGuiTreeNodeFlags_SpanAvailWidth;
-      bool open = ImGui::TreeNodeEx(
-          (void *)(intptr_t)((int)line_start + 0x10000),
-          hf,
-          "%s",
-          std::string(heading_title).c_str());
-      header_stack.push_back(HeaderUi{heading_level, open});
-      pos = has_newline ? line_end + 1 : line_end;
-      continue;
-    }
-
-    if(!all_headers_open())
-    {
-      pos = has_newline ? line_end + 1 : line_end;
-      continue;
-    }
-
-    if(tline == "```mermaid")
-    {
-      size_t scan = has_newline ? line_end + 1 : line_end;
-      size_t block_end = markdown.size();
-      std::string body;
-      bool closed = false;
-
-      while(scan < markdown.size())
-      {
-        size_t ls = scan;
-        size_t le = markdown.find('\n', scan);
-        bool ln = (le != std::string::npos);
-        if(!ln) le = markdown.size();
-
-        std::string_view l(markdown.data() + ls, le - ls);
-        if(trim(l) == "```")
-        {
-          block_end = ln ? le + 1 : le;
-          closed = true;
-          break;
-        }
-        body.append(l.data(), l.size());
-        body.push_back('\n');
-        scan = ln ? le + 1 : le;
-      }
-
-      if(closed)
-      {
-        std::string mermaid_type;
-        if(detect_mermaid_type(body, mermaid_type))
-        {
-          flush_chunk();
-          render_mermaid_block(mermaid_type, body, (int)line_start);
-        }
-        else
-        {
-          normal_chunk.append(markdown.data() + line_start, block_end - line_start);
-        }
-        pos = block_end;
-        continue;
-      }
-    }
-
-    {
-      size_t sp = tline.find_first_of(" \t");
-      std::string_view maybe_type = (sp == std::string_view::npos) ? tline : tline.substr(0, sp);
-      if(is_known_mermaid_type(maybe_type))
-      {
-        size_t scan = line_start;
-        size_t block_end = markdown.size();
-        std::string body;
-
-        while(scan < markdown.size())
-        {
-          size_t ls = scan;
-          size_t le = markdown.find('\n', scan);
-          bool ln = (le != std::string::npos);
-          if(!ln) le = markdown.size();
-          std::string_view l(markdown.data() + ls, le - ls);
-          std::string_view tl = trim(l);
-
-          if(tl.empty())
-          {
-            block_end = ln ? le + 1 : le;
-            break;
-          }
-          body.append(l.data(), l.size());
-          body.push_back('\n');
-          scan = ln ? le + 1 : le;
-          block_end = scan;
-        }
-
-        std::string mermaid_type;
-        if(detect_mermaid_type(body, mermaid_type))
-        {
-          flush_chunk();
-          render_mermaid_block(mermaid_type, body, (int)line_start);
-          pos = block_end;
-          continue;
-        }
-      }
-    }
-
-    size_t check_col = 0;
-    std::string_view label;
-    if(parse_task_line(line, check_col, label))
-    {
-      flush_chunk();
-
-      bool checked = (line[check_col] == 'x' || line[check_col] == 'X');
-      const ImVec2 item_sp = ImGui::GetStyle().ItemSpacing;
-      const ImVec2 frame_pad = ImGui::GetStyle().FramePadding;
-      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(item_sp.x, 2.0f));
-      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(frame_pad.x, 1.0f));
-      ImGui::PushID((int)line_start);
-      if(ImGui::Checkbox("##task", &checked))
-      {
-        markdown[line_start + check_col] = checked ? 'x' : ' ';
-        changed = true;
-      }
-      ImGui::SameLine();
-      ImGui::AlignTextToFramePadding();
-      MarkdownView::render_inline(std::string(label));
-      ImGui::PopID();
-      ImGui::PopStyleVar(2);
-    }
-    else
-    {
-      normal_chunk.append(line.data(), line.size());
-      if(has_newline) normal_chunk.push_back('\n');
-    }
-
-    pos = has_newline ? line_end + 1 : line_end;
-  }
-
-  flush_chunk();
-  while(!header_stack.empty())
-  {
-    if(header_stack.back().open) ImGui::TreePop();
-    header_stack.pop_back();
-  }
-  return changed;
-}
-
 } // namespace
 
 int App::run()
@@ -1521,15 +403,7 @@ void App::init_imgui()
 
 void App::shutdown()
 {
-  for(auto &kv : g_toolbar_icon_cache)
-  {
-    if(kv.second != 0)
-    {
-      GLuint tex = kv.second;
-      glDeleteTextures(1, &tex);
-    }
-  }
-  g_toolbar_icon_cache.clear();
+  clear_toolbar_icon_cache();
 
   std::unordered_set<std::string> alive_paths;
   for(const FolderMeta &f : folders_)

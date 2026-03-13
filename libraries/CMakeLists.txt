@@ -1,2 +1,7 @@
 add_subdirectory(logger)
 add_subdirectory(json_io)
+add_subdirectory(note_core)
+add_subdirectory(tiny_json)
+add_subdirectory(mermaid_flowchart)
+add_subdirectory(markdown_support)
+add_subdirectory(note_ui)
