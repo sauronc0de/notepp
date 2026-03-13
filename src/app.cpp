@@ -30,17 +30,20 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
 
-using MarkdownSupport::MdEditorUserData;
-using MarkdownSupport::MdFormatState;
 using MarkdownSupport::apply_color_wrap_string;
 using MarkdownSupport::apply_note_quote;
 using MarkdownSupport::apply_wrap_string;
 using MarkdownSupport::insert_checklist_item_at_cursor;
+using MarkdownSupport::insert_markdown_table_at_cursor;
 using MarkdownSupport::line_bounds_from_cursor;
 using MarkdownSupport::md_editor_cb;
+using MarkdownSupport::MdEditorUserData;
+using MarkdownSupport::MdFormatState;
 using MarkdownSupport::normalize_input_text_buffer;
 using MarkdownSupport::render_preview_with_task_checkboxes;
+using MarkdownSupport::render_preview_with_task_checkboxes_ex;
 using MarkdownSupport::rgba_to_hex;
+using MarkdownSupport::set_preview_document_path;
 using MarkdownSupport::should_push_word_granular_undo;
 
 using NoteCore::clamp01f;
@@ -304,7 +307,7 @@ void App::init_sdl_gl()
       "Notepp",
       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
       1100, 700,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_MAXIMIZED);
 
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -921,6 +924,7 @@ void App::frame_begin()
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_z)
     {
+      request_undo_edit_ = true;
       request_undo_draw_ = true;
       continue;
     }
@@ -929,6 +933,7 @@ void App::frame_begin()
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_y)
     {
+      request_redo_edit_ = true;
       request_redo_draw_ = true;
       continue;
     }
@@ -2555,6 +2560,7 @@ void App::frame_ui()
         const ImTextureID ic_note = get_toolbar_icon_texture("note.png");
         const ImTextureID ic_color = get_toolbar_icon_texture("color-brush.png");
         const ImTextureID ic_task = get_toolbar_icon_texture("to-do-list.png");
+        const ImTextureID ic_table = get_toolbar_icon_texture("table.png");
         auto tool_button = [&](const char *id, ImTextureID tex, const char *fallback, const char *tooltip) -> bool {
           bool pressed = false;
           if(tex)
@@ -2613,6 +2619,14 @@ void App::frame_ui()
         {
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
+          normalize_input_text_buffer(markdown_text_);
+          save_state();
+        }
+        ImGui::SameLine();
+        if(tool_button("##tb_table", ic_table, "Table", "Insert markdown table"))
+        {
+          push_undo_snapshot();
+          insert_markdown_table_at_cursor(markdown_text_, fmt_folder);
           normalize_input_text_buffer(markdown_text_);
           save_state();
         }
@@ -3252,6 +3266,9 @@ void App::frame_ui()
 
       bool changed = false;
       std::string preview_text;
+      const bool is_current_note_document = (!state_file_path_.empty() && n.path == state_file_path_);
+      bool table_ctx_right_click_consumed = false;
+      bool table_ctx_double_click_consumed = false;
 
       if(is_editing_this)
       {
@@ -3338,15 +3355,21 @@ void App::frame_ui()
       else
       {
         preview_text = read_file_text(n.path);
+        const std::string preview_before = preview_text;
         const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
         MarkdownView::set_render_width(preview_w);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-        changed = render_preview_with_task_checkboxes(preview_text);
+        set_preview_document_path(n.path);
+        const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(preview_text);
+        changed = preview_result.markdown_changed;
+        table_ctx_right_click_consumed = preview_result.consumed_right_click;
+        table_ctx_double_click_consumed = preview_result.consumed_double_click;
         ImGui::PopTextWrapPos();
         if(changed)
         {
-          if(ni == active_note_idx_)
+          if(is_current_note_document)
           {
+            if(preview_text != preview_before) push_undo_snapshot_from(preview_before);
             markdown_text_ = preview_text;
             normalize_input_text_buffer(markdown_text_);
             save_state();
@@ -3357,11 +3380,30 @@ void App::frame_ui()
             if(out) out << preview_text;
           }
         }
+        if(is_current_note_document && request_undo_edit_ && !undo_stack_.empty())
+        {
+          apply_undo_snapshot();
+          request_undo_edit_ = false;
+          request_redo_edit_ = false;
+          request_undo_draw_ = false;
+          request_redo_draw_ = false;
+        }
+        if(is_current_note_document && request_redo_edit_ && !redo_stack_.empty())
+        {
+          apply_redo_snapshot();
+          request_redo_edit_ = false;
+          request_undo_draw_ = false;
+          request_redo_draw_ = false;
+        }
       }
 
       const std::string body_popup_id = "Note Body Actions##" + note_uid;
       const bool w_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-      if(!is_editing_this && w_hovered && !mouse_on_title && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+      if(!is_editing_this &&
+         w_hovered &&
+         !mouse_on_title &&
+         ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+         !table_ctx_right_click_consumed)
       {
         ImGui::OpenPopup(body_popup_id.c_str());
       }
@@ -3376,27 +3418,33 @@ void App::frame_ui()
 
       if(w_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
       {
-        const bool ctrl = ImGui::GetIO().KeyCtrl;
-        active_note_idx_ = ni;
-        if(ctrl)
+        if(!(editing_mode_ && !is_editing_this))
         {
-          if(selected_note_indices.count(ni) != 0)
-            selected_note_indices.erase(ni);
-          else
-            selected_note_indices.insert(ni);
-        }
-        else
-        {
-          // Keep current multi-selection when grabbing one of the selected notes.
-          if(selected_note_indices.count(ni) == 0)
+          const bool ctrl = ImGui::GetIO().KeyCtrl;
+          active_note_idx_ = ni;
+          if(ctrl)
           {
-            selected_note_indices.clear();
-            selected_note_indices.insert(ni);
-            selected_stroke_indices.clear();
+            if(selected_note_indices.count(ni) != 0)
+              selected_note_indices.erase(ni);
+            else
+              selected_note_indices.insert(ni);
+          }
+          else
+          {
+            // Keep current multi-selection when grabbing one of the selected notes.
+            if(selected_note_indices.count(ni) == 0)
+            {
+              selected_note_indices.clear();
+              selected_note_indices.insert(ni);
+              selected_stroke_indices.clear();
+            }
           }
         }
       }
-      if(w_hovered && !mouse_on_title && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+      if(w_hovered &&
+         !mouse_on_title &&
+         ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+         !table_ctx_double_click_consumed)
       {
         if(editing_mode_ && !is_editing_this)
         {
@@ -3775,17 +3823,41 @@ void App::frame_ui()
   {
     // Preview mode (interactive)
     const float start_y = ImGui::GetCursorPosY();
+    const std::string preview_before = markdown_text_;
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
     MarkdownView::set_render_width(preview_w);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
-    const bool task_changed = render_preview_with_task_checkboxes(markdown_text_);
+    set_preview_document_path(state_file_path_);
+    const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
+    const bool task_changed = preview_result.markdown_changed;
+    const bool table_double_click_consumed = preview_result.consumed_double_click;
     ImGui::PopTextWrapPos();
-    if(task_changed) save_state();
+    if(task_changed)
+    {
+      if(markdown_text_ != preview_before) push_undo_snapshot_from(preview_before);
+      save_state();
+    }
+    if(request_undo_edit_ && !undo_stack_.empty())
+    {
+      apply_undo_snapshot();
+      request_undo_edit_ = false;
+      request_redo_edit_ = false;
+      request_undo_draw_ = false;
+      request_redo_draw_ = false;
+    }
+    if(request_redo_edit_ && !redo_stack_.empty())
+    {
+      apply_redo_snapshot();
+      request_redo_edit_ = false;
+      request_undo_draw_ = false;
+      request_redo_draw_ = false;
+    }
     (void)start_y;
 
     // Enter edit mode only on double click (single click does nothing)
     if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
-       ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+       ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+       !table_double_click_consumed)
     {
       editing_mode_ = true;
       show_palette = false;

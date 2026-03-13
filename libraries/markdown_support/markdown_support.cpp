@@ -12,7 +12,12 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>
+#include <numeric>
+#include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace MarkdownSupport
 {
@@ -315,6 +320,1016 @@ void render_mermaid_block(std::string_view mermaid_type, std::string_view body, 
 
   render_mermaid_placeholder(mermaid_type, body, id);
 }
+
+using Json = nlohmann::json;
+
+constexpr const char *kMarkdownPreviewStateFile = DATA_PATH "/markdown_preview_state.json";
+
+struct TableViewState
+{
+  int sort_column = -1;
+  bool sort_ascending = true;
+  std::string contains_filter;
+  int contains_filter_column = -1;
+  std::string not_contains_filter;
+  int not_contains_filter_column = -1;
+};
+
+struct ParsedMarkdownTable
+{
+  std::vector<std::string> header;
+  std::vector<std::vector<std::string>> rows;
+  size_t block_start = 0;
+  size_t block_end = 0;
+  bool trailing_newline = false;
+};
+
+struct TableReplacement
+{
+  size_t start = 0;
+  size_t end = 0;
+  std::string replacement;
+};
+
+struct TableRenderOutcome
+{
+  bool markdown_changed = false;
+  bool preview_state_changed = false;
+  bool consumed_right_click = false;
+  bool consumed_double_click = false;
+  bool has_replacement = false;
+  std::string replacement;
+};
+
+struct CellEditorState
+{
+  bool active = false;
+  bool request_focus = false;
+  bool was_active_last_frame = false;
+  std::string document_key;
+  int table_id = -1;
+  bool header = false;
+  int raw_row = -1;
+  int column = -1;
+  char buffer[512] = {};
+};
+
+struct FilterDialogState
+{
+  bool active = false;
+  bool open_request = false;
+  bool request_focus = false;
+  bool not_contains = false;
+  std::string document_key;
+  int table_id = -1;
+  int column = -1;
+  std::string popup_id;
+  char buffer[256] = {};
+};
+
+std::string g_preview_document_path;
+Json g_preview_state_json;
+bool g_preview_state_loaded = false;
+bool g_preview_state_dirty = false;
+std::unordered_map<std::string, std::unordered_map<int, TableViewState>> g_table_state_cache;
+CellEditorState g_cell_editor_state;
+FilterDialogState g_filter_dialog_state;
+
+std::string current_document_key()
+{
+  return g_preview_document_path.empty() ? std::string("__active_note__") : g_preview_document_path;
+}
+
+void ensure_preview_state_loaded()
+{
+  if(g_preview_state_loaded) return;
+  g_preview_state_loaded = true;
+
+  g_preview_state_json = Json::object();
+  std::ifstream in(kMarkdownPreviewStateFile, std::ios::binary);
+  if(in)
+  {
+    try
+    {
+      in >> g_preview_state_json;
+    }
+    catch(...)
+    {
+      g_preview_state_json = Json::object();
+    }
+  }
+
+  if(!g_preview_state_json.is_object()) g_preview_state_json = Json::object();
+  if(!g_preview_state_json.contains("documents") || !g_preview_state_json["documents"].is_object())
+    g_preview_state_json["documents"] = Json::object();
+}
+
+std::string first_non_empty_filter(const Json &arr)
+{
+  if(!arr.is_array()) return {};
+  for(const Json &v : arr)
+  {
+    if(!v.is_string()) continue;
+    const std::string s = v.get<std::string>();
+    if(!NoteCore::trim(s).empty()) return s;
+  }
+  return {};
+}
+
+TableViewState parse_table_state_from_json(const Json &obj)
+{
+  TableViewState st;
+  if(!obj.is_object()) return st;
+
+  st.sort_column = obj.value("sort_column", -1);
+  st.sort_ascending = obj.value("sort_ascending", true);
+
+  if(obj.contains("contains_filter") && obj["contains_filter"].is_string())
+    st.contains_filter = obj["contains_filter"].get<std::string>();
+  else
+    st.contains_filter = first_non_empty_filter(obj.value("contains_filters", Json::array()));
+  st.contains_filter_column = obj.value("contains_filter_column", -1);
+
+  if(obj.contains("not_contains_filter") && obj["not_contains_filter"].is_string())
+    st.not_contains_filter = obj["not_contains_filter"].get<std::string>();
+  else
+    st.not_contains_filter = first_non_empty_filter(obj.value("not_contains_filters", Json::array()));
+  st.not_contains_filter_column = obj.value("not_contains_filter_column", -1);
+
+  return st;
+}
+
+void sync_table_state_to_json(const std::string &doc_key, int table_id, const TableViewState &st)
+{
+  ensure_preview_state_loaded();
+
+  Json &doc = g_preview_state_json["documents"][doc_key];
+  if(!doc.is_object()) doc = Json::object();
+
+  Json &tables = doc["tables"];
+  if(!tables.is_object()) tables = Json::object();
+
+  Json &table = tables[std::to_string(table_id)];
+  if(!table.is_object()) table = Json::object();
+
+  table["sort_column"] = st.sort_column;
+  table["sort_ascending"] = st.sort_ascending;
+  table["contains_filter"] = st.contains_filter;
+  table["contains_filter_column"] = st.contains_filter_column;
+  table["not_contains_filter"] = st.not_contains_filter;
+  table["not_contains_filter_column"] = st.not_contains_filter_column;
+  table["contains_filters"] = Json::array({st.contains_filter});
+  table["not_contains_filters"] = Json::array({st.not_contains_filter});
+
+  g_preview_state_dirty = true;
+}
+
+void reset_table_view_state(TableViewState &state)
+{
+  state.sort_column = -1;
+  state.sort_ascending = true;
+  state.contains_filter.clear();
+  state.contains_filter_column = -1;
+  state.not_contains_filter.clear();
+  state.not_contains_filter_column = -1;
+}
+
+TableViewState &table_state_for(const std::string &doc_key, int table_id)
+{
+  ensure_preview_state_loaded();
+
+  auto &doc_map = g_table_state_cache[doc_key];
+  auto it = doc_map.find(table_id);
+  if(it != doc_map.end()) return it->second;
+
+  TableViewState st;
+  const Json &docs = g_preview_state_json["documents"];
+  auto doc_it = docs.find(doc_key);
+  if(doc_it != docs.end() && doc_it->is_object())
+  {
+    const Json &tables = doc_it->value("tables", Json::object());
+    auto table_it = tables.find(std::to_string(table_id));
+    if(table_it != tables.end()) st = parse_table_state_from_json(*table_it);
+  }
+
+  auto [inserted, _] = doc_map.emplace(table_id, std::move(st));
+  return inserted->second;
+}
+
+void save_preview_state_if_dirty()
+{
+  if(!g_preview_state_dirty) return;
+  ensure_preview_state_loaded();
+
+  std::ofstream out(kMarkdownPreviewStateFile, std::ios::binary | std::ios::trunc);
+  if(!out) return;
+  out << g_preview_state_json.dump(2);
+  g_preview_state_dirty = false;
+}
+
+std::vector<std::string> split_md_table_cells(std::string_view line)
+{
+  std::vector<std::string> cells;
+  std::string_view t = NoteCore::trim(line);
+  if(t.empty() || t.find('|') == std::string_view::npos) return cells;
+
+  if(!t.empty() && t.front() == '|') t.remove_prefix(1);
+  if(!t.empty() && t.back() == '|') t.remove_suffix(1);
+
+  size_t start = 0;
+  while(start <= t.size())
+  {
+    size_t sep = t.find('|', start);
+    const size_t end = (sep == std::string_view::npos) ? t.size() : sep;
+    cells.emplace_back(NoteCore::trim(t.substr(start, end - start)));
+    if(sep == std::string_view::npos) break;
+    start = sep + 1;
+  }
+  return cells;
+}
+
+bool is_md_table_separator(std::string_view line, size_t expected_cols)
+{
+  const std::vector<std::string> parts = split_md_table_cells(line);
+  if(parts.size() != expected_cols || parts.empty()) return false;
+
+  for(const std::string &p : parts)
+  {
+    std::string_view s = NoteCore::trim(p);
+    if(s.empty()) return false;
+    if(s.front() == ':') s.remove_prefix(1);
+    if(!s.empty() && s.back() == ':') s.remove_suffix(1);
+    if(s.size() < 3) return false;
+    for(char c : s)
+    {
+      if(c != '-') return false;
+    }
+  }
+  return true;
+}
+
+bool try_parse_markdown_table(
+    const std::string &markdown,
+    size_t line_start,
+    size_t line_end,
+    bool has_newline,
+    ParsedMarkdownTable &out)
+{
+  out = ParsedMarkdownTable{};
+
+  const std::string_view header_line(markdown.data() + line_start, line_end - line_start);
+  const std::string_view header_trim = NoteCore::trim(header_line);
+  if(header_trim.empty() || NoteCore::starts_with(header_trim, ">")) return false;
+
+  std::vector<std::string> header = split_md_table_cells(header_line);
+  if(header.size() < 2) return false;
+
+  const size_t sep_start = has_newline ? (line_end + 1) : markdown.size();
+  if(sep_start >= markdown.size()) return false;
+
+  size_t sep_end = markdown.find('\n', sep_start);
+  const bool sep_has_newline = (sep_end != std::string::npos);
+  if(!sep_has_newline) sep_end = markdown.size();
+
+  const std::string_view sep_line(markdown.data() + sep_start, sep_end - sep_start);
+  if(!is_md_table_separator(sep_line, header.size())) return false;
+
+  size_t scan = sep_has_newline ? (sep_end + 1) : markdown.size();
+  std::vector<std::vector<std::string>> rows;
+  while(scan < markdown.size())
+  {
+    size_t row_end = markdown.find('\n', scan);
+    const bool row_has_newline = (row_end != std::string::npos);
+    if(!row_has_newline) row_end = markdown.size();
+
+    const std::string_view row_line(markdown.data() + scan, row_end - scan);
+    const std::string_view row_trim = NoteCore::trim(row_line);
+    if(row_trim.empty() || NoteCore::starts_with(row_trim, ">")) break;
+
+    std::vector<std::string> row_cells = split_md_table_cells(row_line);
+    if(row_cells.size() != header.size()) break;
+
+    rows.push_back(std::move(row_cells));
+    if(!row_has_newline)
+    {
+      scan = markdown.size();
+      break;
+    }
+    scan = row_end + 1;
+  }
+
+  out.header = std::move(header);
+  out.rows = std::move(rows);
+  out.block_start = line_start;
+  out.block_end = scan;
+  out.trailing_newline = (scan > line_start && scan <= markdown.size() && markdown[scan - 1] == '\n');
+  return true;
+}
+
+std::string normalize_table_cell_value(std::string_view in)
+{
+  std::string out;
+  out.reserve(in.size() + 4);
+  for(char c : in)
+  {
+    if(c == '\r' || c == '\n')
+      out.push_back(' ');
+    else if(c == '|')
+    {
+      out.push_back('\\');
+      out.push_back('|');
+    }
+    else
+      out.push_back(c);
+  }
+  const std::string_view t = NoteCore::trim(out);
+  return std::string(t);
+}
+
+std::string build_md_table_line(const std::vector<std::string> &cells)
+{
+  std::string line;
+  line.reserve(cells.size() * 8 + 4);
+  line.push_back('|');
+  for(const std::string &cell : cells)
+  {
+    line.push_back(' ');
+    line += normalize_table_cell_value(cell);
+    line += " |";
+  }
+  return line;
+}
+
+std::string build_md_table_separator(size_t cols)
+{
+  std::string line;
+  line.reserve(cols * 6 + 2);
+  line.push_back('|');
+  for(size_t i = 0; i < cols; ++i) line += " --- |";
+  return line;
+}
+
+std::string build_md_table_markdown(
+    const std::vector<std::string> &header,
+    const std::vector<std::vector<std::string>> &rows,
+    bool trailing_newline)
+{
+  if(header.empty()) return {};
+
+  std::string out;
+  out += build_md_table_line(header);
+  out.push_back('\n');
+  out += build_md_table_separator(header.size());
+  for(const auto &row : rows)
+  {
+    out.push_back('\n');
+    out += build_md_table_line(row);
+  }
+
+  if(trailing_newline && (out.empty() || out.back() != '\n')) out.push_back('\n');
+  return out;
+}
+
+std::string to_lower_ascii_copy(std::string_view s)
+{
+  std::string out;
+  out.reserve(s.size());
+  for(char c : s)
+  {
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return out;
+}
+
+bool contains_case_insensitive(std::string_view haystack, const std::string &needle_lower)
+{
+  if(needle_lower.empty()) return true;
+  const std::string hay = to_lower_ascii_copy(haystack);
+  return hay.find(needle_lower) != std::string::npos;
+}
+
+bool row_matches_filters(
+    const std::vector<std::string> &row,
+    const std::string &contains_lower,
+    int contains_column,
+    const std::string &not_contains_lower,
+    int not_contains_column)
+{
+  bool matches_contains = contains_lower.empty();
+  bool matches_not_contains = true;
+
+  auto column_matches = [&](int column, const std::string &needle_lower, bool want_match) {
+    if(needle_lower.empty()) return want_match;
+    if(column >= 0 && static_cast<size_t>(column) < row.size())
+    {
+      return contains_case_insensitive(row[static_cast<size_t>(column)], needle_lower) == want_match;
+    }
+
+    for(const std::string &cell : row)
+    {
+      if(contains_case_insensitive(cell, needle_lower) == want_match) return true;
+    }
+    return false;
+  };
+
+  if(!contains_lower.empty()) matches_contains = column_matches(contains_column, contains_lower, true);
+  if(!not_contains_lower.empty()) matches_not_contains = !column_matches(not_contains_column, not_contains_lower, true);
+
+  return matches_contains && matches_not_contains;
+}
+
+std::vector<int> build_row_display_order(
+    const std::vector<std::vector<std::string>> &rows,
+    const TableViewState &state,
+    size_t col_count)
+{
+  std::vector<int> order(rows.size());
+  std::iota(order.begin(), order.end(), 0);
+
+  const std::string contains_lower = to_lower_ascii_copy(NoteCore::trim(state.contains_filter));
+  const std::string not_contains_lower = to_lower_ascii_copy(NoteCore::trim(state.not_contains_filter));
+
+  if(!contains_lower.empty() || !not_contains_lower.empty())
+  {
+    order.erase(
+        std::remove_if(
+            order.begin(),
+            order.end(),
+            [&](int idx) {
+              return !row_matches_filters(
+                  rows[static_cast<size_t>(idx)],
+                  contains_lower,
+                  state.contains_filter_column,
+                  not_contains_lower,
+                  state.not_contains_filter_column);
+            }),
+        order.end());
+  }
+
+  if(state.sort_column >= 0 && static_cast<size_t>(state.sort_column) < col_count)
+  {
+    const int col = state.sort_column;
+    std::stable_sort(
+        order.begin(),
+        order.end(),
+        [&](int a, int b) {
+          const std::string ka = to_lower_ascii_copy(rows[static_cast<size_t>(a)][static_cast<size_t>(col)]);
+          const std::string kb = to_lower_ascii_copy(rows[static_cast<size_t>(b)][static_cast<size_t>(col)]);
+          return state.sort_ascending ? (ka < kb) : (ka > kb);
+        });
+  }
+
+  return order;
+}
+
+std::string escape_csv_cell(std::string_view cell)
+{
+  bool needs_quotes = false;
+  for(char c : cell)
+  {
+    if(c == ',' || c == '"' || c == '\n' || c == '\r')
+    {
+      needs_quotes = true;
+      break;
+    }
+  }
+
+  if(!needs_quotes) return std::string(cell);
+
+  std::string out;
+  out.reserve(cell.size() + 4);
+  out.push_back('"');
+  for(char c : cell)
+  {
+    if(c == '"') out.push_back('"');
+    out.push_back(c);
+  }
+  out.push_back('"');
+  return out;
+}
+
+std::string build_table_csv(
+    const std::vector<std::string> &header,
+    const std::vector<std::vector<std::string>> &rows,
+    const std::vector<int> &display_order)
+{
+  std::string csv;
+  auto append_row = [&](const std::vector<std::string> &r) {
+    for(size_t c = 0; c < r.size(); ++c)
+    {
+      if(c > 0) csv.push_back(',');
+      csv += escape_csv_cell(r[c]);
+    }
+    csv.push_back('\n');
+  };
+
+  append_row(header);
+  for(int raw_idx : display_order)
+  {
+    if(raw_idx < 0 || static_cast<size_t>(raw_idx) >= rows.size()) continue;
+    append_row(rows[static_cast<size_t>(raw_idx)]);
+  }
+  return csv;
+}
+
+void open_filter_dialog(
+    const std::string &document_key,
+    int table_id,
+    int column,
+    bool not_contains,
+    const std::string &initial_text)
+{
+  g_filter_dialog_state.active = true;
+  g_filter_dialog_state.open_request = true;
+  g_filter_dialog_state.request_focus = true;
+  g_filter_dialog_state.not_contains = not_contains;
+  g_filter_dialog_state.document_key = document_key;
+  g_filter_dialog_state.table_id = table_id;
+  g_filter_dialog_state.column = column;
+
+  const size_t doc_hash = std::hash<std::string>{}(document_key);
+  g_filter_dialog_state.popup_id =
+      std::string("Table Filter##") + std::to_string(table_id) + "_" + std::to_string(doc_hash);
+  std::snprintf(
+      g_filter_dialog_state.buffer,
+      sizeof(g_filter_dialog_state.buffer),
+      "%s",
+      initial_text.c_str());
+}
+
+void render_filter_dialog(
+    const std::string &document_key,
+    int table_id,
+    TableViewState &state,
+    TableRenderOutcome &outcome)
+{
+  if(!g_filter_dialog_state.active) return;
+  if(g_filter_dialog_state.document_key != document_key) return;
+  if(g_filter_dialog_state.table_id != table_id) return;
+
+  if(g_filter_dialog_state.open_request)
+  {
+    ImGui::OpenPopup(g_filter_dialog_state.popup_id.c_str());
+    g_filter_dialog_state.open_request = false;
+  }
+
+  if(!g_filter_dialog_state.open_request &&
+     !g_filter_dialog_state.popup_id.empty() &&
+     !ImGui::IsPopupOpen(g_filter_dialog_state.popup_id.c_str()))
+  {
+    g_filter_dialog_state.active = false;
+    g_filter_dialog_state.popup_id.clear();
+    return;
+  }
+
+  if(!ImGui::BeginPopupModal(g_filter_dialog_state.popup_id.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+  if(g_filter_dialog_state.request_focus)
+  {
+    ImGui::SetKeyboardFocusHere();
+    g_filter_dialog_state.request_focus = false;
+  }
+
+  ImGui::TextUnformatted(g_filter_dialog_state.not_contains ? "Filter by Not contains" : "Filter by Contains");
+  const bool submit = ImGui::InputText(
+      "##table_filter_input",
+      g_filter_dialog_state.buffer,
+      sizeof(g_filter_dialog_state.buffer),
+      ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+
+  bool apply = submit;
+  if(!apply) apply = ImGui::Button("Apply");
+  ImGui::SameLine();
+  const bool cancel = ImGui::Button("Cancel");
+
+  if(apply)
+  {
+    const std::string value = std::string(NoteCore::trim(g_filter_dialog_state.buffer));
+    bool changed = false;
+    if(g_filter_dialog_state.not_contains)
+    {
+      changed = (state.not_contains_filter != value) || (state.not_contains_filter_column != g_filter_dialog_state.column);
+      if(changed)
+      {
+        state.not_contains_filter = value;
+        state.not_contains_filter_column = value.empty() ? -1 : g_filter_dialog_state.column;
+      }
+    }
+    else
+    {
+      changed = (state.contains_filter != value) || (state.contains_filter_column != g_filter_dialog_state.column);
+      if(changed)
+      {
+        state.contains_filter = value;
+        state.contains_filter_column = value.empty() ? -1 : g_filter_dialog_state.column;
+      }
+    }
+
+    if(changed)
+    {
+      sync_table_state_to_json(document_key, table_id, state);
+      outcome.preview_state_changed = true;
+    }
+
+    g_filter_dialog_state.active = false;
+    g_filter_dialog_state.popup_id.clear();
+    ImGui::CloseCurrentPopup();
+  }
+
+  if(cancel)
+  {
+    g_filter_dialog_state.active = false;
+    g_filter_dialog_state.popup_id.clear();
+    ImGui::CloseCurrentPopup();
+  }
+
+  ImGui::EndPopup();
+}
+
+TableRenderOutcome render_interactive_table(
+    const ParsedMarkdownTable &parsed,
+    int table_id,
+    const std::string &document_key)
+{
+  TableRenderOutcome outcome;
+  std::vector<std::string> header = parsed.header;
+  std::vector<std::vector<std::string>> rows = parsed.rows;
+
+  if(header.empty()) return outcome;
+
+  const int cols = static_cast<int>(header.size());
+  TableViewState &state = table_state_for(document_key, table_id);
+  if(state.sort_column >= cols)
+  {
+    state.sort_column = -1;
+    sync_table_state_to_json(document_key, table_id, state);
+    outcome.preview_state_changed = true;
+  }
+
+  if(g_cell_editor_state.active &&
+     g_cell_editor_state.document_key == document_key &&
+     g_cell_editor_state.table_id == table_id)
+  {
+    const bool invalid_col = (g_cell_editor_state.column < 0 || g_cell_editor_state.column >= cols);
+    const bool invalid_row =
+        (!g_cell_editor_state.header &&
+         (g_cell_editor_state.raw_row < 0 || static_cast<size_t>(g_cell_editor_state.raw_row) >= rows.size()));
+    if(invalid_col || invalid_row)
+    {
+      g_cell_editor_state.active = false;
+      g_cell_editor_state.was_active_last_frame = false;
+    }
+  }
+
+  std::vector<int> display_order = build_row_display_order(rows, state, header.size());
+  bool table_model_changed = false;
+
+  enum class TableActionType
+  {
+    None,
+    AddRow,
+    AddColumn,
+    RemoveRow,
+    RemoveColumn
+  };
+
+  TableActionType pending_action = TableActionType::None;
+  bool pending_header_cell = false;
+  int pending_raw_row = -1;
+  int pending_column = -1;
+
+  const ImGuiTableFlags flags =
+      ImGuiTableFlags_Borders |
+      ImGuiTableFlags_RowBg |
+      ImGuiTableFlags_SizingStretchSame |
+      ImGuiTableFlags_NoHostExtendX;
+
+  auto column_has_contains_filter = [&](int column) {
+    return !NoteCore::trim(state.contains_filter).empty() && state.contains_filter_column == column;
+  };
+  auto column_has_not_contains_filter = [&](int column) {
+    return !NoteCore::trim(state.not_contains_filter).empty() && state.not_contains_filter_column == column;
+  };
+  auto decorated_header_label = [&](const std::string &label, int column) {
+    std::string out = label;
+    if(state.sort_column == column) out += state.sort_ascending ? " ^" : " v";
+    if(column_has_contains_filter(column)) out += " [F]";
+    if(column_has_not_contains_filter(column)) out += " [!F]";
+    return out;
+  };
+
+  ImGui::PushID(table_id);
+  ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.22f, 0.23f, 0.26f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(1.0f, 1.0f, 1.0f, 0.04f));
+
+  if(ImGui::BeginTable("##md_table_interactive", cols, flags))
+  {
+    for(int c = 0; c < cols; ++c)
+    {
+      const std::string col_id = "##col_" + std::to_string(c);
+      ImGui::TableSetupColumn(col_id.c_str());
+    }
+
+    auto render_cell = [&](bool header_cell, int raw_row, int column, std::string &cell) {
+      ImGui::TableSetColumnIndex(column);
+      ImGui::PushID(header_cell ? (100000 + column) : (raw_row * 1000 + column));
+
+      const bool editing_this_cell =
+          g_cell_editor_state.active &&
+          g_cell_editor_state.document_key == document_key &&
+          g_cell_editor_state.table_id == table_id &&
+          g_cell_editor_state.header == header_cell &&
+          g_cell_editor_state.column == column &&
+          g_cell_editor_state.raw_row == raw_row;
+
+      if(editing_this_cell)
+      {
+        if(g_cell_editor_state.request_focus)
+        {
+          ImGui::SetKeyboardFocusHere();
+          g_cell_editor_state.request_focus = false;
+        }
+
+        const bool submit = ImGui::InputText(
+            "##cell_edit",
+            g_cell_editor_state.buffer,
+            sizeof(g_cell_editor_state.buffer),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+
+        const bool item_active = ImGui::IsItemActive();
+        if(submit)
+        {
+          const std::string value = normalize_table_cell_value(g_cell_editor_state.buffer);
+          if(value != cell)
+          {
+            cell = value;
+            table_model_changed = true;
+          }
+          g_cell_editor_state.active = false;
+          g_cell_editor_state.was_active_last_frame = false;
+        }
+        else if(item_active && ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+          g_cell_editor_state.active = false;
+          g_cell_editor_state.was_active_last_frame = false;
+        }
+        else if(!item_active && g_cell_editor_state.was_active_last_frame)
+        {
+          g_cell_editor_state.active = false;
+          g_cell_editor_state.was_active_last_frame = false;
+        }
+        else
+        {
+          g_cell_editor_state.was_active_last_frame = item_active;
+        }
+      }
+      else
+      {
+        const float hitbox_width = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
+        const ImVec2 cell_start = ImGui::GetCursorScreenPos();
+        ImGui::BeginGroup();
+        const std::string display = header_cell ? decorated_header_label(cell, column) : cell;
+        if(display.empty())
+        {
+          ImGui::TextUnformatted(" ");
+        }
+        else
+        {
+          MarkdownView::render_inline(display);
+        }
+        ImGui::EndGroup();
+        const ImVec2 cell_end = ImGui::GetCursorScreenPos();
+        const float hitbox_height = std::max(cell_end.y - cell_start.y, ImGui::GetTextLineHeightWithSpacing());
+        ImGui::SetCursorScreenPos(cell_start);
+        ImGui::InvisibleButton("##cell_hitbox", ImVec2(hitbox_width, hitbox_height));
+        const bool cell_hovered = ImGui::IsItemHovered();
+        ImGui::SetCursorScreenPos(cell_end);
+
+        if(cell_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        {
+          g_cell_editor_state.active = true;
+          g_cell_editor_state.request_focus = true;
+          g_cell_editor_state.was_active_last_frame = false;
+          g_cell_editor_state.document_key = document_key;
+          g_cell_editor_state.table_id = table_id;
+          g_cell_editor_state.header = header_cell;
+          g_cell_editor_state.raw_row = raw_row;
+          g_cell_editor_state.column = column;
+          std::snprintf(g_cell_editor_state.buffer, sizeof(g_cell_editor_state.buffer), "%s", cell.c_str());
+          outcome.consumed_double_click = true;
+        }
+      }
+
+      if(ImGui::BeginPopupContextItem("##table_cell_ctx", ImGuiPopupFlags_MouseButtonRight))
+      {
+        outcome.consumed_right_click = true;
+
+        if(ImGui::MenuItem("Add row"))
+        {
+          pending_action = TableActionType::AddRow;
+          pending_header_cell = header_cell;
+          pending_raw_row = raw_row;
+          pending_column = column;
+        }
+
+        if(ImGui::MenuItem("Add column"))
+        {
+          pending_action = TableActionType::AddColumn;
+          pending_header_cell = header_cell;
+          pending_raw_row = raw_row;
+          pending_column = column;
+        }
+
+        const bool can_remove_row = (!header_cell && !rows.empty() && raw_row >= 0 && static_cast<size_t>(raw_row) < rows.size());
+        if(ImGui::MenuItem("Remove row", nullptr, false, can_remove_row))
+        {
+          pending_action = TableActionType::RemoveRow;
+          pending_header_cell = header_cell;
+          pending_raw_row = raw_row;
+          pending_column = column;
+        }
+
+        const bool can_remove_col = header.size() > 2;
+        if(ImGui::MenuItem("Remove column", nullptr, false, can_remove_col))
+        {
+          pending_action = TableActionType::RemoveColumn;
+          pending_header_cell = header_cell;
+          pending_raw_row = raw_row;
+          pending_column = column;
+        }
+
+        if(ImGui::MenuItem("Copy to csv"))
+        {
+          const std::vector<int> order_for_copy = build_row_display_order(rows, state, header.size());
+          const std::string csv = build_table_csv(header, rows, order_for_copy);
+          ImGui::SetClipboardText(csv.c_str());
+        }
+
+        if(ImGui::MenuItem("Sort A-Z"))
+        {
+          if(state.sort_column != column || !state.sort_ascending)
+          {
+            state.sort_column = column;
+            state.sort_ascending = true;
+            sync_table_state_to_json(document_key, table_id, state);
+            outcome.preview_state_changed = true;
+          }
+        }
+
+        if(ImGui::MenuItem("Sort Z-A"))
+        {
+          if(state.sort_column != column || state.sort_ascending)
+          {
+            state.sort_column = column;
+            state.sort_ascending = false;
+            sync_table_state_to_json(document_key, table_id, state);
+            outcome.preview_state_changed = true;
+          }
+        }
+
+        if(ImGui::MenuItem("Filter by Contains"))
+        {
+          open_filter_dialog(document_key, table_id, column, false, state.contains_filter);
+        }
+
+        if(ImGui::MenuItem("Filter by Not contains"))
+        {
+          open_filter_dialog(document_key, table_id, column, true, state.not_contains_filter);
+        }
+
+        const bool has_any_filter_or_sort =
+            state.sort_column >= 0 ||
+            !NoteCore::trim(state.contains_filter).empty() ||
+            !NoteCore::trim(state.not_contains_filter).empty();
+        if(ImGui::MenuItem("Clear filters", nullptr, false, has_any_filter_or_sort))
+        {
+          reset_table_view_state(state);
+          sync_table_state_to_json(document_key, table_id, state);
+          outcome.preview_state_changed = true;
+        }
+
+        ImGui::EndPopup();
+      }
+
+      ImGui::PopID();
+    };
+
+    ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+    for(int c = 0; c < cols; ++c) render_cell(true, -1, c, header[static_cast<size_t>(c)]);
+
+    for(int raw_idx : display_order)
+    {
+      if(raw_idx < 0 || static_cast<size_t>(raw_idx) >= rows.size()) continue;
+      ImGui::TableNextRow();
+      for(int c = 0; c < cols; ++c)
+      {
+        render_cell(false, raw_idx, c, rows[static_cast<size_t>(raw_idx)][static_cast<size_t>(c)]);
+      }
+    }
+
+    ImGui::EndTable();
+  }
+
+  if(pending_action != TableActionType::None)
+  {
+    if(g_cell_editor_state.active &&
+       g_cell_editor_state.document_key == document_key &&
+       g_cell_editor_state.table_id == table_id)
+    {
+      g_cell_editor_state.active = false;
+      g_cell_editor_state.was_active_last_frame = false;
+    }
+
+    switch(pending_action)
+    {
+    case TableActionType::AddRow: {
+      const size_t insert_at = pending_header_cell
+                                   ? 0u
+                                   : static_cast<size_t>(std::max(0, pending_raw_row + 1));
+      std::vector<std::string> new_row(header.size(), std::string{});
+      rows.insert(rows.begin() + static_cast<std::ptrdiff_t>(std::min(insert_at, rows.size())), std::move(new_row));
+      table_model_changed = true;
+      break;
+    }
+    case TableActionType::AddColumn: {
+      const int current_cols = static_cast<int>(header.size());
+      const size_t insert_at = static_cast<size_t>(std::clamp(pending_column + 1, 0, current_cols));
+      header.insert(
+          header.begin() + static_cast<std::ptrdiff_t>(insert_at),
+          "Column " + std::to_string(current_cols + 1));
+      for(auto &row : rows)
+      {
+        row.insert(row.begin() + static_cast<std::ptrdiff_t>(std::min(insert_at, row.size())), "");
+      }
+
+      if(state.sort_column >= static_cast<int>(insert_at))
+      {
+        state.sort_column += 1;
+        sync_table_state_to_json(document_key, table_id, state);
+        outcome.preview_state_changed = true;
+      }
+
+      table_model_changed = true;
+      break;
+    }
+    case TableActionType::RemoveRow: {
+      if(pending_raw_row >= 0 && static_cast<size_t>(pending_raw_row) < rows.size())
+      {
+        rows.erase(rows.begin() + pending_raw_row);
+        table_model_changed = true;
+      }
+      break;
+    }
+    case TableActionType::RemoveColumn: {
+      if(header.size() > 2 && pending_column >= 0 && static_cast<size_t>(pending_column) < header.size())
+      {
+        header.erase(header.begin() + pending_column);
+        for(auto &row : rows)
+        {
+          if(pending_column >= 0 && static_cast<size_t>(pending_column) < row.size())
+            row.erase(row.begin() + pending_column);
+        }
+
+        bool state_changed = false;
+        if(state.sort_column == pending_column)
+        {
+          state.sort_column = -1;
+          state_changed = true;
+        }
+        else if(state.sort_column > pending_column)
+        {
+          state.sort_column -= 1;
+          state_changed = true;
+        }
+        if(state_changed)
+        {
+          sync_table_state_to_json(document_key, table_id, state);
+          outcome.preview_state_changed = true;
+        }
+
+        table_model_changed = true;
+      }
+      break;
+    }
+    case TableActionType::None:
+      break;
+    }
+  }
+
+  render_filter_dialog(document_key, table_id, state, outcome);
+
+  ImGui::PopStyleColor(2);
+  ImGui::PopID();
+
+  if(table_model_changed)
+  {
+    outcome.has_replacement = true;
+    outcome.markdown_changed = true;
+    outcome.replacement = build_md_table_markdown(header, rows, parsed.trailing_newline);
+  }
+
+  return outcome;
+}
 } // namespace
 
 void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt)
@@ -329,6 +1344,23 @@ void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt)
   fmt.sel_end = p;
 }
 
+void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt)
+{
+  int p = std::max(0, std::min(fmt.cursor_pos, static_cast<int>(text.size())));
+  std::string ins;
+  if(p > 0 && text[static_cast<size_t>(p) - 1] != '\n') ins.push_back('\n');
+  const int header_offset = static_cast<int>(ins.size()) + 2;
+  ins += "| Header 1 | Header 2 |\n";
+  ins += "| --- | --- |\n";
+  ins += "| Cell 1 | Cell 2 |\n";
+  text.insert(static_cast<size_t>(p), ins);
+
+  const int cursor = p + header_offset;
+  fmt.cursor_pos = cursor;
+  fmt.sel_start = cursor;
+  fmt.sel_end = cursor + 8;
+  fmt.selection_anchor = cursor;
+}
 void apply_note_quote(std::string &s, int &sel_a, int &sel_b)
 {
   int a = sel_a;
@@ -585,9 +1617,17 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
   return true;
 }
 
-bool render_preview_with_task_checkboxes(std::string &markdown)
+void set_preview_document_path(std::string_view path)
 {
-  bool changed = false;
+  g_preview_document_path.assign(path.data(), path.size());
+}
+
+PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)
+{
+  PreviewRenderResult result;
+  bool checkbox_changed = false;
+  std::vector<TableReplacement> table_replacements;
+
   std::string normal_chunk;
   normal_chunk.reserve(markdown.size());
 
@@ -738,6 +1778,30 @@ bool render_preview_with_task_checkboxes(std::string &markdown)
       }
     }
 
+    ParsedMarkdownTable parsed_table;
+    if(try_parse_markdown_table(markdown, line_start, line_end, has_newline, parsed_table))
+    {
+      flush_chunk();
+
+      const int table_id = static_cast<int>(parsed_table.block_start);
+      TableRenderOutcome table_out = render_interactive_table(parsed_table, table_id, current_document_key());
+
+      result.preview_state_changed = result.preview_state_changed || table_out.preview_state_changed;
+      result.consumed_right_click = result.consumed_right_click || table_out.consumed_right_click;
+      result.consumed_double_click = result.consumed_double_click || table_out.consumed_double_click;
+
+      if(table_out.has_replacement)
+      {
+        table_replacements.push_back(TableReplacement{
+            parsed_table.block_start,
+            parsed_table.block_end,
+            std::move(table_out.replacement)});
+      }
+
+      pos = parsed_table.block_end;
+      continue;
+    }
+
     size_t check_col = 0;
     std::string_view label;
     if(parse_task_line(line, check_col, label))
@@ -753,7 +1817,7 @@ bool render_preview_with_task_checkboxes(std::string &markdown)
       if(ImGui::Checkbox("##task", &checked))
       {
         markdown[line_start + check_col] = checked ? 'x' : ' ';
-        changed = true;
+        checkbox_changed = true;
       }
       ImGui::SameLine();
       ImGui::AlignTextToFramePadding();
@@ -776,6 +1840,20 @@ bool render_preview_with_task_checkboxes(std::string &markdown)
     if(header_stack.back().open) ImGui::TreePop();
     header_stack.pop_back();
   }
-  return changed;
+
+  for(auto it = table_replacements.rbegin(); it != table_replacements.rend(); ++it)
+  {
+    if(it->end < it->start || it->end > markdown.size()) continue;
+    markdown.replace(it->start, it->end - it->start, it->replacement);
+  }
+
+  result.markdown_changed = checkbox_changed || !table_replacements.empty();
+  if(result.preview_state_changed) save_preview_state_if_dirty();
+  return result;
+}
+
+bool render_preview_with_task_checkboxes(std::string &markdown)
+{
+  return render_preview_with_task_checkboxes_ex(markdown).markdown_changed;
 }
 } // namespace MarkdownSupport

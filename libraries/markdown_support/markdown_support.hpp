@@ -8,6 +8,14 @@
 
 namespace MarkdownSupport
 {
+struct PreviewRenderResult
+{
+  bool markdown_changed = false;
+  bool preview_state_changed = false;
+  bool consumed_right_click = false;
+  bool consumed_double_click = false;
+};
+
 struct MdFormatState
 {
   int sel_start = 0;
@@ -42,6 +50,7 @@ struct MdEditorUserData
 };
 
 void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt);
+void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt);
 void apply_note_quote(std::string &s, int &sel_a, int &sel_b);
 void apply_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &left, const std::string &right);
 void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &hex_color);
@@ -51,6 +60,7 @@ bool should_push_word_granular_undo(const std::string &before, const std::string
 int md_editor_cb(ImGuiInputTextCallbackData *data);
 void normalize_input_text_buffer(std::string &s);
 bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out);
+void set_preview_document_path(std::string_view path);
+PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
 bool render_preview_with_task_checkboxes(std::string &markdown);
 } // namespace MarkdownSupport
-
