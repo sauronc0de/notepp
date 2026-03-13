@@ -98,6 +98,37 @@ static bool is_external_link(std::string_view href)
   return starts_with(href, "http://") || starts_with(href, "https://");
 }
 
+static std::string decode_link_component(std::string_view s)
+{
+  std::string out;
+  out.reserve(s.size());
+  for(size_t i = 0; i < s.size(); ++i)
+  {
+    if(s[i] == '%' && i + 2 < s.size())
+    {
+      auto hex = [](char c) -> int {
+        if(c >= '0' && c <= '9') return c - '0';
+        if(c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if(c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+      };
+      const int hi = hex(s[i + 1]);
+      const int lo = hex(s[i + 2]);
+      if(hi >= 0 && lo >= 0)
+      {
+        out.push_back(static_cast<char>((hi << 4) | lo));
+        i += 2;
+        continue;
+      }
+    }
+    if(s[i] == '+')
+      out.push_back(' ');
+    else
+      out.push_back(s[i]);
+  }
+  return out;
+}
+
 static std::string slugify_heading(std::string_view s)
 {
   std::string out;
@@ -136,9 +167,10 @@ static InternalLinkTarget resolve_internal_link(std::string_view href)
   const size_t hash = path_part.find('#');
   if(hash != std::string::npos)
   {
-    out.anchor = slugify_heading(path_part.substr(hash + 1));
+    out.anchor = slugify_heading(decode_link_component(path_part.substr(hash + 1)));
     path_part.resize(hash);
   }
+  path_part = decode_link_component(path_part);
 
   std::filesystem::path resolved;
   if(!path_part.empty())
@@ -409,6 +441,59 @@ static bool parse_hex_color(std::string_view s, ImVec4 &out)
 
   out = ImVec4(r / 255.f, g / 255.f, b / 255.f, a / 255.f);
   return true;
+}
+
+static std::string normalize_markdown_link_destinations(std::string_view in)
+{
+  std::string out;
+  out.reserve(in.size());
+
+  bool in_code = false;
+  for(size_t i = 0; i < in.size(); ++i)
+  {
+    const char c = in[i];
+    if(c == '`')
+    {
+      in_code = !in_code;
+      out.push_back(c);
+      continue;
+    }
+
+    if(!in_code && c == ']' && i + 1 < in.size() && in[i + 1] == '(')
+    {
+      out.push_back(c);
+      out.push_back('(');
+      i += 2;
+
+      bool wrapped = (i < in.size() && in[i] == '<');
+      if(wrapped) out.push_back(in[i++]);
+
+      for(; i < in.size(); ++i)
+      {
+        const char dc = in[i];
+        if((wrapped && dc == '>') || (!wrapped && dc == ')'))
+        {
+          if(wrapped) out.push_back(dc);
+          if(!wrapped) out.push_back(')');
+          break;
+        }
+        if(dc == ' ')
+          out += "%20";
+        else
+          out.push_back(dc);
+      }
+      if(i < in.size() && wrapped && in[i] == '>' && i + 1 < in.size() && in[i + 1] == ')')
+      {
+        out.push_back(')');
+        ++i;
+      }
+      continue;
+    }
+
+    out.push_back(c);
+  }
+
+  return out;
 }
 
 static std::vector<Segment> split_color_spans(std::string_view in)
@@ -697,8 +782,9 @@ static void render_inline_md_with_color_spans(std::string_view text)
 
   auto render_md_fragment = [&](std::string_view frag, bool colored, ImVec4 color) {
     if(frag.empty()) return;
+    const std::string normalized = normalize_markdown_link_destinations(frag);
     if(colored) ImGui::PushStyleColor(ImGuiCol_Text, color);
-    md.print(frag.data(), frag.data() + frag.size());
+    md.print(normalized.data(), normalized.data() + normalized.size());
     if(colored) ImGui::PopStyleColor();
   };
   struct InlineToken
@@ -888,7 +974,8 @@ static void render_markdown_block_with_tables(std::string_view text)
     if(block.empty()) return;
     if(block.find("[color=") == std::string_view::npos)
     {
-      md.print(block.data(), block.data() + block.size());
+      const std::string normalized = normalize_markdown_link_destinations(block);
+      md.print(normalized.data(), normalized.data() + normalized.size());
     }
     else
     {
