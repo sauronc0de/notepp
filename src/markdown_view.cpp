@@ -65,6 +65,16 @@ struct HoverPreviewState
 
 static HoverPreviewState g_hover_preview;
 
+static ImVec4 markdown_link_color()
+{
+  return ImVec4(0.56f, 0.82f, 1.0f, 1.0f);
+}
+
+static ImVec4 markdown_link_hover_color()
+{
+  return ImVec4(0.84f, 0.94f, 1.0f, 1.0f);
+}
+
 static std::filesystem::path resolve_image_path(std::string_view href)
 {
   const std::filesystem::path p(href);
@@ -646,9 +656,9 @@ struct MyMarkdown : public imgui_md
   {
     const ImGuiStyle &st = ImGui::GetStyle();
 
-    // Link: m_href is non-empty when rendering link text
+    // Link: use a bright readable accent independent of the note background
     if(!m_href.empty())
-      return st.Colors[ImGuiCol_ButtonHovered]; // pick any style color you like
+      return markdown_link_color();
 
     // Inline code: usually make it a bit “warm” or distinct
     if(m_is_code)
@@ -783,9 +793,12 @@ static void render_inline_md_with_color_spans(std::string_view text)
   auto render_md_fragment = [&](std::string_view frag, bool colored, ImVec4 color) {
     if(frag.empty()) return;
     const std::string normalized = normalize_markdown_link_destinations(frag);
+    ImGui::PushStyleColor(ImGuiCol_Button, markdown_link_color());
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, markdown_link_hover_color());
     if(colored) ImGui::PushStyleColor(ImGuiCol_Text, color);
     md.print(normalized.data(), normalized.data() + normalized.size());
     if(colored) ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
   };
   struct InlineToken
   {
@@ -975,7 +988,10 @@ static void render_markdown_block_with_tables(std::string_view text)
     if(block.find("[color=") == std::string_view::npos)
     {
       const std::string normalized = normalize_markdown_link_destinations(block);
+      ImGui::PushStyleColor(ImGuiCol_Button, markdown_link_color());
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, markdown_link_hover_color());
       md.print(normalized.data(), normalized.data() + normalized.size());
+      ImGui::PopStyleColor(2);
     }
     else
     {
