@@ -135,11 +135,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(imgui_md_fc)
 
 add_library(imgui_md STATIC
-  ${imgui_md_fc_SOURCE_DIR}/imgui_md.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui_md/imgui_md.cpp
 )
 
 target_include_directories(imgui_md PUBLIC
-  ${imgui_md_fc_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui_md
   ${MD4C_INCLUDE_DIR}          # <-- makes md4c.h visible
 )
 

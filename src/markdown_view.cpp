@@ -1,12 +1,14 @@
 #include "markdown_view.hpp"
 #include "helpers.hpp"
 #include "markdown_sections.hpp"
+#include "string_utils.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <unordered_map>
 #include <SDL.h>
@@ -48,6 +50,20 @@ struct TextureRecord
 
 static std::unordered_map<std::string, TextureRecord> g_image_cache{};
 static float g_render_width = 0.0f;
+static std::string g_document_path;
+static bool g_hover_preview_enabled = true;
+
+struct HoverPreviewState
+{
+  bool active = false;
+  int requested_frame = -1;
+  ImVec2 mouse_pos = ImVec2(0, 0);
+  std::string title;
+  std::string body;
+  std::string path;
+};
+
+static HoverPreviewState g_hover_preview;
 
 static std::filesystem::path resolve_image_path(std::string_view href)
 {
@@ -75,6 +91,165 @@ static std::filesystem::path resolve_image_path(std::string_view href)
       return c;
   }
   return {};
+}
+
+static bool is_external_link(std::string_view href)
+{
+  return starts_with(href, "http://") || starts_with(href, "https://");
+}
+
+static std::string slugify_heading(std::string_view s)
+{
+  std::string out;
+  bool last_dash = false;
+  for(char c : s)
+  {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if(std::isalnum(uc))
+    {
+      out.push_back(static_cast<char>(std::tolower(uc)));
+      last_dash = false;
+    }
+    else if(!out.empty() && !last_dash)
+    {
+      out.push_back('-');
+      last_dash = true;
+    }
+  }
+  while(!out.empty() && out.back() == '-') out.pop_back();
+  return out;
+}
+
+struct InternalLinkTarget
+{
+  bool valid = false;
+  std::filesystem::path note_path;
+  std::string anchor;
+};
+
+static InternalLinkTarget resolve_internal_link(std::string_view href)
+{
+  InternalLinkTarget out;
+  if(href.empty() || is_external_link(href)) return out;
+
+  std::string path_part(href);
+  const size_t hash = path_part.find('#');
+  if(hash != std::string::npos)
+  {
+    out.anchor = slugify_heading(path_part.substr(hash + 1));
+    path_part.resize(hash);
+  }
+
+  std::filesystem::path resolved;
+  if(!path_part.empty())
+  {
+    std::filesystem::path rel(path_part);
+    if(rel.extension().empty()) rel += ".md";
+
+    std::vector<std::filesystem::path> candidates;
+    if(!g_document_path.empty())
+      candidates.push_back(std::filesystem::path(g_document_path).parent_path() / rel);
+    candidates.push_back(std::filesystem::path(DATA_PATH) / "notes" / rel);
+
+    for(const auto &candidate : candidates)
+    {
+      std::error_code ec;
+      if(std::filesystem::exists(candidate, ec) && std::filesystem::is_regular_file(candidate, ec))
+      {
+        resolved = candidate;
+        break;
+      }
+    }
+  }
+  else if(!g_document_path.empty())
+  {
+    resolved = std::filesystem::path(g_document_path);
+  }
+
+  if(resolved.empty()) return out;
+  out.valid = true;
+  out.note_path = std::move(resolved);
+  return out;
+}
+
+static std::string read_text_file(const std::filesystem::path &path)
+{
+  std::ifstream in(path, std::ios::binary);
+  if(!in) return {};
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+static std::string extract_section_markdown(std::string_view markdown, std::string_view anchor)
+{
+  if(anchor.empty())
+  {
+    size_t cutoff = 0;
+    int lines = 0;
+    while(cutoff < markdown.size() && lines < 24)
+    {
+      const size_t next = markdown.find('\n', cutoff);
+      cutoff = (next == std::string_view::npos) ? markdown.size() : next + 1;
+      ++lines;
+    }
+    return std::string(markdown.substr(0, cutoff));
+  }
+
+  size_t pos = 0;
+  size_t match_start = std::string_view::npos;
+  int match_level = 0;
+  while(pos < markdown.size())
+  {
+    const size_t line_start = pos;
+    size_t line_end = markdown.find('\n', pos);
+    if(line_end == std::string_view::npos) line_end = markdown.size();
+    const std::string_view line = markdown.substr(line_start, line_end - line_start);
+
+    int level = 0;
+    std::string_view title;
+    if(parse_heading_line(line, level, title))
+    {
+      const std::string slug = slugify_heading(title);
+      if(match_start == std::string_view::npos)
+      {
+        if(slug == anchor)
+        {
+          match_start = line_start;
+          match_level = level;
+        }
+      }
+      else if(level <= match_level)
+      {
+        return std::string(markdown.substr(match_start, line_start - match_start));
+      }
+    }
+
+    pos = (line_end < markdown.size()) ? line_end + 1 : line_end;
+  }
+
+  if(match_start != std::string_view::npos) return std::string(markdown.substr(match_start));
+  return {};
+}
+
+static bool request_internal_link_preview(std::string_view href)
+{
+  if(!g_hover_preview_enabled) return false;
+
+  const InternalLinkTarget target = resolve_internal_link(href);
+  if(!target.valid) return false;
+
+  const std::string markdown = read_text_file(target.note_path);
+  if(markdown.empty()) return false;
+
+  std::string body = extract_section_markdown(markdown, target.anchor);
+  if(body.empty()) return false;
+
+  g_hover_preview.active = true;
+  g_hover_preview.requested_frame = ImGui::GetFrameCount();
+  g_hover_preview.mouse_pos = ImGui::GetMousePos();
+  g_hover_preview.path = target.note_path.string();
+  g_hover_preview.title = std::string(href);
+  g_hover_preview.body = std::move(body);
+  return true;
 }
 
 static TextureRecord load_texture_from_file(const std::filesystem::path &file)
@@ -410,12 +585,17 @@ struct MyMarkdown : public imgui_md
     return st.Colors[ImGuiCol_Text];
   }
 
+  bool on_link_hover() const override
+  {
+    return request_internal_link_preview(m_href);
+  }
+
   void open_url() const override
   {
 #if defined(__EMSCRIPTEN__)
     // no-op or use JS bridge
 #else
-    if(!m_href.empty())
+    if(!resolve_internal_link(m_href).valid && !m_href.empty())
       SDL_OpenURL(m_href.c_str());
 #endif
   }
@@ -438,6 +618,34 @@ void MarkdownView::set_render_width(float width)
 {
   g_render_width = width > 0.0f ? width : 0.0f;
 }
+
+void MarkdownView::set_document_path(std::string_view path)
+{
+  g_document_path.assign(path.data(), path.size());
+}
+
+void MarkdownView::set_hover_preview_enabled(bool enabled)
+{
+  g_hover_preview_enabled = enabled;
+}
+
+bool MarkdownView::take_hover_preview(MarkdownHoverPreviewData &out)
+{
+  if(!g_hover_preview.active) return false;
+  const int frame = ImGui::GetFrameCount();
+  out.mouse_pos = g_hover_preview.mouse_pos;
+  out.title = g_hover_preview.title;
+  out.path = g_hover_preview.path;
+  out.body = g_hover_preview.body;
+  out.link_hovered = (g_hover_preview.requested_frame == frame);
+  return true;
+}
+
+void MarkdownView::clear_hover_preview()
+{
+  g_hover_preview = HoverPreviewState{};
+}
+
 static void render_sections(const MdSection &s,
                             const std::function<void(std::string_view)> &render_body,
                             int &id_counter)

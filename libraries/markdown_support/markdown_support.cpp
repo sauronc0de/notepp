@@ -21,6 +21,9 @@
 
 namespace MarkdownSupport
 {
+PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
+void set_preview_document_path(std::string_view path);
+
 namespace
 {
 bool extract_checklist_prefix(std::string_view line, std::string &prefix_out)
@@ -394,6 +397,48 @@ bool g_preview_state_dirty = false;
 std::unordered_map<std::string, std::unordered_map<int, TableViewState>> g_table_state_cache;
 CellEditorState g_cell_editor_state;
 FilterDialogState g_filter_dialog_state;
+bool g_rendering_hover_preview = false;
+bool g_force_open_preview_headers = false;
+int g_hover_preview_drawn_frame = -1;
+
+void render_link_hover_preview_popup()
+{
+  if(g_rendering_hover_preview) return;
+
+  const int frame = ImGui::GetFrameCount();
+  if(g_hover_preview_drawn_frame == frame) return;
+
+  MarkdownHoverPreviewData preview;
+  if(!MarkdownView::take_hover_preview(preview)) return;
+
+  g_hover_preview_drawn_frame = frame;
+  g_rendering_hover_preview = true;
+  const std::string previous_document_path = g_preview_document_path;
+  std::string preview_markdown = preview.body;
+
+  ImGui::SetNextWindowPos(ImVec2(preview.mouse_pos.x + 18.0f, preview.mouse_pos.y + 18.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(280.0f, 140.0f), ImVec2(560.0f, 440.0f));
+
+  MarkdownView::set_hover_preview_enabled(false);
+  set_preview_document_path(preview.path);
+  g_force_open_preview_headers = true;
+
+  const std::string window_title = preview.title + "##link_preview";
+  bool window_hovered = false;
+  if(ImGui::Begin(window_title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    window_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByPopup);
+    (void)render_preview_with_task_checkboxes_ex(preview_markdown);
+  }
+  ImGui::End();
+
+  if(!preview.link_hovered && !window_hovered) MarkdownView::clear_hover_preview();
+
+  g_force_open_preview_headers = false;
+  set_preview_document_path(previous_document_path);
+  MarkdownView::set_hover_preview_enabled(true);
+  g_rendering_hover_preview = false;
+}
 
 std::string current_document_key()
 {
@@ -1620,6 +1665,7 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
 void set_preview_document_path(std::string_view path)
 {
   g_preview_document_path.assign(path.data(), path.size());
+  MarkdownView::set_document_path(path);
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)
@@ -1679,9 +1725,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         pos = has_newline ? line_end + 1 : line_end;
         continue;
       }
+      if(g_force_open_preview_headers) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
       const bool open = ImGui::TreeNodeEx(
           reinterpret_cast<void *>(static_cast<intptr_t>(static_cast<int>(line_start) + 0x10000)),
-          ImGuiTreeNodeFlags_SpanAvailWidth,
+          ImGuiTreeNodeFlags_SpanAvailWidth | (g_force_open_preview_headers ? ImGuiTreeNodeFlags_DefaultOpen : 0),
           "%s",
           std::string(heading_title).c_str());
       header_stack.push_back(HeaderUi{heading_level, open});
@@ -1849,6 +1896,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
 
   result.markdown_changed = checkbox_changed || !table_replacements.empty();
   if(result.preview_state_changed) save_preview_state_if_dirty();
+  render_link_hover_preview_popup();
   return result;
 }
 
