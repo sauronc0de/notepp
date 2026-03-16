@@ -1083,24 +1083,10 @@ void MarkdownView::render(std::string_view markdown)
       continue;
     }
 
-    // Render NOTE block as a card
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
-
-    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-    bg.w = 0.18f;
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
-    ImVec4 bcol = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-    bcol.w = 0.75f;
-    ImGui::PushStyleColor(ImGuiCol_Border, bcol);
-
-    // Unique ID per note in this render call (no unbounded growth)
+    // Render quote block with only the left accent line.
     ImGui::PushID(note_idx++);
 
-    // --- Auto-height note card (no BeginChild) ---
-    const float rounding = 8.0f;
-    const ImVec2 pad(12.0f, 10.0f);
+    const ImVec2 pad(12.0f, 6.0f);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, pad);
 
@@ -1124,13 +1110,12 @@ void MarkdownView::render(std::string_view markdown)
     ImVec2 rect_min = ImGui::GetItemRectMin();
     ImVec2 rect_max = ImGui::GetItemRectMax();
 
-    ImU32 bg_col = ImGui::GetColorU32(bg);
-    ImU32 border_col = ImGui::GetColorU32(bcol);
-
     auto *dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(rect_min, rect_max, bg_col, rounding);
-    dl->AddRect(rect_min, rect_max, border_col, rounding);
-    dl->AddRectFilled(rect_min, ImVec2(rect_min.x + 5.0f, rect_max.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), rounding);
+    dl->AddRectFilled(
+        rect_min,
+        ImVec2(rect_min.x + 5.0f, rect_max.y),
+        ImGui::GetColorU32(ImGuiCol_ButtonHovered),
+        2.0f);
 
     // Right click on note block -> copy only this note block text
     ImGui::SetCursorScreenPos(rect_min);
@@ -1170,9 +1155,6 @@ void MarkdownView::render(std::string_view markdown)
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
     ImGui::PopID();
-
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
 
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
   }
