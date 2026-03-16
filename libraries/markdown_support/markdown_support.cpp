@@ -2,6 +2,7 @@
 
 #include "markdown_sections.hpp"
 #include "markdown_view.hpp"
+#include "markdown_ui.hpp"
 #include "mermaid_flowchart.hpp"
 #include "string_utils.hpp"
 
@@ -1742,6 +1743,39 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       continue;
     }
 
+    if(tline == "```UI")
+    {
+      size_t scan = has_newline ? line_end + 1 : line_end;
+      size_t block_end = markdown.size();
+      bool closed = false;
+
+      while(scan < markdown.size())
+      {
+        const size_t ls = scan;
+        size_t le = markdown.find('\n', scan);
+        const bool ln = (le != std::string::npos);
+        if(!ln) le = markdown.size();
+
+        const std::string_view l(markdown.data() + ls, le - ls);
+        if(NoteCore::trim(l) == "```")
+        {
+          block_end = ln ? le + 1 : le;
+          closed = true;
+          break;
+        }
+        scan = ln ? le + 1 : le;
+      }
+
+      if(closed)
+      {
+        flush_chunk();
+        const MarkdownUi::RenderResult ui_result = MarkdownUi::try_render_ui_block(markdown, line_start, line_end, block_end);
+        result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
+        pos = block_end;
+        continue;
+      }
+    }
+
     if(tline == "```mermaid")
     {
       size_t scan = has_newline ? line_end + 1 : line_end;
@@ -1894,7 +1928,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     markdown.replace(it->start, it->end - it->start, it->replacement);
   }
 
-  result.markdown_changed = checkbox_changed || !table_replacements.empty();
+  result.markdown_changed = result.markdown_changed || checkbox_changed || !table_replacements.empty();
   if(result.preview_state_changed) save_preview_state_if_dirty();
   render_link_hover_preview_popup();
   return result;
