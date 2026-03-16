@@ -183,6 +183,93 @@ bool is_if_close_line(std::string_view line)
   return trim(line) == "}";
 }
 
+struct StyledLabel
+{
+  std::string text;
+  bool has_color = false;
+  ImVec4 color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+};
+
+bool parse_hex_color_text(std::string_view text, ImVec4 &out)
+{
+  if(text.size() != 7 && text.size() != 9) return false;
+  if(text.front() != '#') return false;
+
+  auto hex = [](char c) -> int {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if(c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+  };
+  auto byte = [&](size_t i) -> int {
+    const int hi = hex(text[i]);
+    const int lo = hex(text[i + 1]);
+    if(hi < 0 || lo < 0) return -1;
+    return (hi << 4) | lo;
+  };
+
+  const int r = byte(1);
+  const int g = byte(3);
+  const int b = byte(5);
+  if(r < 0 || g < 0 || b < 0) return false;
+  int a = 255;
+  if(text.size() == 9)
+  {
+    a = byte(7);
+    if(a < 0) return false;
+  }
+
+  out = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+  return true;
+}
+
+StyledLabel make_styled_label(std::string text)
+{
+  StyledLabel styled;
+  const std::string_view prefix = "[color=";
+  const std::string_view suffix = "[/color]";
+  const std::string_view view(text);
+  if(view.substr(0, prefix.size()) == prefix && view.size() > prefix.size() + suffix.size())
+  {
+    const size_t close = view.find(']', prefix.size());
+    if(close != std::string_view::npos && view.size() >= close + 1 + suffix.size())
+    {
+      const std::string_view tail = view.substr(view.size() - suffix.size());
+      if(tail == suffix)
+      {
+        ImVec4 color;
+        if(parse_hex_color_text(view.substr(prefix.size(), close - prefix.size()), color))
+        {
+          styled.text = std::string(view.substr(close + 1, view.size() - (close + 1) - suffix.size()));
+          styled.has_color = true;
+          styled.color = color;
+          return styled;
+        }
+      }
+    }
+  }
+  styled.text = std::move(text);
+  return styled;
+}
+
+void render_styled_label(const StyledLabel &label)
+{
+  if(label.text.empty()) return;
+  if(label.has_color)
+  {
+    ImGui::PushStyleColor(ImGuiCol_Text, label.color);
+    MarkdownView::render_inline(label.text);
+    ImGui::PopStyleColor();
+    return;
+  }
+  MarkdownView::render_inline(label.text);
+}
+
+std::string make_hidden_widget_id(const char *prefix, const Statement &stmt)
+{
+  return std::string("##") + prefix + "_" + std::to_string(stmt.span.start);
+}
+
 std::string format_number(double v, bool prefer_integer)
 {
   if(prefer_integer || std::fabs(v - std::round(v)) < 1e-6)
@@ -826,11 +913,11 @@ float evaluate_width(EvalContext &ctx, const std::string &expr, float fallback)
   return fallback;
 }
 
-std::string evaluate_label(EvalContext &ctx, const std::string &expr, const std::string &fallback)
+StyledLabel evaluate_label(EvalContext &ctx, const std::string &expr, const std::string &fallback)
 {
   ExprResult result = ctx.evaluate(expr);
-  if(!result.error.empty()) return fallback;
-  return display_value(result.value);
+  if(!result.error.empty()) return make_styled_label(fallback);
+  return make_styled_label(display_value(result.value));
 }
 
 std::vector<std::string> evaluate_options(EvalContext &ctx, const std::string &expr, std::string &error)
@@ -927,7 +1014,8 @@ void render_text_output(EvalContext &ctx, const Statement &stmt)
     render_error_inline(result.error);
     return;
   }
-  ImGui::TextUnformatted(display_value(result.value).c_str());
+  const std::string rendered = display_value(result.value);
+  MarkdownView::render_inline(rendered);
 }
 
 void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -956,14 +1044,19 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
     return;
   }
   const bool readonly = decl_it->second.computed;
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
   std::string text_value = display_value(value_result.value);
   char buffer[512];
   std::snprintf(buffer, sizeof(buffer), "%s", text_value.c_str());
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
   ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
-  if(ImGui::InputText((label + "##text_" + std::to_string(stmt.span.start)).c_str(), buffer, sizeof(buffer)))
+  if(ImGui::InputText(make_hidden_widget_id("text", stmt).c_str(), buffer, sizeof(buffer)))
   {
     Value updated;
     updated.kind = ValueKind::String;
@@ -973,8 +1066,8 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
   ImGui::EndDisabled();
   if(stmt.args.size() >= 4)
   {
-    const std::string tooltip = evaluate_label(ctx, stmt.args[3], {});
-    if(!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip.c_str());
+    const StyledLabel tooltip = evaluate_label(ctx, stmt.args[3], {});
+    if(!tooltip.text.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip.text.c_str());
   }
 }
 
@@ -1005,14 +1098,19 @@ void render_int_input(EvalContext &ctx, const ParsedBlock &block, const Statemen
     return;
   }
   const bool readonly = decl_it->second.computed;
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 90.0f);
   ExprResult buttons_result = ctx.evaluate(stmt.args[3]);
   const bool buttons = buttons_result.error.empty() ? is_true(buttons_result.value) : false;
   int value = static_cast<int>(std::llround(value_result.value.number));
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
   ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
-  if(ImGui::InputInt((label + "##int_" + std::to_string(stmt.span.start)).c_str(), &value, buttons ? 1 : 0, buttons ? 10 : 0))
+  if(ImGui::InputInt(make_hidden_widget_id("int", stmt).c_str(), &value, buttons ? 1 : 0, buttons ? 10 : 0))
   {
     Value updated;
     updated.kind = ValueKind::Number;
@@ -1054,8 +1152,13 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
     return;
   }
   const bool readonly = decl_it->second.computed;
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
   ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
   if(value_result.value.is_integer)
@@ -1063,7 +1166,7 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
     int value = static_cast<int>(std::llround(value_result.value.number));
     const int min_v = static_cast<int>(std::llround(min_result.value.number));
     const int max_v = static_cast<int>(std::llround(max_result.value.number));
-    if(ImGui::SliderInt((label + "##slider_" + std::to_string(stmt.span.start)).c_str(), &value, min_v, max_v))
+    if(ImGui::SliderInt(make_hidden_widget_id("slider", stmt).c_str(), &value, min_v, max_v))
     {
       Value updated;
       updated.kind = ValueKind::Number;
@@ -1075,7 +1178,7 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
   else
   {
     float value = static_cast<float>(value_result.value.number);
-    if(ImGui::SliderFloat((label + "##slider_" + std::to_string(stmt.span.start)).c_str(), &value, static_cast<float>(min_result.value.number), static_cast<float>(max_result.value.number)))
+    if(ImGui::SliderFloat(make_hidden_widget_id("slider", stmt).c_str(), &value, static_cast<float>(min_result.value.number), static_cast<float>(max_result.value.number)))
     {
       Value updated;
       updated.kind = ValueKind::Number;
@@ -1114,10 +1217,10 @@ void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement
     return;
   }
   const bool readonly = decl_it->second.computed;
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   bool value = value_result.value.boolean;
   ImGui::BeginDisabled(readonly);
-  if(ImGui::Checkbox((label + "##checkbox_" + std::to_string(stmt.span.start)).c_str(), &value))
+  if(ImGui::Checkbox(make_hidden_widget_id("checkbox", stmt).c_str(), &value))
   {
     Value updated;
     updated.kind = ValueKind::Bool;
@@ -1125,6 +1228,11 @@ void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement
     set_override(ctx, block, *var_name, updated, replacements, errors);
   }
   ImGui::EndDisabled();
+  if(!label.text.empty())
+  {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+    render_styled_label(label);
+  }
 }
 
 void render_enum(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -1153,11 +1261,16 @@ void render_enum(EvalContext &ctx, const ParsedBlock &block, const Statement &st
   std::string option_error;
   const std::vector<std::string> options = evaluate_options(ctx, stmt.args[3], option_error);
   if(!option_error.empty()) { render_error_inline(option_error); return; }
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
   ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
-  if(ImGui::BeginCombo((label + "##enum_" + std::to_string(stmt.span.start)).c_str(), current.c_str()))
+  if(ImGui::BeginCombo(make_hidden_widget_id("enum", stmt).c_str(), current.c_str()))
   {
     for(const std::string &option : options)
     {
@@ -1205,13 +1318,18 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
   std::string option_error;
   const std::vector<std::string> options = evaluate_options(ctx, stmt.args[3], option_error);
   if(!option_error.empty()) { render_error_inline(option_error); return; }
-  const std::string label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   std::set<std::string> selected(value_result.value.list.begin(), value_result.value.list.end());
   std::string preview = display_value(value_result.value);
   if(preview.empty()) preview = "(none)";
   const bool readonly = decl_it->second.computed;
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
   ImGui::BeginDisabled(readonly);
-  if(ImGui::BeginCombo((label + "##multicheck_" + std::to_string(stmt.span.start)).c_str(), preview.c_str()))
+  if(ImGui::BeginCombo(make_hidden_widget_id("multicheck", stmt).c_str(), preview.c_str()))
   {
     bool changed = false;
     for(const std::string &option : options)
@@ -1245,7 +1363,7 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
     render_error_inline("button() expects label, width, action");
     return;
   }
-  const std::string label = evaluate_label(ctx, stmt.args[0], "Button");
+  const StyledLabel label = evaluate_label(ctx, stmt.args[0], "Button");
   const float width = evaluate_width(ctx, stmt.args[1], 90.0f);
   const auto assignment = parse_assignment(stmt.args[2]);
   if(!assignment)
@@ -1253,7 +1371,8 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
     render_error_inline("button() action must be assignment like variable=value");
     return;
   }
-  if(ImGui::Button((label + "##button_" + std::to_string(stmt.span.start)).c_str(), ImVec2(width, 0.0f)))
+  if(label.has_color) ImGui::PushStyleColor(ImGuiCol_Text, label.color);
+  if(ImGui::Button((label.text + "##button_" + std::to_string(stmt.span.start)).c_str(), ImVec2(width, 0.0f)))
   {
     ExprResult value_result = ctx.evaluate(assignment->second);
     if(!value_result.error.empty())
@@ -1261,6 +1380,7 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
     else
       set_override(ctx, block, assignment->first, value_result.value, replacements, errors);
   }
+  if(label.has_color) ImGui::PopStyleColor();
 }
 
 bool row_conditions_pass(EvalContext &ctx, const Row &row, std::vector<std::string> &errors)

@@ -2583,6 +2583,33 @@ void App::frame_ui()
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.32f, 0.36f, 1.0f));
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.94f, 0.96f, 1.0f));
 
+      auto insert_topbar_snippet = [&](std::string snippet) {
+        static constexpr const char *kCursorMarker = "__CURSOR__";
+        int cursor_offset = static_cast<int>(snippet.size());
+        const size_t marker_pos = snippet.find(kCursorMarker);
+        if(marker_pos != std::string::npos)
+        {
+          cursor_offset = static_cast<int>(marker_pos);
+          snippet.erase(marker_pos, std::strlen(kCursorMarker));
+        }
+        int p = std::max(0, std::min(fmt_folder.cursor_pos, static_cast<int>(markdown_text_.size())));
+        if(p > 0 && !snippet.empty() && markdown_text_[static_cast<size_t>(p) - 1] != '\n' && snippet.front() != '\n')
+        {
+          snippet.insert(snippet.begin(), '\n');
+          ++cursor_offset;
+        }
+        push_undo_snapshot();
+        markdown_text_.insert(static_cast<size_t>(p), snippet);
+        const int cursor = p + std::max(0, cursor_offset);
+        fmt_folder.cursor_pos = cursor;
+        fmt_folder.sel_start = cursor;
+        fmt_folder.sel_end = cursor;
+        fmt_folder.selection_anchor = cursor;
+        refocus_folder_editor = true;
+        normalize_input_text_buffer(markdown_text_);
+        save_state();
+      };
+
       if(editing_mode_)
       {
         const ImTextureID ic_italic = get_toolbar_icon_texture("italic.png");
@@ -2592,6 +2619,7 @@ void App::frame_ui()
         const ImTextureID ic_color = get_toolbar_icon_texture("color-brush.png");
         const ImTextureID ic_task = get_toolbar_icon_texture("to-do-list.png");
         const ImTextureID ic_table = get_toolbar_icon_texture("table.png");
+        const ImTextureID ic_widget = get_toolbar_icon_texture("widgets.png");
         auto tool_button = [&](const char *id, ImTextureID tex, const char *fallback, const char *tooltip) -> bool {
           bool pressed = false;
           if(tex)
@@ -2660,6 +2688,122 @@ void App::frame_ui()
           insert_markdown_table_at_cursor(markdown_text_, fmt_folder);
           normalize_input_text_buffer(markdown_text_);
           save_state();
+        }
+        ImGui::SameLine();
+        if(tool_button("##tb_ui_widgets", ic_widget, "Widgets", "Insert UI widget example"))
+        {
+          ImGui::OpenPopup("##tb_ui_widgets_popup");
+        }
+        if(ImGui::BeginPopup("##tb_ui_widgets_popup"))
+        {
+          ImGui::TextDisabled("UI Blocks");
+          if(ImGui::MenuItem("Full UI example"))
+          {
+            insert_topbar_snippet(
+                R"MD(```UI
+count(10)
+name("Sergi")
+enabled(true)
+mode("Home")
+tags(["daily", "important"])
+total(count*2)
+text("Count: ") int(count, "Count", 90, true)
+text(" Name: ") text(name, "Name", 150, "Edit the name")
+checkbox(enabled, "Enabled")
+enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
+multicheck(tags, "Tags", 180, ["daily", "important", "later"])
+if(enabled){
+  text("Visible total: ") text(total)
+}
+button("Reset count", 110, count=0)
+```
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::Separator();
+          ImGui::TextDisabled("Variables");
+          if(ImGui::MenuItem("Variable example"))
+          {
+            insert_topbar_snippet(R"MD(valueA(10)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Computed variable example"))
+          {
+            insert_topbar_snippet(R"MD(valueA(10)
+valueB(valueA+5)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::Separator();
+          ImGui::TextDisabled("Widgets");
+          if(ImGui::MenuItem("Text output"))
+          {
+            insert_topbar_snippet(R"MD(valueA(10)
+text("Value: ") text(valueA)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Text input"))
+          {
+            insert_topbar_snippet(R"MD(name("Sergi")
+text(name, "Name", 150, "Edit the name")
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Integer input"))
+          {
+            insert_topbar_snippet(R"MD(count(10)
+int(count, "Count", 90, true)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Slider"))
+          {
+            insert_topbar_snippet(R"MD(volume(50)
+slider(volume, "Volume", 160, 0, 100)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Checkbox"))
+          {
+            insert_topbar_snippet(R"MD(enabled(true)
+checkbox(enabled, "Enabled")
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Enum"))
+          {
+            insert_topbar_snippet(R"MD(mode("Home")
+enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Multicheck"))
+          {
+            insert_topbar_snippet(R"MD(tags(["daily"])
+multicheck(tags, "Tags", 180, ["daily", "important", "later"])
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Button action"))
+          {
+            insert_topbar_snippet(R"MD(count(10)
+button("Reset count", 110, count=0)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Conditional if block"))
+          {
+            insert_topbar_snippet(R"MD(enabled(true)
+checkbox(enabled, "Enabled")
+if(enabled){
+  text("Visible when enabled")
+}
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::EndPopup();
         }
         ImGui::SameLine();
       }
