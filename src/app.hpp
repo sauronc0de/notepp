@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 struct SDL_Window;
 
@@ -92,6 +93,7 @@ private:
   mutable bool layout_dirty_ = false;
   std::vector<std::string> undo_stack_;
   std::vector<std::string> redo_stack_;
+  std::unordered_set<unsigned int> pinned_topmost_viewports_;
 
   std::string markdown_text_ =
       "# Notes (Markdown preview)\n"

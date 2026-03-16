@@ -150,6 +150,33 @@ void apply_viewport_always_on_top(const ImGuiViewport *viewport, SDL_Window *mai
 #endif
 }
 
+const ImGuiViewport *find_platform_viewport_by_id(const ImGuiPlatformIO &platform_io, ImGuiID viewport_id)
+{
+  for(ImGuiViewport *viewport : platform_io.Viewports)
+  {
+    if(viewport != nullptr && viewport->ID == viewport_id) return viewport;
+  }
+  return nullptr;
+}
+
+bool viewport_inherits_topmost(
+    const ImGuiViewport *viewport,
+    const ImGuiPlatformIO &platform_io,
+    const std::unordered_set<unsigned int> &pinned_topmost_viewports)
+{
+  if(viewport == nullptr) return false;
+  if((viewport->Flags & ImGuiViewportFlags_TopMost) != 0) return true;
+
+  const ImGuiViewport *current = viewport;
+  while(current != nullptr && current->ID != 0)
+  {
+    if(pinned_topmost_viewports.count(current->ID) != 0) return true;
+    if(current->ParentViewportId == 0 || current->ParentViewportId == current->ID) break;
+    current = find_platform_viewport_by_id(platform_io, current->ParentViewportId);
+  }
+  return false;
+}
+
 void load_drawings_state()
 {
   g_folder_drawings.clear();
@@ -893,6 +920,8 @@ void App::apply_redo_snapshot()
 
 void App::frame_begin()
 {
+  pinned_topmost_viewports_.clear();
+
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
@@ -3794,6 +3823,7 @@ __CURSOR__)MD");
       }
 
       apply_viewport_always_on_top(note_viewport, window_, n.always_on_top);
+      if(note_is_detached && n.always_on_top && note_viewport != nullptr) pinned_topmost_viewports_.insert(note_viewport->ID);
 
       ImVec2 effective_pos = pos;
       const bool allow_platform_windows = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
@@ -4139,6 +4169,7 @@ __CURSOR__)MD");
   }
 
   apply_viewport_always_on_top(active_note_viewport, window_, active_note.always_on_top);
+  if(active_note_detached && active_note.always_on_top && active_note_viewport != nullptr) pinned_topmost_viewports_.insert(active_note_viewport->ID);
 
   static bool show_palette = false;
   static bool refocus_editor = false;
@@ -4445,6 +4476,15 @@ void App::frame_end()
     SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
+
+    ImGuiPlatformIO &platform_io = ImGui::GetPlatformIO();
+    for(ImGuiViewport *viewport : platform_io.Viewports)
+    {
+      if(viewport == nullptr) continue;
+      const bool should_be_topmost = viewport_inherits_topmost(viewport, platform_io, pinned_topmost_viewports_);
+      apply_viewport_always_on_top(viewport, window_, should_be_topmost);
+    }
+
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
   }
