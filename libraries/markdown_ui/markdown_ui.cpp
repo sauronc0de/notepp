@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <set>
@@ -20,6 +21,9 @@
 #include <utility>
 #include <vector>
 
+#include <SDL.h>
+#include <SDL_image.h>
+#include <SDL_opengl.h>
 #include <imgui.h>
 
 namespace MarkdownUi
@@ -40,7 +44,8 @@ enum class ValueKind
   Number,
   String,
   Bool,
-  StringList,
+  Array,
+  Object,
 };
 
 struct Value
@@ -50,7 +55,8 @@ struct Value
   bool is_integer = false;
   std::string str;
   bool boolean = false;
-  std::vector<std::string> list;
+  std::vector<Value> array;
+  std::vector<std::pair<std::string, Value>> object;
 };
 
 struct Statement
@@ -65,6 +71,8 @@ struct Statement
     Checkbox,
     Enum,
     MultiCheck,
+    List,
+    Inventory,
     Button,
     Error,
   } kind = Kind::Error;
@@ -108,6 +116,8 @@ bool is_widget_name(std::string_view name)
          name == "checkbox" ||
          name == "enum" ||
          name == "multicheck" ||
+         name == "list" ||
+         name == "inventory" ||
          name == "button";
 }
 
@@ -154,7 +164,8 @@ bool parse_if_open_line(std::string_view line, std::string &condition_out)
       in_string = true;
       continue;
     }
-    if(c == '(') ++depth;
+    if(c == '(')
+      ++depth;
     else if(c == ')')
     {
       --depth;
@@ -287,6 +298,51 @@ std::string format_number(double v, bool prefer_integer)
   return s;
 }
 
+bool is_scalar_value(const Value &value)
+{
+  return value.kind == ValueKind::Number ||
+         value.kind == ValueKind::String ||
+         value.kind == ValueKind::Bool;
+}
+
+const Value *find_object_field(const Value &value, std::string_view key)
+{
+  if(value.kind != ValueKind::Object) return nullptr;
+  for(const auto &[field_name, field_value] : value.object)
+  {
+    if(field_name == key) return &field_value;
+  }
+  return nullptr;
+}
+
+Value *find_object_field(Value &value, std::string_view key)
+{
+  if(value.kind != ValueKind::Object) return nullptr;
+  for(auto &[field_name, field_value] : value.object)
+  {
+    if(field_name == key) return &field_value;
+  }
+  return nullptr;
+}
+
+void upsert_object_field(Value &value, std::string key, Value field_value)
+{
+  if(value.kind != ValueKind::Object)
+  {
+    value.kind = ValueKind::Object;
+    value.object.clear();
+  }
+  for(auto &[field_name, current_value] : value.object)
+  {
+    if(field_name == key)
+    {
+      current_value = std::move(field_value);
+      return;
+    }
+  }
+  value.object.emplace_back(std::move(key), std::move(field_value));
+}
+
 std::string escape_string(std::string_view s)
 {
   std::string out;
@@ -295,39 +351,78 @@ std::string escape_string(std::string_view s)
   {
     switch(c)
     {
-      case '\\': out += "\\\\"; break;
-      case '"': out += "\\\""; break;
-      case '\n': out += "\\n"; break;
-      case '\t': out += "\\t"; break;
-      default: out.push_back(c); break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      out.push_back(c);
+      break;
     }
   }
   return out;
+}
+
+std::string serialize_object_key(std::string_view key)
+{
+  if(!key.empty() && is_ident_start(key.front()))
+  {
+    bool valid = true;
+    for(char c : key)
+    {
+      if(!is_ident_char(c))
+      {
+        valid = false;
+        break;
+      }
+    }
+    if(valid) return std::string(key);
+  }
+  return std::string{"\""} + escape_string(key) + "\"";
 }
 
 std::string serialize_value(const Value &value)
 {
   switch(value.kind)
   {
-    case ValueKind::Number:
-      return format_number(value.number, value.is_integer);
-    case ValueKind::String:
-      return std::string{"\""} + escape_string(value.str) + "\"";
-    case ValueKind::Bool:
-      return value.boolean ? "true" : "false";
-    case ValueKind::StringList:
+  case ValueKind::Number:
+    return format_number(value.number, value.is_integer);
+  case ValueKind::String:
+    return std::string{"\""} + escape_string(value.str) + "\"";
+  case ValueKind::Bool:
+    return value.boolean ? "true" : "false";
+  case ValueKind::Array: {
+    std::string out = "[";
+    for(size_t i = 0; i < value.array.size(); ++i)
     {
-      std::string out = "[";
-      for(size_t i = 0; i < value.list.size(); ++i)
-      {
-        if(i != 0) out += ", ";
-        out += "\"" + escape_string(value.list[i]) + "\"";
-      }
-      out += "]";
-      return out;
+      if(i != 0) out += ", ";
+      out += serialize_value(value.array[i]);
     }
-    default:
-      return "null";
+    out += "]";
+    return out;
+  }
+  case ValueKind::Object: {
+    std::string out = "{";
+    for(size_t i = 0; i < value.object.size(); ++i)
+    {
+      if(i != 0) out += ", ";
+      out += serialize_object_key(value.object[i].first);
+      out += ":";
+      out += serialize_value(value.object[i].second);
+    }
+    out += "}";
+    return out;
+  }
+  default:
+    return "null";
   }
 }
 
@@ -335,24 +430,30 @@ std::string display_value(const Value &value)
 {
   switch(value.kind)
   {
-    case ValueKind::Number:
-      return format_number(value.number, value.is_integer);
-    case ValueKind::String:
-      return value.str;
-    case ValueKind::Bool:
-      return value.boolean ? "true" : "false";
-    case ValueKind::StringList:
+  case ValueKind::Number:
+    return format_number(value.number, value.is_integer);
+  case ValueKind::String:
+    return value.str;
+  case ValueKind::Bool:
+    return value.boolean ? "true" : "false";
+  case ValueKind::Array: {
+    const bool all_scalars = std::all_of(value.array.begin(), value.array.end(), [](const Value &item) {
+      return is_scalar_value(item);
+    });
+    if(!all_scalars) return serialize_value(value);
+
+    std::string out;
+    for(size_t i = 0; i < value.array.size(); ++i)
     {
-      std::string out;
-      for(size_t i = 0; i < value.list.size(); ++i)
-      {
-        if(i != 0) out += ", ";
-        out += value.list[i];
-      }
-      return out;
+      if(i != 0) out += ", ";
+      out += display_value(value.array[i]);
     }
-    default:
-      return "<invalid>";
+    return out;
+  }
+  case ValueKind::Object:
+    return serialize_value(value);
+  default:
+    return "<invalid>";
   }
 }
 
@@ -361,8 +462,84 @@ bool is_true(const Value &value)
   if(value.kind == ValueKind::Bool) return value.boolean;
   if(value.kind == ValueKind::Number) return std::fabs(value.number) > 1e-9;
   if(value.kind == ValueKind::String) return !value.str.empty();
-  if(value.kind == ValueKind::StringList) return !value.list.empty();
+  if(value.kind == ValueKind::Array) return !value.array.empty();
+  if(value.kind == ValueKind::Object) return !value.object.empty();
   return false;
+}
+
+std::filesystem::path resolve_widget_image_path(std::string_view raw_path)
+{
+  if(raw_path.empty()) return {};
+
+  std::filesystem::path path(raw_path);
+  if(path.is_absolute() && std::filesystem::exists(path)) return path;
+  if(std::filesystem::exists(path)) return std::filesystem::absolute(path);
+
+  const std::filesystem::path assets_root = std::filesystem::path(ASSETS_PATH);
+  const std::filesystem::path asset_candidate = assets_root / path;
+  if(std::filesystem::exists(asset_candidate)) return asset_candidate;
+
+  const std::filesystem::path icon_candidate = assets_root / "icons" / path;
+  if(std::filesystem::exists(icon_candidate)) return icon_candidate;
+
+  return {};
+}
+
+ImTextureID get_widget_image_texture(std::string_view raw_path)
+{
+  static std::unordered_map<std::string, GLuint> texture_cache;
+
+  const std::filesystem::path resolved = resolve_widget_image_path(raw_path);
+  if(resolved.empty()) return static_cast<ImTextureID>(0);
+
+  const std::string key = resolved.string();
+  if(const auto it = texture_cache.find(key); it != texture_cache.end())
+  {
+    return (ImTextureID)(uintptr_t)it->second;
+  }
+
+  static const bool img_ready = []() {
+    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+    return true;
+  }();
+  (void)img_ready;
+
+  SDL_Surface *loaded = IMG_Load(key.c_str());
+  if(!loaded)
+  {
+    texture_cache.emplace(key, 0);
+    return static_cast<ImTextureID>(0);
+  }
+
+  SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
+  SDL_FreeSurface(loaded);
+  if(!rgba)
+  {
+    texture_cache.emplace(key, 0);
+    return static_cast<ImTextureID>(0);
+  }
+
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
+  if(tex == 0)
+  {
+    SDL_FreeSurface(rgba);
+    texture_cache.emplace(key, 0);
+    return static_cast<ImTextureID>(0);
+  }
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  SDL_FreeSurface(rgba);
+
+  texture_cache.emplace(key, tex);
+  return (ImTextureID)(uintptr_t)tex;
 }
 
 struct ExprResult
@@ -388,7 +565,9 @@ private:
   ExprResult parse_multiplicative();
   ExprResult parse_unary();
   ExprResult parse_primary();
-  ExprResult parse_list();
+  ExprResult parse_string_literal();
+  ExprResult parse_array();
+  ExprResult parse_object();
   bool consume(char c);
   char peek() const;
   static ExprResult combine_numeric(const ExprResult &lhs, const ExprResult &rhs, char op);
@@ -475,16 +654,22 @@ ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &
   out.is_integer = lhs.value.is_integer && rhs.value.is_integer && op != '/';
   switch(op)
   {
-    case '+': out.number = lhs.value.number + rhs.value.number; break;
-    case '-': out.number = lhs.value.number - rhs.value.number; break;
-    case '*': out.number = lhs.value.number * rhs.value.number; break;
-    case '/':
-      if(std::fabs(rhs.value.number) < 1e-9) return {{}, "division by zero"};
-      out.number = lhs.value.number / rhs.value.number;
-      out.is_integer = false;
-      break;
-    default:
-      return {{}, "unsupported operator"};
+  case '+':
+    out.number = lhs.value.number + rhs.value.number;
+    break;
+  case '-':
+    out.number = lhs.value.number - rhs.value.number;
+    break;
+  case '*':
+    out.number = lhs.value.number * rhs.value.number;
+    break;
+  case '/':
+    if(std::fabs(rhs.value.number) < 1e-9) return {{}, "division by zero"};
+    out.number = lhs.value.number / rhs.value.number;
+    out.is_integer = false;
+    break;
+  default:
+    return {{}, "unsupported operator"};
   }
   return {out, {}};
 }
@@ -537,11 +722,57 @@ ExprResult ExprParser::parse_unary()
   return parse_primary();
 }
 
-ExprResult ExprParser::parse_list()
+ExprResult ExprParser::parse_string_literal()
+{
+  if(peek() != '"') return {{}, "expected string literal"};
+
+  ++pos_;
+  std::string out;
+  while(pos_ < source_.size())
+  {
+    const char c = source_[pos_++];
+    if(c == '"')
+    {
+      Value value;
+      value.kind = ValueKind::String;
+      value.str = std::move(out);
+      return {value, {}};
+    }
+    if(c == '\\' && pos_ < source_.size())
+    {
+      const char esc = source_[pos_++];
+      switch(esc)
+      {
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      case '\\':
+        out.push_back('\\');
+        break;
+      case '"':
+        out.push_back('"');
+        break;
+      default:
+        out.push_back(esc);
+        break;
+      }
+    }
+    else
+    {
+      out.push_back(c);
+    }
+  }
+  return {{}, "unterminated string literal"};
+}
+
+ExprResult ExprParser::parse_array()
 {
   if(!consume('[')) return {{}, "expected '['"};
   Value out;
-  out.kind = ValueKind::StringList;
+  out.kind = ValueKind::Array;
   skip_ws();
   if(consume(']')) return {out, {}};
 
@@ -549,18 +780,53 @@ ExprResult ExprParser::parse_list()
   {
     ExprResult item = parse_expression();
     if(!item.error.empty()) return item;
-    if(item.value.kind == ValueKind::String)
-      out.list.push_back(item.value.str);
-    else if(item.value.kind == ValueKind::Number)
-      out.list.push_back(format_number(item.value.number, item.value.is_integer));
-    else if(item.value.kind == ValueKind::Bool)
-      out.list.push_back(item.value.boolean ? "true" : "false");
-    else
-      return {{}, "list items must be scalar values"};
+    out.array.push_back(item.value);
 
     skip_ws();
     if(consume(']')) break;
     if(!consume(',')) return {{}, "expected ',' or ']'"};
+  }
+  return {out, {}};
+}
+
+ExprResult ExprParser::parse_object()
+{
+  if(!consume('{')) return {{}, "expected '{'"};
+  Value out;
+  out.kind = ValueKind::Object;
+  skip_ws();
+  if(consume('}')) return {out, {}};
+
+  while(true)
+  {
+    skip_ws();
+    std::string key;
+    if(peek() == '"')
+    {
+      ExprResult key_result = parse_string_literal();
+      if(!key_result.error.empty()) return key_result;
+      key = std::move(key_result.value.str);
+    }
+    else if(is_ident_start(peek()))
+    {
+      const size_t ident_start = pos_;
+      ++pos_;
+      while(pos_ < source_.size() && is_ident_char(source_[pos_])) ++pos_;
+      key = std::string(source_.substr(ident_start, pos_ - ident_start));
+    }
+    else
+    {
+      return {{}, "expected object key"};
+    }
+
+    if(!consume(':')) return {{}, "expected ':'"};
+    ExprResult item = parse_expression();
+    if(!item.error.empty()) return item;
+    upsert_object_field(out, key, item.value);
+
+    skip_ws();
+    if(consume('}')) break;
+    if(!consume(',')) return {{}, "expected ',' or '}'"};
   }
   return {out, {}};
 }
@@ -579,41 +845,9 @@ ExprResult ExprParser::parse_primary()
     return inner;
   }
 
-  if(peek() == '[') return parse_list();
-
-  if(peek() == '"')
-  {
-    ++pos_;
-    std::string out;
-    while(pos_ < source_.size())
-    {
-      const char c = source_[pos_++];
-      if(c == '"')
-      {
-        Value value;
-        value.kind = ValueKind::String;
-        value.str = std::move(out);
-        return {value, {}};
-      }
-      if(c == '\\' && pos_ < source_.size())
-      {
-        const char esc = source_[pos_++];
-        switch(esc)
-        {
-          case 'n': out.push_back('\n'); break;
-          case 't': out.push_back('\t'); break;
-          case '\\': out.push_back('\\'); break;
-          case '"': out.push_back('"'); break;
-          default: out.push_back(esc); break;
-        }
-      }
-      else
-      {
-        out.push_back(c);
-      }
-    }
-    return {{}, "unterminated string literal"};
-  }
+  if(peek() == '[') return parse_array();
+  if(peek() == '{') return parse_object();
+  if(peek() == '"') return parse_string_literal();
 
   if(std::isdigit(static_cast<unsigned char>(peek())) || peek() == '.')
   {
@@ -668,6 +902,7 @@ std::vector<std::string> split_top_level_args(std::string_view args_text)
   std::string current;
   int paren_depth = 0;
   int bracket_depth = 0;
+  int brace_depth = 0;
   bool in_string = false;
   bool escape = false;
 
@@ -691,12 +926,20 @@ std::vector<std::string> split_top_level_args(std::string_view args_text)
       current.push_back(c);
       continue;
     }
-    if(c == '(') ++paren_depth;
-    else if(c == ')') --paren_depth;
-    else if(c == '[') ++bracket_depth;
-    else if(c == ']') --bracket_depth;
+    if(c == '(')
+      ++paren_depth;
+    else if(c == ')')
+      --paren_depth;
+    else if(c == '[')
+      ++bracket_depth;
+    else if(c == ']')
+      --bracket_depth;
+    else if(c == '{')
+      ++brace_depth;
+    else if(c == '}')
+      --brace_depth;
 
-    if(c == ',' && paren_depth == 0 && bracket_depth == 0)
+    if(c == ',' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0)
     {
       args.push_back(std::string(trim(current)));
       current.clear();
@@ -766,7 +1009,8 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
         in_string = true;
         continue;
       }
-      if(c == '(') ++depth;
+      if(c == '(')
+        ++depth;
       else if(c == ')')
       {
         --depth;
@@ -804,6 +1048,10 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
         stmt.kind = Statement::Kind::Enum;
       else if(stmt.name == "multicheck")
         stmt.kind = Statement::Kind::MultiCheck;
+      else if(stmt.name == "list")
+        stmt.kind = Statement::Kind::List;
+      else if(stmt.name == "inventory")
+        stmt.kind = Statement::Kind::Inventory;
       else if(stmt.name == "button")
         stmt.kind = Statement::Kind::Button;
     }
@@ -832,43 +1080,66 @@ bool parse_literal_expr(std::string_view expr, Value &out)
   return true;
 }
 
+bool statement_needs_more_input(std::string_view text)
+{
+  int paren_depth = 0;
+  bool saw_open = false;
+  bool in_string = false;
+  bool escape = false;
+
+  for(char c : text)
+  {
+    if(in_string)
+    {
+      if(escape)
+        escape = false;
+      else if(c == '\\')
+        escape = true;
+      else if(c == '"')
+        in_string = false;
+      continue;
+    }
+
+    if(c == '"')
+    {
+      in_string = true;
+      continue;
+    }
+    if(c == '(')
+    {
+      saw_open = true;
+      ++paren_depth;
+    }
+    else if(c == ')' && paren_depth > 0)
+    {
+      --paren_depth;
+    }
+  }
+
+  return saw_open && paren_depth > 0;
+}
+
 ParsedBlock parse_block(std::string_view body, size_t body_start)
 {
   ParsedBlock block;
   std::vector<std::string> condition_stack;
-  size_t pos = 0;
-  size_t line_number = 0;
-  while(pos < body.size())
-  {
-    const size_t line_start = pos;
-    size_t line_end = body.find('\n', pos);
-    const bool has_newline = line_end != std::string::npos;
-    if(!has_newline) line_end = body.size();
-    const std::string_view line(body.data() + line_start, line_end - line_start);
+  std::string pending_statement;
+  size_t pending_offset = 0;
+  size_t pending_line_number = 0;
+  std::vector<std::string> pending_conditions;
 
-    std::string condition_expr;
-    if(parse_if_open_line(line, condition_expr))
-    {
-      condition_stack.push_back(std::move(condition_expr));
-      pos = has_newline ? line_end + 1 : line_end;
-      ++line_number;
-      continue;
-    }
-    if(is_if_close_line(line))
-    {
-      if(condition_stack.empty())
-        block.errors.push_back("unexpected '}' in UI block");
-      else
-        condition_stack.pop_back();
-      pos = has_newline ? line_end + 1 : line_end;
-      ++line_number;
-      continue;
-    }
+  auto flush_pending = [&](bool force_error) {
+    if(pending_statement.empty()) return;
 
     Row row;
-    row.conditions = condition_stack;
-    row.line_number = line_number;
-    parse_statement_line(line, body_start + line_start, line_number, row);
+    row.conditions = pending_conditions;
+    row.line_number = pending_line_number;
+    parse_statement_line(pending_statement, pending_offset, pending_line_number, row);
+    if(force_error && !row.statements.empty())
+    {
+      Statement &stmt = row.statements.front();
+      if(stmt.kind == Statement::Kind::Error && stmt.error.empty()) stmt.error = "unterminated statement";
+    }
     for(const Statement &stmt : row.statements)
     {
       if(stmt.kind == Statement::Kind::Error && !stmt.error.empty()) block.errors.push_back(stmt.error);
@@ -888,8 +1159,63 @@ ParsedBlock parse_block(std::string_view body, size_t body_start)
       }
     }
     block.rows.push_back(std::move(row));
+    pending_statement.clear();
+    pending_conditions.clear();
+  };
+
+  size_t pos = 0;
+  size_t line_number = 0;
+  while(pos < body.size())
+  {
+    const size_t line_start = pos;
+    size_t line_end = body.find('\n', pos);
+    const bool has_newline = line_end != std::string::npos;
+    if(!has_newline) line_end = body.size();
+    const std::string_view line(body.data() + line_start, line_end - line_start);
+
+    if(pending_statement.empty())
+    {
+      std::string condition_expr;
+      if(parse_if_open_line(line, condition_expr))
+      {
+        condition_stack.push_back(std::move(condition_expr));
+        pos = has_newline ? line_end + 1 : line_end;
+        ++line_number;
+        continue;
+      }
+      if(is_if_close_line(line))
+      {
+        if(condition_stack.empty())
+          block.errors.push_back("unexpected '}' in UI block");
+        else
+          condition_stack.pop_back();
+        pos = has_newline ? line_end + 1 : line_end;
+        ++line_number;
+        continue;
+      }
+
+      pending_statement = std::string(line);
+      pending_offset = body_start + line_start;
+      pending_line_number = line_number;
+      pending_conditions = condition_stack;
+    }
+    else
+    {
+      pending_statement.push_back('\n');
+      pending_statement.append(line.data(), line.size());
+    }
+
+    const bool needs_more = statement_needs_more_input(pending_statement);
     pos = has_newline ? line_end + 1 : line_end;
     ++line_number;
+    if(needs_more) continue;
+
+    flush_pending(false);
+  }
+
+  if(!pending_statement.empty())
+  {
+    flush_pending(statement_needs_more_input(pending_statement));
   }
   if(!condition_stack.empty()) block.errors.push_back("unterminated if(...) block in UI block");
   return block;
@@ -928,18 +1254,31 @@ std::vector<std::string> evaluate_options(EvalContext &ctx, const std::string &e
     error = result.error;
     return {};
   }
-  if(result.value.kind != ValueKind::StringList)
+  if(result.value.kind != ValueKind::Array)
   {
-    error = "options must evaluate to a string list";
+    error = "options must evaluate to a list";
     return {};
   }
-  return result.value.list;
+
+  std::vector<std::string> options;
+  options.reserve(result.value.array.size());
+  for(const Value &item : result.value.array)
+  {
+    if(!is_scalar_value(item))
+    {
+      error = "options must contain scalar values";
+      return {};
+    }
+    options.push_back(display_value(item));
+  }
+  return options;
 }
 
 std::optional<std::pair<std::string, std::string>> parse_assignment(std::string_view expr)
 {
   int paren_depth = 0;
   int bracket_depth = 0;
+  int brace_depth = 0;
   bool in_string = false;
   bool escape = false;
   for(size_t i = 0; i < expr.size(); ++i)
@@ -960,11 +1299,19 @@ std::optional<std::pair<std::string, std::string>> parse_assignment(std::string_
       in_string = true;
       continue;
     }
-    if(c == '(') ++paren_depth;
-    else if(c == ')') --paren_depth;
-    else if(c == '[') ++bracket_depth;
-    else if(c == ']') --bracket_depth;
-    else if(c == '=' && paren_depth == 0 && bracket_depth == 0)
+    if(c == '(')
+      ++paren_depth;
+    else if(c == ')')
+      --paren_depth;
+    else if(c == '[')
+      ++bracket_depth;
+    else if(c == ']')
+      --bracket_depth;
+    else if(c == '{')
+      ++brace_depth;
+    else if(c == '}')
+      --brace_depth;
+    else if(c == '=' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0)
     {
       const std::string lhs(trim(expr.substr(0, i)));
       const std::string rhs(trim(expr.substr(i + 1)));
@@ -1091,7 +1438,11 @@ void render_int_input(EvalContext &ctx, const ParsedBlock &block, const Statemen
     return;
   }
   ExprResult value_result = ctx.resolve_variable(*var_name);
-  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
   if(value_result.value.kind != ValueKind::Number)
   {
     render_error_inline("int() requires a numeric variable");
@@ -1143,9 +1494,21 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
   ExprResult value_result = ctx.resolve_variable(*var_name);
   ExprResult min_result = ctx.evaluate(stmt.args[3]);
   ExprResult max_result = ctx.evaluate(stmt.args[4]);
-  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
-  if(!min_result.error.empty()) { render_error_inline(min_result.error); return; }
-  if(!max_result.error.empty()) { render_error_inline(max_result.error); return; }
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
+  if(!min_result.error.empty())
+  {
+    render_error_inline(min_result.error);
+    return;
+  }
+  if(!max_result.error.empty())
+  {
+    render_error_inline(max_result.error);
+    return;
+  }
   if(value_result.value.kind != ValueKind::Number || min_result.value.kind != ValueKind::Number || max_result.value.kind != ValueKind::Number)
   {
     render_error_inline("slider() requires numeric values");
@@ -1210,7 +1573,11 @@ void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement
     return;
   }
   ExprResult value_result = ctx.resolve_variable(*var_name);
-  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
   if(value_result.value.kind != ValueKind::Bool)
   {
     render_error_inline("checkbox() requires a boolean variable");
@@ -1255,12 +1622,20 @@ void render_enum(EvalContext &ctx, const ParsedBlock &block, const Statement &st
     return;
   }
   ExprResult value_result = ctx.resolve_variable(*var_name);
-  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
   const bool readonly = decl_it->second.computed;
   const std::string current = display_value(value_result.value);
   std::string option_error;
   const std::vector<std::string> options = evaluate_options(ctx, stmt.args[3], option_error);
-  if(!option_error.empty()) { render_error_inline(option_error); return; }
+  if(!option_error.empty())
+  {
+    render_error_inline(option_error);
+    return;
+  }
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
   if(!label.text.empty())
@@ -1309,17 +1684,34 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
     return;
   }
   ExprResult value_result = ctx.resolve_variable(*var_name);
-  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
-  if(value_result.value.kind != ValueKind::StringList)
+  if(!value_result.error.empty())
   {
-    render_error_inline("multicheck() requires a string list variable");
+    render_error_inline(value_result.error);
+    return;
+  }
+  if(value_result.value.kind != ValueKind::Array)
+  {
+    render_error_inline("multicheck() requires a list variable");
     return;
   }
   std::string option_error;
   const std::vector<std::string> options = evaluate_options(ctx, stmt.args[3], option_error);
-  if(!option_error.empty()) { render_error_inline(option_error); return; }
+  if(!option_error.empty())
+  {
+    render_error_inline(option_error);
+    return;
+  }
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
-  std::set<std::string> selected(value_result.value.list.begin(), value_result.value.list.end());
+  std::set<std::string> selected;
+  for(const Value &item : value_result.value.array)
+  {
+    if(!is_scalar_value(item))
+    {
+      render_error_inline("multicheck() list values must be scalar");
+      return;
+    }
+    selected.insert(display_value(item));
+  }
   std::string preview = display_value(value_result.value);
   if(preview.empty()) preview = "(none)";
   const bool readonly = decl_it->second.computed;
@@ -1347,13 +1739,808 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
     if(changed)
     {
       Value updated;
-      updated.kind = ValueKind::StringList;
-      updated.list.assign(selected.begin(), selected.end());
+      updated.kind = ValueKind::Array;
+      for(const std::string &option : options)
+      {
+        if(selected.count(option) == 0) continue;
+        Value item;
+        item.kind = ValueKind::String;
+        item.str = option;
+        updated.array.push_back(std::move(item));
+      }
       set_override(ctx, block, *var_name, updated, replacements, errors);
     }
     ImGui::EndCombo();
   }
   ImGui::EndDisabled();
+}
+
+bool parse_index_path(std::string_view text, std::vector<int> &path)
+{
+  path.clear();
+  if(text.empty()) return false;
+
+  size_t start = 0;
+  while(start < text.size())
+  {
+    const size_t slash = text.find('/', start);
+    const std::string_view part = text.substr(start, slash == std::string_view::npos ? text.size() - start : slash - start);
+    if(part.empty()) return false;
+
+    int value = 0;
+    for(char c : part)
+    {
+      if(c < '0' || c > '9') return false;
+      value = value * 10 + (c - '0');
+    }
+    path.push_back(value);
+    if(slash == std::string_view::npos) break;
+    start = slash + 1;
+  }
+  return !path.empty();
+}
+
+std::string make_index_path(const std::vector<int> &path)
+{
+  std::string out;
+  for(size_t i = 0; i < path.size(); ++i)
+  {
+    if(i != 0) out.push_back('/');
+    out += std::to_string(path[i]);
+  }
+  return out;
+}
+
+Value make_string_value(std::string text)
+{
+  Value value;
+  value.kind = ValueKind::String;
+  value.str = std::move(text);
+  return value;
+}
+
+Value make_list_item_value(std::string name, std::string tooltip)
+{
+  Value item;
+  item.kind = ValueKind::Object;
+  upsert_object_field(item, "name", make_string_value(std::move(name)));
+  upsert_object_field(item, "tooltip", make_string_value(std::move(tooltip)));
+  return item;
+}
+
+Value make_inventory_slot_value(std::string slot_id, std::string image, std::string tooltip)
+{
+  Value slot;
+  slot.kind = ValueKind::Object;
+  upsert_object_field(slot, "id", make_string_value(std::move(slot_id)));
+  upsert_object_field(slot, "image", make_string_value(std::move(image)));
+  upsert_object_field(slot, "tooltip", make_string_value(std::move(tooltip)));
+  return slot;
+}
+
+Value *get_children_array(Value &item)
+{
+  Value *children = find_object_field(item, "children");
+  if(!children || children->kind != ValueKind::Array) return nullptr;
+  return children;
+}
+
+const Value *get_children_array(const Value &item)
+{
+  const Value *children = find_object_field(item, "children");
+  if(!children || children->kind != ValueKind::Array) return nullptr;
+  return children;
+}
+
+Value *get_list_parent_array(Value &root, const std::vector<int> &path)
+{
+  if(root.kind != ValueKind::Array) return nullptr;
+  if(path.empty()) return &root;
+
+  Value *current_array = &root;
+  for(size_t depth = 0; depth + 1 < path.size(); ++depth)
+  {
+    const int index = path[depth];
+    if(index < 0 || static_cast<size_t>(index) >= current_array->array.size()) return nullptr;
+    Value &item = current_array->array[static_cast<size_t>(index)];
+    current_array = get_children_array(item);
+    if(!current_array) return nullptr;
+  }
+  return current_array;
+}
+
+Value *get_list_item(Value &root, const std::vector<int> &path)
+{
+  if(path.empty()) return nullptr;
+  Value *parent = get_list_parent_array(root, path);
+  if(!parent) return nullptr;
+  const int index = path.back();
+  if(index < 0 || static_cast<size_t>(index) >= parent->array.size()) return nullptr;
+  return &parent->array[static_cast<size_t>(index)];
+}
+
+bool swap_list_items(Value &root, const std::vector<int> &from_path, const std::vector<int> &to_path)
+{
+  if(from_path.size() != to_path.size() || from_path.empty()) return false;
+  if(!std::equal(from_path.begin(), from_path.end() - 1, to_path.begin())) return false;
+
+  Value *parent = get_list_parent_array(root, from_path);
+  if(!parent) return false;
+
+  const int from_index = from_path.back();
+  const int to_index = to_path.back();
+  if(from_index < 0 || to_index < 0) return false;
+  if(static_cast<size_t>(from_index) >= parent->array.size() || static_cast<size_t>(to_index) >= parent->array.size()) return false;
+  if(from_index == to_index) return false;
+
+  std::swap(parent->array[static_cast<size_t>(from_index)], parent->array[static_cast<size_t>(to_index)]);
+  return true;
+}
+
+bool insert_list_item_after(Value &root, const std::vector<int> &path, Value item)
+{
+  if(path.empty())
+  {
+    if(root.kind != ValueKind::Array) return false;
+    root.array.push_back(std::move(item));
+    return true;
+  }
+
+  Value *parent = get_list_parent_array(root, path);
+  if(!parent) return false;
+  const int index = path.back();
+  if(index < 0 || static_cast<size_t>(index) >= parent->array.size()) return false;
+  parent->array.insert(parent->array.begin() + index + 1, std::move(item));
+  return true;
+}
+
+bool remove_list_item(Value &root, const std::vector<int> &path)
+{
+  if(path.empty()) return false;
+  Value *parent = get_list_parent_array(root, path);
+  if(!parent) return false;
+  const int index = path.back();
+  if(index < 0 || static_cast<size_t>(index) >= parent->array.size()) return false;
+  parent->array.erase(parent->array.begin() + index);
+  return true;
+}
+
+bool append_list_child(Value &root, const std::vector<int> &path, Value item)
+{
+  Value *target = get_list_item(root, path);
+  if(!target) return false;
+
+  Value *children = get_children_array(*target);
+  if(!children)
+  {
+    Value new_children;
+    new_children.kind = ValueKind::Array;
+    upsert_object_field(*target, "children", std::move(new_children));
+    children = get_children_array(*target);
+  }
+  if(!children) return false;
+  children->array.push_back(std::move(item));
+  return true;
+}
+
+size_t count_list_rows(const Value &value, bool allow_children)
+{
+  if(value.kind != ValueKind::Array) return 0;
+  (void)allow_children;
+
+  size_t count = value.array.size();
+  for(const Value &item : value.array)
+  {
+    if(const Value *children = get_children_array(item); children)
+      count += count_list_rows(*children, true);
+  }
+  return count;
+}
+
+bool extract_list_item_info(const Value &item, std::string &name, std::string &tooltip, std::string &error)
+{
+  if(item.kind != ValueKind::Object)
+  {
+    error = "list items must be objects with a name field";
+    return false;
+  }
+
+  const Value *name_value = find_object_field(item, "name");
+  if(!name_value)
+  {
+    error = "list items require a name field";
+    return false;
+  }
+
+  name = display_value(*name_value);
+  tooltip.clear();
+  if(const Value *tooltip_value = find_object_field(item, "tooltip"); tooltip_value)
+    tooltip = display_value(*tooltip_value);
+  return true;
+}
+
+bool update_object_string_field(Value &object_value, std::string_view field_name, const char *new_text)
+{
+  if(object_value.kind != ValueKind::Object) return false;
+  const std::string updated = new_text ? std::string(new_text) : std::string();
+  const Value *existing = find_object_field(object_value, field_name);
+  if(existing && existing->kind == ValueKind::String && existing->str == updated) return false;
+  upsert_object_field(object_value, std::string(field_name), make_string_value(updated));
+  return true;
+}
+
+struct ListMutation
+{
+  enum class Kind
+  {
+    None,
+    InsertRoot,
+    InsertAfter,
+    InsertChild,
+    Remove,
+  } kind = Kind::None;
+
+  std::vector<int> path;
+};
+
+struct ListPopupEditorState
+{
+  char name[512]{};
+  char tooltip[4096]{};
+};
+
+bool &list_item_collapsed_state(const std::string &path_text)
+{
+  static std::unordered_map<std::string, bool> collapsed_paths;
+  return collapsed_paths[path_text];
+}
+
+void render_list_description_popup(const std::string &popup_id, const ImVec2 &anchor, float width, std::string_view text)
+{
+  if(text.empty()) return;
+
+  ImGui::SetNextWindowPos(ImVec2(anchor.x + 10.0f, anchor.y + 8.0f));
+  ImGui::SetNextWindowBgAlpha(0.96f);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0.0f), ImVec2(std::max(220.0f, width), 420.0f));
+  if(ImGui::Begin(
+         popup_id.c_str(),
+         nullptr,
+         ImGuiWindowFlags_NoDecoration |
+             ImGuiWindowFlags_AlwaysAutoResize |
+             ImGuiWindowFlags_NoSavedSettings |
+             ImGuiWindowFlags_NoFocusOnAppearing |
+             ImGuiWindowFlags_NoNav |
+             ImGuiWindowFlags_NoMove))
+  {
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(220.0f, width));
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::PopTextWrapPos();
+  }
+  ImGui::End();
+}
+
+bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
+{
+  std::string name;
+  std::string tooltip;
+  std::string item_error;
+  if(!extract_list_item_info(item, name, tooltip, item_error))
+  {
+    render_error_inline(item_error);
+    return false;
+  }
+
+  static std::unordered_map<std::string, ListPopupEditorState> popup_states;
+
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float indent = 18.0f * static_cast<float>(item_path.size() > 0 ? item_path.size() - 1 : 0);
+  const float row_width = std::max(220.0f, width - indent - style.ScrollbarSize);
+  const float arrow_width = 18.0f;
+  const float marker_width = 10.0f;
+  const float text_width = std::max(140.0f, row_width - arrow_width - marker_width - style.FramePadding.x * 4.0f);
+  const std::string path_text = make_index_path(item_path);
+  const Value *children = get_children_array(item);
+  const bool has_children = children && !children->array.empty();
+  bool &collapsed = list_item_collapsed_state(path_text);
+  if(!has_children) collapsed = false;
+
+  if(indent > 0.0f) ImGui::Indent(indent);
+  ImGui::PushID(path_text.c_str());
+
+  const ImVec2 text_size = ImGui::CalcTextSize(name.c_str(), nullptr, false, text_width);
+  const float row_height = std::max(text_size.y + style.FramePadding.y * 2.0f, ImGui::GetFrameHeight());
+  ImGui::InvisibleButton("##row", ImVec2(row_width, row_height));
+
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  const bool row_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+  const ImVec2 min = ImGui::GetItemRectMin();
+  const ImVec2 max = ImGui::GetItemRectMax();
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  if(hovered || active)
+  {
+    draw_list->AddRectFilled(min, max, ImGui::GetColorU32(hovered ? ImGuiCol_HeaderHovered : ImGuiCol_Header), 6.0f);
+  }
+
+  const float arrow_x = min.x + style.FramePadding.x + 2.0f;
+  const float arrow_y = min.y + row_height * 0.5f;
+  if(has_children)
+  {
+    if(row_clicked && mouse.x <= min.x + arrow_width + style.FramePadding.x)
+    {
+      collapsed = !collapsed;
+    }
+
+    ImVec2 a, b, c;
+    if(collapsed)
+    {
+      a = ImVec2(arrow_x, arrow_y - 5.0f);
+      b = ImVec2(arrow_x, arrow_y + 5.0f);
+      c = ImVec2(arrow_x + 6.0f, arrow_y);
+    }
+    else
+    {
+      a = ImVec2(arrow_x - 2.0f, arrow_y - 3.0f);
+      b = ImVec2(arrow_x + 6.0f, arrow_y - 3.0f);
+      c = ImVec2(arrow_x + 2.0f, arrow_y + 4.0f);
+    }
+    draw_list->AddTriangleFilled(a, b, c, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+  }
+
+  const ImVec2 marker_center(min.x + arrow_width + style.FramePadding.x + 2.0f, min.y + row_height * 0.5f);
+  draw_list->AddCircleFilled(marker_center, 2.5f, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+  draw_list->AddText(
+      ImGui::GetFont(),
+      ImGui::GetFontSize(),
+      ImVec2(min.x + arrow_width + marker_width + style.FramePadding.x * 2.0f, min.y + style.FramePadding.y),
+      ImGui::GetColorU32(ImGuiCol_Text),
+      name.c_str(),
+      nullptr,
+      text_width);
+
+  if(!tooltip.empty() && hovered && !ImGui::IsPopupOpen("##row_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+  {
+    render_list_description_popup("##list_desc_" + path_text, max, std::min(420.0f, row_width), tooltip);
+  }
+
+  if(ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+  {
+    ImGui::SetDragDropPayload(payload_type, path_text.c_str(), path_text.size() + 1);
+    ImGui::TextUnformatted(name.c_str());
+    ImGui::EndDragDropSource();
+  }
+  if(ImGui::BeginDragDropTarget())
+  {
+    if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(payload_type))
+    {
+      std::vector<int> source_path;
+      const char *payload_text = static_cast<const char *>(payload->Data);
+      if(payload_text && parse_index_path(payload_text, source_path) && swap_list_items(root, source_path, item_path))
+        changed = true;
+    }
+    ImGui::EndDragDropTarget();
+  }
+
+  if(ImGui::BeginPopupContextItem("##row_menu"))
+  {
+    ListPopupEditorState &state = popup_states[path_text];
+    if(ImGui::IsWindowAppearing())
+    {
+      std::snprintf(state.name, sizeof(state.name), "%s", name.c_str());
+      std::snprintf(state.tooltip, sizeof(state.tooltip), "%s", tooltip.c_str());
+    }
+
+    const float popup_width = std::max(280.0f, std::min(row_width, 460.0f));
+    bool apply_changes = false;
+    bool discard_changes = false;
+    ImGui::TextDisabled("List item");
+    ImGui::SetNextItemWidth(popup_width);
+    ImGui::InputText("Name", state.name, sizeof(state.name));
+
+    ImGui::SetNextItemWidth(popup_width);
+    ImGui::InputTextMultiline(
+        "Description",
+        state.tooltip,
+        sizeof(state.tooltip),
+        ImVec2(popup_width, 120.0f));
+
+    ImGui::TextDisabled("Apply saves changes. Escape closes without saving.");
+    if(ImGui::Button("Apply")) apply_changes = true;
+    if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape)) discard_changes = true;
+    if(apply_changes)
+    {
+      changed = update_object_string_field(item, "name", state.name) || changed;
+      changed = update_object_string_field(item, "tooltip", state.tooltip) || changed;
+      ImGui::CloseCurrentPopup();
+    }
+    else if(discard_changes)
+    {
+      ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::Separator();
+    if(ImGui::MenuItem("New item below"))
+    {
+      mutation.kind = ListMutation::Kind::InsertAfter;
+      mutation.path = item_path;
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("New child"))
+    {
+      mutation.kind = ListMutation::Kind::InsertChild;
+      mutation.path = item_path;
+      ImGui::CloseCurrentPopup();
+    }
+    if(has_children && ImGui::MenuItem(collapsed ? "Expand children" : "Collapse children"))
+    {
+      collapsed = !collapsed;
+    }
+    if(ImGui::MenuItem("Remove"))
+    {
+      mutation.kind = ListMutation::Kind::Remove;
+      mutation.path = item_path;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  ImGui::PopID();
+  if(indent > 0.0f) ImGui::Unindent(indent);
+  return mutation.kind != ListMutation::Kind::None;
+}
+
+void render_list_branch(Value &root, Value &array_value, const std::vector<int> &parent_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
+{
+  if(array_value.kind != ValueKind::Array) return;
+
+  for(size_t i = 0; i < array_value.array.size(); ++i)
+  {
+    Value &item = array_value.array[i];
+    std::vector<int> item_path = parent_path;
+    item_path.push_back(static_cast<int>(i));
+    const std::string path_text = make_index_path(item_path);
+    if(render_list_row(root, item, item_path, allow_children, payload_type, width, changed, mutation)) return;
+
+    if(Value *children = get_children_array(item); children && !children->array.empty() && !list_item_collapsed_state(path_text))
+    {
+      render_list_branch(root, *children, item_path, true, payload_type, width, changed, mutation);
+      if(mutation.kind != ListMutation::Kind::None) return;
+    }
+  }
+}
+
+void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
+{
+  if(stmt.args.size() != 4)
+  {
+    render_error_inline("list() expects value, label, width, allow_children");
+    return;
+  }
+
+  const auto var_name = parse_identifier_arg(stmt.args[0]);
+  if(!var_name)
+  {
+    render_error_inline("list() must bind to a variable name");
+    return;
+  }
+  const auto decl_it = block.declarations.find(*var_name);
+  if(decl_it == block.declarations.end())
+  {
+    render_error_inline("unknown variable '" + *var_name + "'");
+    return;
+  }
+
+  ExprResult value_result = ctx.resolve_variable(*var_name);
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
+  if(value_result.value.kind != ValueKind::Array)
+  {
+    render_error_inline("list() requires a list variable");
+    return;
+  }
+
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
+  const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
+  float widget_width = std::max(requested_width, 280.0f);
+  if(available_width > 1.0f) widget_width = std::min(widget_width, available_width);
+  ExprResult children_result = ctx.evaluate(stmt.args[3]);
+  const bool allow_children = children_result.error.empty() && is_true(children_result.value);
+  const bool readonly = decl_it->second.computed;
+  const size_t row_count = std::max<size_t>(1, count_list_rows(value_result.value, allow_children));
+  const float per_row_height = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
+  const float height = std::min(420.0f, std::max(120.0f, 20.0f + static_cast<float>(row_count) * per_row_height));
+  const std::string child_id = make_hidden_widget_id("list", stmt);
+  const std::string payload_type = "MDUI_LIST_" + std::to_string(stmt.span.start);
+
+  if(!label.text.empty()) render_styled_label(label);
+
+  Value updated = value_result.value;
+  bool changed = false;
+  ImGui::BeginDisabled(readonly);
+  if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true))
+  {
+    if(updated.array.empty())
+      ImGui::TextDisabled("(empty list)");
+    else
+    {
+      ListMutation mutation;
+      render_list_branch(updated, updated, {}, allow_children, payload_type.c_str(), widget_width - 10.0f, changed, mutation);
+      if(mutation.kind == ListMutation::Kind::InsertAfter)
+        changed = insert_list_item_after(updated, mutation.path, make_list_item_value("New item", "")) || changed;
+      else if(mutation.kind == ListMutation::Kind::InsertChild)
+        changed = append_list_child(updated, mutation.path, make_list_item_value("New child", "")) || changed;
+      else if(mutation.kind == ListMutation::Kind::Remove)
+        changed = remove_list_item(updated, mutation.path) || changed;
+    }
+
+    if(ImGui::BeginPopupContextWindow("##list_window_menu", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+    {
+      if(ImGui::MenuItem("New item"))
+      {
+        changed = insert_list_item_after(updated, {}, make_list_item_value("New item", "")) || changed;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+  ImGui::EndChild();
+  ImGui::EndDisabled();
+
+  if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
+}
+
+bool extract_inventory_slot(const Value &slot_value, std::string &slot_id, std::string &image, std::string &tooltip, std::string &error)
+{
+  if(slot_value.kind != ValueKind::Object)
+  {
+    error = "inventory slots must be objects";
+    return false;
+  }
+
+  if(const Value *id_value = find_object_field(slot_value, "id"); id_value)
+    slot_id = display_value(*id_value);
+  else
+    slot_id.clear();
+  if(const Value *image_value = find_object_field(slot_value, "image"); image_value)
+    image = display_value(*image_value);
+  else
+    image.clear();
+  if(const Value *tooltip_value = find_object_field(slot_value, "tooltip"); tooltip_value)
+    tooltip = display_value(*tooltip_value);
+  else
+    tooltip.clear();
+  return true;
+}
+
+std::string default_inventory_slot_id(int rows, int cols, int index)
+{
+  if(cols <= 0) cols = 1;
+  const int row = index / cols;
+  const int col = index % cols;
+  return "slot_" + std::to_string(row) + "_" + std::to_string(col);
+}
+
+Value *ensure_inventory_slot(Value &items_value, int rows, int cols, int index)
+{
+  if(items_value.kind != ValueKind::Array || index < 0) return nullptr;
+  while(items_value.array.size() <= static_cast<size_t>(index))
+  {
+    const int next_index = static_cast<int>(items_value.array.size());
+    items_value.array.push_back(make_inventory_slot_value(default_inventory_slot_id(rows, cols, next_index), "", ""));
+  }
+  return &items_value.array[static_cast<size_t>(index)];
+}
+
+void draw_inventory_slot_preview(const std::string &image, const std::string &fallback, const ImVec2 &min, const ImVec2 &max, bool selected)
+{
+  ImDrawList *draw_list = ImGui::GetWindowDrawList();
+  draw_list->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), 6.0f);
+  const ImU32 border_color = ImGui::GetColorU32(selected ? ImGuiCol_PlotHistogram : ImGuiCol_Border);
+  draw_list->AddRect(min, max, border_color, 6.0f, 0, selected ? 2.0f : 1.0f);
+
+  const float padding = 8.0f;
+  const ImTextureID texture = get_widget_image_texture(image);
+  if(texture != static_cast<ImTextureID>(0))
+  {
+    draw_list->AddImage(texture, ImVec2(min.x + padding, min.y + padding), ImVec2(max.x - padding, max.y - padding));
+    return;
+  }
+
+  std::string label = fallback;
+  if(label.empty() && !image.empty()) label = std::filesystem::path(image).stem().string();
+  if(label.empty()) label = "empty";
+
+  const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
+  const ImVec2 text_pos(
+      min.x + (max.x - min.x - text_size.x) * 0.5f,
+      min.y + (max.y - min.y - text_size.y) * 0.5f);
+  draw_list->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+}
+
+void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
+{
+  if(stmt.args.size() != 5)
+  {
+    render_error_inline("inventory() expects value, label, width, rows, cols");
+    return;
+  }
+
+  const auto var_name = parse_identifier_arg(stmt.args[0]);
+  if(!var_name)
+  {
+    render_error_inline("inventory() must bind to a variable name");
+    return;
+  }
+  const auto decl_it = block.declarations.find(*var_name);
+  if(decl_it == block.declarations.end())
+  {
+    render_error_inline("unknown variable '" + *var_name + "'");
+    return;
+  }
+
+  ExprResult value_result = ctx.resolve_variable(*var_name);
+  ExprResult rows_result = ctx.evaluate(stmt.args[3]);
+  ExprResult cols_result = ctx.evaluate(stmt.args[4]);
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
+  if(!rows_result.error.empty())
+  {
+    render_error_inline(rows_result.error);
+    return;
+  }
+  if(!cols_result.error.empty())
+  {
+    render_error_inline(cols_result.error);
+    return;
+  }
+  if(value_result.value.kind != ValueKind::Object)
+  {
+    render_error_inline("inventory() requires an object variable");
+    return;
+  }
+  if(rows_result.value.kind != ValueKind::Number || cols_result.value.kind != ValueKind::Number)
+  {
+    render_error_inline("inventory() rows and cols must be numeric");
+    return;
+  }
+
+  const int rows = std::max(1, static_cast<int>(std::llround(rows_result.value.number)));
+  const int cols = std::max(1, static_cast<int>(std::llround(cols_result.value.number)));
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
+  const bool readonly = decl_it->second.computed;
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
+  const float min_grid_width = static_cast<float>(cols) * 96.0f + static_cast<float>(cols - 1) * spacing;
+  const float widget_width = std::max(std::max(requested_width, min_grid_width), std::min(available_width, 760.0f));
+  const float cell_size = std::max(72.0f, (widget_width - spacing * static_cast<float>(cols - 1)) / static_cast<float>(cols));
+  const float height = rows * cell_size + (rows - 1) * spacing + 12.0f;
+  const std::string child_id = make_hidden_widget_id("inventory", stmt);
+  const std::string payload_type = "MDUI_INV_" + std::to_string(stmt.span.start);
+  static std::unordered_map<std::string, int> selected_slot_by_widget;
+
+  if(!label.text.empty()) render_styled_label(label);
+
+  Value updated = value_result.value;
+  Value *items = find_object_field(updated, "items");
+  if(!items || items->kind != ValueKind::Array)
+  {
+    render_error_inline("inventory() requires an items list inside the bound variable");
+    return;
+  }
+
+  int &selected_index = selected_slot_by_widget[child_id];
+  if(selected_index < 0 || selected_index >= rows * cols) selected_index = 0;
+
+  bool changed = false;
+  ImGui::BeginDisabled(readonly);
+  if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, ImGuiWindowFlags_HorizontalScrollbar))
+  {
+    for(int row = 0; row < rows; ++row)
+    {
+      for(int col = 0; col < cols; ++col)
+      {
+        const int index = row * cols + col;
+        if(col != 0) ImGui::SameLine(0.0f, spacing);
+
+        ImGui::PushID(index);
+        ImGui::InvisibleButton("##slot", ImVec2(cell_size, cell_size));
+        if(ImGui::IsItemClicked()) selected_index = index;
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+
+        std::string slot_id;
+        std::string image;
+        std::string tooltip;
+        std::string slot_error;
+        if(static_cast<size_t>(index) < items->array.size())
+        {
+          if(extract_inventory_slot(items->array[static_cast<size_t>(index)], slot_id, image, tooltip, slot_error))
+            draw_inventory_slot_preview(image, slot_id, min, max, selected_index == index);
+          else
+            draw_inventory_slot_preview({}, "invalid", min, max, selected_index == index);
+        }
+        else
+        {
+          draw_inventory_slot_preview({}, "empty", min, max, selected_index == index);
+        }
+
+        if(!slot_error.empty()) errors.push_back(slot_error);
+        if(!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip.c_str());
+
+        if(static_cast<size_t>(index) < items->array.size() && ImGui::BeginDragDropSource())
+        {
+          ImGui::SetDragDropPayload(payload_type.c_str(), &index, sizeof(index));
+          const std::string preview = slot_id.empty() ? image : slot_id;
+          ImGui::TextUnformatted(preview.empty() ? "slot" : preview.c_str());
+          ImGui::EndDragDropSource();
+        }
+        if(ImGui::BeginDragDropTarget())
+        {
+          if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(payload_type.c_str()))
+          {
+            const int source_index = *static_cast<const int *>(payload->Data);
+            if(source_index >= 0 &&
+               static_cast<size_t>(source_index) < items->array.size() &&
+               static_cast<size_t>(index) < items->array.size() &&
+               source_index != index)
+            {
+              std::swap(items->array[static_cast<size_t>(source_index)], items->array[static_cast<size_t>(index)]);
+              changed = true;
+            }
+          }
+          ImGui::EndDragDropTarget();
+        }
+        ImGui::PopID();
+      }
+    }
+  }
+  ImGui::EndChild();
+
+  ImGui::Separator();
+  ImGui::TextDisabled("Selected slot: %d", selected_index + 1);
+  Value *selected_slot = ensure_inventory_slot(*items, rows, cols, selected_index);
+  if(selected_slot)
+  {
+    char id_buffer[512];
+    char image_buffer[512];
+    char tooltip_buffer[512];
+    std::string current_id;
+    std::string current_image;
+    std::string current_tooltip;
+    std::string slot_error;
+    extract_inventory_slot(*selected_slot, current_id, current_image, current_tooltip, slot_error);
+    std::snprintf(id_buffer, sizeof(id_buffer), "%s", current_id.c_str());
+    std::snprintf(image_buffer, sizeof(image_buffer), "%s", current_image.c_str());
+    std::snprintf(tooltip_buffer, sizeof(tooltip_buffer), "%s", current_tooltip.c_str());
+
+    ImGui::SetNextItemWidth(widget_width);
+    if(ImGui::InputText("Slot id", id_buffer, sizeof(id_buffer)))
+      changed = update_object_string_field(*selected_slot, "id", id_buffer) || changed;
+    ImGui::SetNextItemWidth(widget_width);
+    if(ImGui::InputText("Image", image_buffer, sizeof(image_buffer)))
+      changed = update_object_string_field(*selected_slot, "image", image_buffer) || changed;
+    ImGui::SetNextItemWidth(widget_width);
+    if(ImGui::InputText("Tooltip", tooltip_buffer, sizeof(tooltip_buffer)))
+      changed = update_object_string_field(*selected_slot, "tooltip", tooltip_buffer) || changed;
+
+    if(ImGui::Button("Clear slot"))
+    {
+      *selected_slot = make_inventory_slot_value(default_inventory_slot_id(rows, cols, selected_index), "", "");
+      changed = true;
+    }
+  }
+  ImGui::EndDisabled();
+
+  if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
 }
 
 void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -1408,35 +2595,41 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
 
   switch(stmt.kind)
   {
-    case Statement::Kind::Declaration:
-      break;
-    case Statement::Kind::TextOutput:
-      render_text_output(ctx, stmt);
-      break;
-    case Statement::Kind::TextInput:
-      render_text_input(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::IntInput:
-      render_int_input(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::Slider:
-      render_slider(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::Checkbox:
-      render_checkbox(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::Enum:
-      render_enum(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::MultiCheck:
-      render_multicheck(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::Button:
-      render_button(ctx, block, stmt, replacements, errors);
-      break;
-    case Statement::Kind::Error:
-      render_error_inline(stmt.error.empty() ? "invalid UI statement" : stmt.error);
-      break;
+  case Statement::Kind::Declaration:
+    break;
+  case Statement::Kind::TextOutput:
+    render_text_output(ctx, stmt);
+    break;
+  case Statement::Kind::TextInput:
+    render_text_input(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::IntInput:
+    render_int_input(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Slider:
+    render_slider(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Checkbox:
+    render_checkbox(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Enum:
+    render_enum(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::MultiCheck:
+    render_multicheck(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::List:
+    render_list_widget(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Inventory:
+    render_inventory_widget(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Button:
+    render_button(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Error:
+    render_error_inline(stmt.error.empty() ? "invalid UI statement" : stmt.error);
+    break;
   }
 }
 

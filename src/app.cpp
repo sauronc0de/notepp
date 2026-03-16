@@ -904,8 +904,12 @@ void App::frame_begin()
       running_ = false;
     }
 
+    ImGui_ImplSDL2_ProcessEvent(&event);
+    const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
+
     // While editing, keep Esc out of InputText so it doesn't cancel/revert the latest edit.
     if(editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE)
     {
@@ -913,6 +917,7 @@ void App::frame_begin()
       continue;
     }
     if(editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_z)
@@ -921,6 +926,7 @@ void App::frame_begin()
       continue;
     }
     if(editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_y)
@@ -929,6 +935,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE)
     {
@@ -937,6 +944,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_F2)
     {
@@ -944,6 +952,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_DELETE)
     {
@@ -951,6 +960,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_z)
@@ -960,6 +970,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_y)
@@ -969,6 +980,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_c)
@@ -977,6 +989,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
+       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        (event.key.keysym.mod & KMOD_CTRL) &&
        event.key.keysym.sym == SDLK_v)
@@ -985,7 +998,6 @@ void App::frame_begin()
       continue;
     }
 
-    ImGui_ImplSDL2_ProcessEvent(&event);
   }
 
   ImGui_ImplOpenGL3_NewFrame();
@@ -2783,6 +2795,33 @@ __CURSOR__)MD");
           {
             insert_topbar_snippet(R"MD(tags(["daily"])
 multicheck(tags, "Tags", 180, ["daily", "important", "later"])
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("List"))
+          {
+            insert_topbar_snippet(R"MD(items([
+  {name:"Sword", tooltip:"Basic weapon"},
+  {name:"Shield", tooltip:"Blocks attacks"},
+  {name:"Potion", tooltip:"Restores health"}
+])
+list(items, "Inventory items", 220, true)
+__CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Inventory"))
+          {
+            insert_topbar_snippet(R"MD(inventoryData({
+  rows:2,
+  cols:2,
+  items:[
+    {id:"slot_0_0", image:"sword.png", tooltip:"Iron sword"},
+    {id:"slot_0_1", image:"shield.png", tooltip:"Wooden shield"},
+    {id:"slot_1_0", image:"potion.png", tooltip:"Health potion"},
+    {id:"slot_1_1", image:"empty.png", tooltip:"Empty slot"}
+  ]
+})
+inventory(inventoryData, "Inventory", 220, 2, 2)
 __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
