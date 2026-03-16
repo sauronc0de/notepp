@@ -2622,6 +2622,76 @@ void App::frame_ui()
         save_state();
       };
 
+      static char inventory_builder_title[128] = "Inventory";
+      static int inventory_builder_rows = 2;
+      static int inventory_builder_cols = 2;
+      auto trim_simple = [](std::string text) {
+        const size_t first = text.find_first_not_of(" \t\n\r");
+        if(first == std::string::npos) return std::string();
+        const size_t last = text.find_last_not_of(" \t\n\r");
+        return text.substr(first, last - first + 1);
+      };
+      auto escape_ui_string = [](const std::string &text) {
+        std::string out;
+        out.reserve(text.size() + 8);
+        for(char c : text)
+        {
+          switch(c)
+          {
+          case '\\': out += "\\\\"; break;
+          case '"': out += "\\\""; break;
+          case '\n': out += "\\n"; break;
+          default: out.push_back(c); break;
+          }
+        }
+        return out;
+      };
+      auto make_ui_identifier = [&](const std::string &label) {
+        std::string out;
+        out.reserve(label.size() + 4);
+        for(char c : label)
+        {
+          const bool is_lower = c >= 'a' && c <= 'z';
+          const bool is_upper = c >= 'A' && c <= 'Z';
+          const bool is_digit = c >= '0' && c <= '9';
+          if(is_lower || is_upper || is_digit)
+          {
+            out.push_back(is_upper ? static_cast<char>(c - 'A' + 'a') : c);
+          }
+          else if((c == ' ' || c == '-' || c == '_') && !out.empty() && out.back() != '_')
+          {
+            out.push_back('_');
+          }
+        }
+        while(!out.empty() && out.back() == '_') out.pop_back();
+        if(out.empty()) out = "inventory";
+        if(out.front() >= '0' && out.front() <= '9') out.insert(out.begin(), 'i');
+        return out;
+      };
+      auto build_inventory_snippet = [&](const char *raw_title, int rows, int cols) {
+        const int safe_rows = std::max(1, rows);
+        const int safe_cols = std::max(1, cols);
+        std::string label = trim_simple(raw_title ? std::string(raw_title) : std::string());
+        if(label.empty()) label = "Inventory";
+        const std::string variable_name = make_ui_identifier(label) + "_data";
+        const int width = std::max(220, safe_cols * 58 + 12);
+        std::ostringstream out;
+        out << variable_name << "({\n";
+        out << "  rows:" << safe_rows << ",\n";
+        out << "  cols:" << safe_cols << ",\n";
+        out << "  items:[\n";
+        out << "    {name:\"Potion\", image:\"potion.png\", tooltip:\"Consumable item\", quantity:3, color:\"#57A7FF\"}";
+        if(safe_rows * safe_cols > 1)
+          out << ",\n    {tooltip:\"Disabled example cell\", color:\"#FFB347\", enabled:false}\n";
+        else
+          out << "\n";
+        out << "  ]\n";
+        out << "})\n";
+        out << "inventory(" << variable_name << ", \"" << escape_ui_string(label) << "\", " << width << ", " << safe_rows << ", " << safe_cols << ")\n";
+        out << "__CURSOR__";
+        return out.str();
+      };
+
       if(editing_mode_)
       {
         const ImTextureID ic_italic = get_toolbar_icon_texture("italic.png");
@@ -2706,6 +2776,7 @@ void App::frame_ui()
         {
           ImGui::OpenPopup("##tb_ui_widgets_popup");
         }
+        bool request_open_inventory_builder = false;
         if(ImGui::BeginPopup("##tb_ui_widgets_popup"))
         {
           ImGui::TextDisabled("UI Blocks");
@@ -2809,20 +2880,9 @@ list(items, "Inventory items", 220, true)
 __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
-          if(ImGui::MenuItem("Inventory"))
+          if(ImGui::MenuItem("Inventory..."))
           {
-            insert_topbar_snippet(R"MD(inventoryData({
-  rows:2,
-  cols:2,
-  items:[
-    {id:"slot_0_0", image:"sword.png", tooltip:"Iron sword"},
-    {id:"slot_0_1", image:"shield.png", tooltip:"Wooden shield"},
-    {id:"slot_1_0", image:"potion.png", tooltip:"Health potion"},
-    {id:"slot_1_1", image:"empty.png", tooltip:"Empty slot"}
-  ]
-})
-inventory(inventoryData, "Inventory", 220, 2, 2)
-__CURSOR__)MD");
+            request_open_inventory_builder = true;
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Button action"))
@@ -2842,6 +2902,28 @@ if(enabled){
 __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
+          ImGui::EndPopup();
+        }
+        if(request_open_inventory_builder) ImGui::OpenPopup("##tb_inventory_builder_popup");
+        if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+          ImGui::TextDisabled("Insert Inventory Widget");
+          ImGui::SetNextItemWidth(260.0f);
+          ImGui::InputText("Title", inventory_builder_title, sizeof(inventory_builder_title));
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputInt("Rows", &inventory_builder_rows);
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputInt("Cols", &inventory_builder_cols);
+          inventory_builder_rows = std::max(1, inventory_builder_rows);
+          inventory_builder_cols = std::max(1, inventory_builder_cols);
+          ImGui::TextDisabled("Slots: %d", inventory_builder_rows * inventory_builder_cols);
+          if(ImGui::Button("Insert"))
+          {
+            insert_topbar_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols));
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
           ImGui::EndPopup();
         }
         ImGui::SameLine();

@@ -1808,13 +1808,34 @@ Value make_list_item_value(std::string name, std::string tooltip)
   return item;
 }
 
-Value make_inventory_slot_value(std::string slot_id, std::string image, std::string tooltip)
+Value make_inventory_slot_value(
+    std::string title,
+    std::string image,
+    std::string tooltip,
+    std::optional<int> quantity = std::nullopt,
+    std::string mark_color = {},
+    bool enabled = true)
 {
   Value slot;
   slot.kind = ValueKind::Object;
-  upsert_object_field(slot, "id", make_string_value(std::move(slot_id)));
-  upsert_object_field(slot, "image", make_string_value(std::move(image)));
-  upsert_object_field(slot, "tooltip", make_string_value(std::move(tooltip)));
+  if(!title.empty()) upsert_object_field(slot, "name", make_string_value(std::move(title)));
+  if(!image.empty()) upsert_object_field(slot, "image", make_string_value(std::move(image)));
+  if(!tooltip.empty()) upsert_object_field(slot, "tooltip", make_string_value(std::move(tooltip)));
+  if(quantity && *quantity > 0)
+  {
+    Value quantity_value;
+    quantity_value.kind = ValueKind::Number;
+    quantity_value.number = static_cast<double>(*quantity);
+    upsert_object_field(slot, "quantity", std::move(quantity_value));
+  }
+  if(!mark_color.empty()) upsert_object_field(slot, "color", make_string_value(std::move(mark_color)));
+  if(!enabled)
+  {
+    Value enabled_value;
+    enabled_value.kind = ValueKind::Bool;
+    enabled_value.boolean = false;
+    upsert_object_field(slot, "enabled", std::move(enabled_value));
+  }
   return slot;
 }
 
@@ -2288,7 +2309,37 @@ void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statem
   if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
 }
 
-bool extract_inventory_slot(const Value &slot_value, std::string &slot_id, std::string &image, std::string &tooltip, std::string &error)
+struct InventoryDragPayload
+{
+  int index = -1;
+  bool copy = false;
+};
+
+struct InventorySlotInfo
+{
+  std::string title;
+  std::string image;
+  std::string tooltip;
+  std::string color_text;
+  std::optional<int> quantity;
+  std::optional<int> position;
+  bool enabled = true;
+  bool has_mark_color = false;
+  ImVec4 mark_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+};
+
+struct InventoryPopupEditorState
+{
+  char title[512]{};
+  char image[512]{};
+  char tooltip[4096]{};
+  char quantity[64]{};
+  char color[32]{};
+  bool enabled = true;
+  std::string error;
+};
+
+bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
 {
   if(slot_value.kind != ValueKind::Object)
   {
@@ -2296,64 +2347,318 @@ bool extract_inventory_slot(const Value &slot_value, std::string &slot_id, std::
     return false;
   }
 
-  if(const Value *id_value = find_object_field(slot_value, "id"); id_value)
-    slot_id = display_value(*id_value);
-  else
-    slot_id.clear();
+  slot.title.clear();
+  slot.image.clear();
+  slot.tooltip.clear();
+  slot.color_text.clear();
+  slot.quantity.reset();
+  slot.position.reset();
+  slot.enabled = true;
+  slot.has_mark_color = false;
+  slot.mark_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+
+  if(const Value *title_value = find_object_field(slot_value, "title"); title_value)
+    slot.title = display_value(*title_value);
+  else if(const Value *name_value = find_object_field(slot_value, "name"); name_value)
+    slot.title = display_value(*name_value);
+  else if(const Value *id_value = find_object_field(slot_value, "id"); id_value)
+    slot.title = display_value(*id_value);
+
   if(const Value *image_value = find_object_field(slot_value, "image"); image_value)
-    image = display_value(*image_value);
-  else
-    image.clear();
+    slot.image = display_value(*image_value);
   if(const Value *tooltip_value = find_object_field(slot_value, "tooltip"); tooltip_value)
-    tooltip = display_value(*tooltip_value);
-  else
-    tooltip.clear();
+    slot.tooltip = display_value(*tooltip_value);
+  if(const Value *quantity_value = find_object_field(slot_value, "quantity"); quantity_value)
+  {
+    if(quantity_value->kind != ValueKind::Number)
+    {
+      error = "inventory quantity must be numeric";
+      return false;
+    }
+    const int quantity = static_cast<int>(std::llround(quantity_value->number));
+    if(quantity > 0) slot.quantity = quantity;
+  }
+  if(const Value *position_value = find_object_field(slot_value, "position"); position_value)
+  {
+    if(position_value->kind != ValueKind::Number)
+    {
+      error = "inventory position must be numeric";
+      return false;
+    }
+    slot.position = static_cast<int>(std::llround(position_value->number));
+  }
+  if(const Value *color_value = find_object_field(slot_value, "color"); color_value)
+  {
+    slot.color_text = display_value(*color_value);
+    if(!slot.color_text.empty())
+    {
+      if(!parse_hex_color_text(slot.color_text, slot.mark_color))
+      {
+        error = "inventory color must be #RRGGBB or #RRGGBBAA";
+        return false;
+      }
+      slot.has_mark_color = true;
+    }
+  }
+  if(const Value *enabled_value = find_object_field(slot_value, "enabled"); enabled_value)
+  {
+    if(enabled_value->kind != ValueKind::Bool)
+    {
+      error = "inventory enabled flag must be true or false";
+      return false;
+    }
+    slot.enabled = enabled_value->boolean;
+  }
+  else if(const Value *disabled_value = find_object_field(slot_value, "disabled"); disabled_value)
+  {
+    if(disabled_value->kind != ValueKind::Bool)
+    {
+      error = "inventory disabled flag must be true or false";
+      return false;
+    }
+    slot.enabled = !disabled_value->boolean;
+  }
   return true;
 }
 
-std::string default_inventory_slot_id(int rows, int cols, int index)
+bool inventory_slot_has_content(const Value &slot_value)
 {
-  if(cols <= 0) cols = 1;
-  const int row = index / cols;
-  const int col = index % cols;
-  return "slot_" + std::to_string(row) + "_" + std::to_string(col);
-}
-
-Value *ensure_inventory_slot(Value &items_value, int rows, int cols, int index)
-{
-  if(items_value.kind != ValueKind::Array || index < 0) return nullptr;
-  while(items_value.array.size() <= static_cast<size_t>(index))
+  if(slot_value.kind != ValueKind::Object) return true;
+  for(const auto &[field_name, field_value] : slot_value.object)
   {
-    const int next_index = static_cast<int>(items_value.array.size());
-    items_value.array.push_back(make_inventory_slot_value(default_inventory_slot_id(rows, cols, next_index), "", ""));
+    if(field_name == "quantity")
+    {
+      if(field_value.kind == ValueKind::Number && std::llround(field_value.number) > 0) return true;
+      continue;
+    }
+    if(field_name == "position") continue;
+    if(field_name == "enabled")
+    {
+      if(field_value.kind == ValueKind::Bool && !field_value.boolean) return true;
+      continue;
+    }
+    if(field_name == "disabled")
+    {
+      if(field_value.kind == ValueKind::Bool && field_value.boolean) return true;
+      continue;
+    }
+    if(field_value.kind == ValueKind::String)
+    {
+      if(!trim(field_value.str).empty()) return true;
+      continue;
+    }
+    if(field_value.kind == ValueKind::Number && std::fabs(field_value.number) > 1e-9) return true;
+    if(field_value.kind == ValueKind::Bool && field_value.boolean) return true;
+    if(field_value.kind == ValueKind::Object || field_value.kind == ValueKind::Array) return true;
   }
-  return &items_value.array[static_cast<size_t>(index)];
+  return false;
 }
 
-void draw_inventory_slot_preview(const std::string &image, const std::string &fallback, const ImVec2 &min, const ImVec2 &max, bool selected)
+bool inventory_slot_has_visual_content(const InventorySlotInfo &slot)
 {
+  return !slot.title.empty() || !slot.image.empty() || !slot.tooltip.empty() || slot.quantity.has_value();
+}
+
+void trim_inventory_slots(Value &items_value)
+{
+  if(items_value.kind != ValueKind::Array) return;
+  while(!items_value.array.empty() && !inventory_slot_has_content(items_value.array.back()))
+    items_value.array.pop_back();
+}
+
+bool parse_inventory_quantity(const char *text, std::optional<int> &quantity)
+{
+  const std::string trimmed_text(trim(text ? std::string(text) : std::string()));
+  if(trimmed_text.empty())
+  {
+    quantity.reset();
+    return true;
+  }
+
+  char *end = nullptr;
+  const long parsed = std::strtol(trimmed_text.c_str(), &end, 10);
+  if(end == trimmed_text.c_str() || (end && *end != '\0')) return false;
+  if(parsed <= 0)
+  {
+    quantity.reset();
+    return true;
+  }
+
+  quantity = static_cast<int>(parsed);
+  return true;
+}
+
+bool parse_inventory_mark_color(const char *text, std::string &color_text, ImVec4 &color)
+{
+  const std::string trimmed_text(trim(text ? std::string(text) : std::string()));
+  if(trimmed_text.empty())
+  {
+    color_text.clear();
+    return true;
+  }
+  if(!parse_hex_color_text(trimmed_text, color)) return false;
+  color_text = trimmed_text;
+  return true;
+}
+
+void set_inventory_slot_position(Value &slot_value, int position)
+{
+  Value position_value;
+  position_value.kind = ValueKind::Number;
+  position_value.number = static_cast<double>(position);
+  upsert_object_field(slot_value, "position", std::move(position_value));
+}
+
+bool remove_inventory_item(Value &items_value, int item_index)
+{
+  if(items_value.kind != ValueKind::Array) return false;
+  if(item_index < 0 || static_cast<size_t>(item_index) >= items_value.array.size()) return false;
+  items_value.array.erase(items_value.array.begin() + item_index);
+  return true;
+}
+
+std::vector<int> build_inventory_cell_lookup(const Value &items_value, int cell_count)
+{
+  std::vector<int> lookup(static_cast<size_t>(std::max(0, cell_count)), -1);
+  if(items_value.kind != ValueKind::Array) return lookup;
+
+  for(size_t item_index = 0; item_index < items_value.array.size(); ++item_index)
+  {
+    InventorySlotInfo slot;
+    std::string error;
+    const bool slot_ok = extract_inventory_slot(items_value.array[item_index], slot, error);
+    int cell_index = static_cast<int>(item_index);
+    if(slot_ok && slot.position) cell_index = *slot.position;
+    if(cell_index < 0 || cell_index >= cell_count)
+    {
+      if(static_cast<int>(item_index) < cell_count)
+        cell_index = static_cast<int>(item_index);
+      else
+        continue;
+    }
+    if(lookup[static_cast<size_t>(cell_index)] == -1)
+      lookup[static_cast<size_t>(cell_index)] = static_cast<int>(item_index);
+  }
+  return lookup;
+}
+
+std::string inventory_slot_fallback_label(const InventorySlotInfo &slot)
+{
+  std::string base = slot.title;
+  if(base.empty() && !slot.image.empty()) base = std::filesystem::path(slot.image).stem().string();
+  base = trim(base);
+  if(base.empty()) return {};
+
+  std::string compact;
+  for(char c : base)
+  {
+    if(std::isalnum(static_cast<unsigned char>(c))) compact.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+    if(compact.size() == 2) break;
+  }
+  if(compact.empty() && !base.empty()) compact.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(base.front()))));
+  return compact;
+}
+
+void render_inventory_hover_popup(const std::string &popup_id, const InventorySlotInfo &slot)
+{
+  if(slot.title.empty() && slot.tooltip.empty() && !slot.quantity.has_value() && slot.enabled) return;
+
+  ImGui::SetNextWindowBgAlpha(0.96f);
+  if(ImGui::BeginTooltip())
+  {
+    ImGui::PushID(popup_id.c_str());
+    if(!slot.title.empty())
+    {
+      ImGui::TextUnformatted(slot.title.c_str());
+      if(slot.quantity)
+      {
+        ImGui::SameLine();
+        ImGui::TextDisabled("x%d", *slot.quantity);
+      }
+    }
+    else if(slot.quantity)
+    {
+      ImGui::TextDisabled("x%d", *slot.quantity);
+    }
+    if(!slot.enabled)
+    {
+      if(!slot.title.empty() || slot.quantity) ImGui::Separator();
+      ImGui::TextDisabled("Disabled slot");
+    }
+    if((!slot.title.empty() || slot.quantity || !slot.enabled) && !slot.tooltip.empty()) ImGui::Separator();
+    if(!slot.tooltip.empty())
+    {
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 320.0f);
+      ImGui::TextUnformatted(slot.tooltip.c_str());
+      ImGui::PopTextWrapPos();
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndTooltip();
+}
+
+void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &min, const ImVec2 &max, bool selected, bool hovered)
+{
+  auto mix = [](const ImVec4 &a, const ImVec4 &b, float t) {
+    return ImVec4(
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t,
+        a.w + (b.w - a.w) * t);
+  };
+
   ImDrawList *draw_list = ImGui::GetWindowDrawList();
-  draw_list->AddRectFilled(min, max, ImGui::GetColorU32(ImGuiCol_FrameBg), 6.0f);
-  const ImU32 border_color = ImGui::GetColorU32(selected ? ImGuiCol_PlotHistogram : ImGuiCol_Border);
-  draw_list->AddRect(min, max, border_color, 6.0f, 0, selected ? 2.0f : 1.0f);
+  const bool has_content = inventory_slot_has_visual_content(slot);
+  ImVec4 fill_color = has_content
+      ? ImGui::GetStyleColorVec4(hovered && slot.enabled ? ImGuiCol_ButtonHovered : ImGuiCol_FrameBg)
+      : ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+  if(slot.has_mark_color) fill_color = mix(fill_color, slot.mark_color, has_content ? 0.18f : 0.10f);
+  ImVec4 border_color = selected
+      ? ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram)
+      : slot.has_mark_color ? slot.mark_color : ImGui::GetStyleColorVec4(hovered ? ImGuiCol_HeaderHovered : ImGuiCol_Border);
+  if(!slot.enabled) fill_color = mix(fill_color, ImVec4(0.05f, 0.05f, 0.06f, fill_color.w), 0.35f);
 
-  const float padding = 8.0f;
-  const ImTextureID texture = get_widget_image_texture(image);
-  if(texture != static_cast<ImTextureID>(0))
+  draw_list->AddRectFilled(min, max, ImGui::GetColorU32(fill_color), 6.0f);
+  draw_list->AddRect(min, max, ImGui::GetColorU32(border_color), 6.0f, 0, selected ? 2.0f : 1.0f);
+
+  if(has_content)
   {
-    draw_list->AddImage(texture, ImVec2(min.x + padding, min.y + padding), ImVec2(max.x - padding, max.y - padding));
-    return;
+    const float padding = 6.0f;
+    const ImTextureID texture = get_widget_image_texture(slot.image);
+    const ImU32 tint = ImGui::GetColorU32(slot.enabled ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.72f, 0.72f, 0.72f, 0.55f));
+    if(texture != static_cast<ImTextureID>(0))
+    {
+      draw_list->AddImage(texture, ImVec2(min.x + padding, min.y + padding), ImVec2(max.x - padding, max.y - padding), ImVec2(0, 0), ImVec2(1, 1), tint);
+    }
+    else
+    {
+      const std::string label = inventory_slot_fallback_label(slot);
+      if(!label.empty())
+      {
+        const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
+        const ImVec2 text_pos(
+            min.x + (max.x - min.x - text_size.x) * 0.5f,
+            min.y + (max.y - min.y - text_size.y) * 0.5f);
+        draw_list->AddText(text_pos, ImGui::GetColorU32(slot.enabled ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImVec4(0.78f, 0.78f, 0.78f, 0.55f)), label.c_str());
+      }
+    }
+
+    if(slot.quantity && *slot.quantity > 1)
+    {
+      const std::string qty = std::to_string(*slot.quantity);
+      const ImVec2 qty_size = ImGui::CalcTextSize(qty.c_str());
+      const ImVec2 badge_min(max.x - qty_size.x - 14.0f, max.y - qty_size.y - 10.0f);
+      const ImVec2 badge_max(max.x - 4.0f, max.y - 4.0f);
+      draw_list->AddRectFilled(badge_min, badge_max, ImGui::GetColorU32(slot.enabled ? ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram) : ImVec4(0.30f, 0.30f, 0.32f, 0.92f)), 9.0f);
+      draw_list->AddText(ImVec2(badge_min.x + 6.0f, badge_min.y + 2.0f), ImGui::GetColorU32(ImGuiCol_Text), qty.c_str());
+    }
   }
 
-  std::string label = fallback;
-  if(label.empty() && !image.empty()) label = std::filesystem::path(image).stem().string();
-  if(label.empty()) label = "empty";
-
-  const ImVec2 text_size = ImGui::CalcTextSize(label.c_str());
-  const ImVec2 text_pos(
-      min.x + (max.x - min.x - text_size.x) * 0.5f,
-      min.y + (max.y - min.y - text_size.y) * 0.5f);
-  draw_list->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+  if(!slot.enabled)
+  {
+    draw_list->AddRectFilled(min, max, ImGui::GetColorU32(ImVec4(0.0f, 0.0f, 0.0f, 0.26f)), 6.0f);
+    draw_list->AddLine(ImVec2(min.x + 6.0f, max.y - 6.0f), ImVec2(max.x - 6.0f, min.y + 6.0f), ImGui::GetColorU32(ImVec4(0.90f, 0.90f, 0.92f, 0.22f)), 1.5f);
+  }
 }
 
 void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -2408,18 +2713,26 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
   const int rows = std::max(1, static_cast<int>(std::llround(rows_result.value.number)));
   const int cols = std::max(1, static_cast<int>(std::llround(cols_result.value.number)));
+  const int total_cells = rows * cols;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
   const bool readonly = decl_it->second.computed;
-  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
-  const float min_grid_width = static_cast<float>(cols) * 96.0f + static_cast<float>(cols - 1) * spacing;
-  const float widget_width = std::max(std::max(requested_width, min_grid_width), std::min(available_width, 760.0f));
-  const float cell_size = std::max(72.0f, (widget_width - spacing * static_cast<float>(cols - 1)) / static_cast<float>(cols));
-  const float height = rows * cell_size + (rows - 1) * spacing + 12.0f;
+  const float cell_size = 48.0f;
+  const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
+  float widget_width = std::max(160.0f, requested_width);
+  if(available_width > 1.0f)
+    widget_width = std::min(std::max(widget_width, std::min(grid_width, available_width)), available_width);
+  else
+    widget_width = std::max(widget_width, grid_width);
+  const bool needs_scroll = grid_width > widget_width + 0.5f;
+  const float height = rows * cell_size + (rows - 1) * spacing + style.WindowPadding.y * 2.0f;
   const std::string child_id = make_hidden_widget_id("inventory", stmt);
   const std::string payload_type = "MDUI_INV_" + std::to_string(stmt.span.start);
   static std::unordered_map<std::string, int> selected_slot_by_widget;
+  static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
 
   if(!label.text.empty()) render_styled_label(label);
 
@@ -2432,11 +2745,12 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   }
 
   int &selected_index = selected_slot_by_widget[child_id];
-  if(selected_index < 0 || selected_index >= rows * cols) selected_index = 0;
+  if(selected_index < 0 || selected_index >= total_cells) selected_index = 0;
 
   bool changed = false;
   ImGui::BeginDisabled(readonly);
-  if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, ImGuiWindowFlags_HorizontalScrollbar))
+  std::vector<int> cell_lookup = build_inventory_cell_lookup(*items, total_cells);
+  if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, needs_scroll ? ImGuiWindowFlags_HorizontalScrollbar : ImGuiWindowFlags_None))
   {
     for(int row = 0; row < rows; ++row)
     {
@@ -2447,91 +2761,183 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         ImGui::PushID(index);
         ImGui::InvisibleButton("##slot", ImVec2(cell_size, cell_size));
-        if(ImGui::IsItemClicked()) selected_index = index;
+        if(ImGui::IsItemClicked(ImGuiMouseButton_Left)) selected_index = index;
+        const bool hovered = ImGui::IsItemHovered();
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
 
-        std::string slot_id;
-        std::string image;
-        std::string tooltip;
+        const int item_index = cell_lookup[static_cast<size_t>(index)];
+        const bool has_slot_value = item_index >= 0 && static_cast<size_t>(item_index) < items->array.size();
+        InventorySlotInfo slot;
         std::string slot_error;
-        if(static_cast<size_t>(index) < items->array.size())
+        const bool slot_ok = !has_slot_value || extract_inventory_slot(items->array[static_cast<size_t>(item_index)], slot, slot_error);
+        const bool has_content = has_slot_value && slot_ok && inventory_slot_has_content(items->array[static_cast<size_t>(item_index)]);
+        if(!slot_ok)
         {
-          if(extract_inventory_slot(items->array[static_cast<size_t>(index)], slot_id, image, tooltip, slot_error))
-            draw_inventory_slot_preview(image, slot_id, min, max, selected_index == index);
-          else
-            draw_inventory_slot_preview({}, "invalid", min, max, selected_index == index);
+          slot.title = "!";
+          slot.tooltip = slot_error;
+          errors.push_back(slot_error);
         }
-        else
-        {
-          draw_inventory_slot_preview({}, "empty", min, max, selected_index == index);
-        }
+        draw_inventory_slot_preview(slot, min, max, selected_index == index, hovered);
 
-        if(!slot_error.empty()) errors.push_back(slot_error);
-        if(!tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip.c_str());
+        if((inventory_slot_has_visual_content(slot) || !slot.enabled) && hovered && !ImGui::IsPopupOpen("##slot_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot);
 
-        if(static_cast<size_t>(index) < items->array.size() && ImGui::BeginDragDropSource())
+        if(has_content && slot.enabled && ImGui::BeginDragDropSource())
         {
-          ImGui::SetDragDropPayload(payload_type.c_str(), &index, sizeof(index));
-          const std::string preview = slot_id.empty() ? image : slot_id;
-          ImGui::TextUnformatted(preview.empty() ? "slot" : preview.c_str());
+          InventoryDragPayload payload;
+          payload.index = index;
+          payload.copy = ImGui::GetIO().KeyCtrl;
+          ImGui::SetDragDropPayload(payload_type.c_str(), &payload, sizeof(payload));
+          ImGui::TextUnformatted(slot.title.empty() ? (payload.copy ? "Copy item" : "Move item") : slot.title.c_str());
+          if(payload.copy) ImGui::TextDisabled("Release over an empty slot to duplicate");
           ImGui::EndDragDropSource();
         }
-        if(ImGui::BeginDragDropTarget())
+        if(slot.enabled && ImGui::BeginDragDropTarget())
         {
           if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(payload_type.c_str()))
           {
-            const int source_index = *static_cast<const int *>(payload->Data);
-            if(source_index >= 0 &&
-               static_cast<size_t>(source_index) < items->array.size() &&
-               static_cast<size_t>(index) < items->array.size() &&
-               source_index != index)
+            const auto *drag = static_cast<const InventoryDragPayload *>(payload->Data);
+            if(drag && drag->index >= 0 && drag->index < total_cells && drag->index != index)
             {
-              std::swap(items->array[static_cast<size_t>(source_index)], items->array[static_cast<size_t>(index)]);
-              changed = true;
+              const int source_item_index = cell_lookup[static_cast<size_t>(drag->index)];
+              const int target_item_index = item_index;
+              if(source_item_index >= 0 && static_cast<size_t>(source_item_index) < items->array.size())
+              {
+                InventorySlotInfo source_slot;
+                std::string source_error;
+                if(extract_inventory_slot(items->array[static_cast<size_t>(source_item_index)], source_slot, source_error) && source_slot.enabled)
+                {
+                  const bool target_enabled = !has_slot_value || (slot_ok && slot.enabled);
+                  if(target_enabled)
+                  {
+                    if(drag->copy && !has_slot_value)
+                    {
+                      Value duplicated = items->array[static_cast<size_t>(source_item_index)];
+                      set_inventory_slot_position(duplicated, index);
+                      items->array.push_back(std::move(duplicated));
+                      changed = true;
+                    }
+                    else if(has_slot_value && target_item_index >= 0 && target_item_index != source_item_index)
+                    {
+                      set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                      set_inventory_slot_position(items->array[static_cast<size_t>(target_item_index)], drag->index);
+                      changed = true;
+                    }
+                    else if(!has_slot_value)
+                    {
+                      set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                      changed = true;
+                    }
+                    if(changed) trim_inventory_slots(*items);
+                  }
+                }
+              }
             }
           }
           ImGui::EndDragDropTarget();
         }
+
+        const std::string popup_key = child_id + "_" + std::to_string(index);
+        if(ImGui::BeginPopupContextItem("##slot_menu"))
+        {
+          InventoryPopupEditorState &state = popup_states[popup_key];
+          if(ImGui::IsWindowAppearing())
+          {
+            std::snprintf(state.title, sizeof(state.title), "%s", slot.title.c_str());
+            std::snprintf(state.image, sizeof(state.image), "%s", slot.image.c_str());
+            std::snprintf(state.tooltip, sizeof(state.tooltip), "%s", slot.tooltip.c_str());
+            std::snprintf(state.quantity, sizeof(state.quantity), "%s", slot.quantity ? std::to_string(*slot.quantity).c_str() : "");
+            std::snprintf(state.color, sizeof(state.color), "%s", slot.color_text.c_str());
+            state.enabled = slot.enabled;
+            state.error.clear();
+          }
+
+          const float popup_width = std::max(240.0f, std::min(widget_width, 360.0f));
+          ImGui::TextDisabled(has_content ? "Inventory cell" : "Empty cell");
+          ImGui::SetNextItemWidth(popup_width);
+          ImGui::InputText("Title", state.title, sizeof(state.title));
+          ImGui::SetNextItemWidth(popup_width);
+          ImGui::InputText("Image", state.image, sizeof(state.image));
+          ImGui::SetNextItemWidth(popup_width);
+          ImGui::InputTextMultiline("Description", state.tooltip, sizeof(state.tooltip), ImVec2(popup_width, 96.0f));
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputText("Quantity", state.quantity, sizeof(state.quantity));
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputText("Mark color", state.color, sizeof(state.color));
+          ImGui::Checkbox("Enabled", &state.enabled);
+          ImGui::TextDisabled("Quick marks");
+          auto preset_mark = [&](const char *button_label, const char *hex) {
+            if(ImGui::SmallButton(button_label)) std::snprintf(state.color, sizeof(state.color), "%s", hex);
+          };
+          preset_mark("Green", "#58C472");
+          ImGui::SameLine();
+          preset_mark("Blue", "#57A7FF");
+          ImGui::SameLine();
+          preset_mark("Amber", "#FFB347");
+          ImGui::SameLine();
+          preset_mark("Red", "#FF6B6B");
+          ImGui::SameLine();
+          if(ImGui::SmallButton("Clear mark")) state.color[0] = '\0';
+          if(!state.error.empty()) ImGui::TextColored(ImVec4(0.92f, 0.38f, 0.38f, 1.0f), "%s", state.error.c_str());
+          ImGui::TextDisabled("Apply saves this cell. Hold Ctrl while dragging to copy into an empty slot.");
+
+          if(ImGui::Button("Apply"))
+          {
+            std::optional<int> quantity;
+            if(!parse_inventory_quantity(state.quantity, quantity))
+            {
+              state.error = "Quantity must be a whole number.";
+            }
+            else
+            {
+              std::string color_text;
+              ImVec4 parsed_color;
+              if(!parse_inventory_mark_color(state.color, color_text, parsed_color))
+              {
+                state.error = "Color must be #RRGGBB or #RRGGBBAA.";
+              }
+              else
+              {
+                const std::string title(trim(state.title));
+                const std::string image(trim(state.image));
+                const std::string tooltip(trim(state.tooltip));
+                Value new_slot = make_inventory_slot_value(title, image, tooltip, quantity, color_text, state.enabled);
+                if(inventory_slot_has_content(new_slot))
+                {
+                  set_inventory_slot_position(new_slot, index);
+                  if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
+                    items->array[static_cast<size_t>(item_index)] = std::move(new_slot);
+                  else
+                    items->array.push_back(std::move(new_slot));
+                }
+                else if(has_slot_value)
+                {
+                  remove_inventory_item(*items, item_index);
+                }
+                trim_inventory_slots(*items);
+                changed = true;
+                selected_index = index;
+                state.error.clear();
+                ImGui::CloseCurrentPopup();
+              }
+            }
+          }
+          if(ImGui::Button("Clear"))
+          {
+            if(has_slot_value) remove_inventory_item(*items, item_index);
+            trim_inventory_slots(*items);
+            changed = true;
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::EndPopup();
+        }
+
         ImGui::PopID();
       }
     }
   }
   ImGui::EndChild();
-
-  ImGui::Separator();
-  ImGui::TextDisabled("Selected slot: %d", selected_index + 1);
-  Value *selected_slot = ensure_inventory_slot(*items, rows, cols, selected_index);
-  if(selected_slot)
-  {
-    char id_buffer[512];
-    char image_buffer[512];
-    char tooltip_buffer[512];
-    std::string current_id;
-    std::string current_image;
-    std::string current_tooltip;
-    std::string slot_error;
-    extract_inventory_slot(*selected_slot, current_id, current_image, current_tooltip, slot_error);
-    std::snprintf(id_buffer, sizeof(id_buffer), "%s", current_id.c_str());
-    std::snprintf(image_buffer, sizeof(image_buffer), "%s", current_image.c_str());
-    std::snprintf(tooltip_buffer, sizeof(tooltip_buffer), "%s", current_tooltip.c_str());
-
-    ImGui::SetNextItemWidth(widget_width);
-    if(ImGui::InputText("Slot id", id_buffer, sizeof(id_buffer)))
-      changed = update_object_string_field(*selected_slot, "id", id_buffer) || changed;
-    ImGui::SetNextItemWidth(widget_width);
-    if(ImGui::InputText("Image", image_buffer, sizeof(image_buffer)))
-      changed = update_object_string_field(*selected_slot, "image", image_buffer) || changed;
-    ImGui::SetNextItemWidth(widget_width);
-    if(ImGui::InputText("Tooltip", tooltip_buffer, sizeof(tooltip_buffer)))
-      changed = update_object_string_field(*selected_slot, "tooltip", tooltip_buffer) || changed;
-
-    if(ImGui::Button("Clear slot"))
-    {
-      *selected_slot = make_inventory_slot_value(default_inventory_slot_id(rows, cols, selected_index), "", "");
-      changed = true;
-    }
-  }
   ImGui::EndDisabled();
 
   if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
