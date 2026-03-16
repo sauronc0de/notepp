@@ -121,6 +121,35 @@ float dist2(ImVec2 a, ImVec2 b)
   return dx * dx + dy * dy;
 }
 
+SDL_Window *viewport_platform_window(const ImGuiViewport *viewport)
+{
+  if(viewport == nullptr || viewport->PlatformHandle == nullptr) return nullptr;
+  const Uint32 window_id = (Uint32)(intptr_t)viewport->PlatformHandle;
+  if(window_id == 0) return nullptr;
+  return SDL_GetWindowFromID(window_id);
+}
+
+bool viewport_is_detached_from_main(const ImGuiViewport *viewport, SDL_Window *main_window)
+{
+  SDL_Window *platform_window = viewport_platform_window(viewport);
+  return platform_window != nullptr && platform_window != main_window;
+}
+
+void apply_viewport_always_on_top(const ImGuiViewport *viewport, SDL_Window *main_window, bool always_on_top)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+  SDL_Window *platform_window = viewport_platform_window(viewport);
+  if(platform_window != nullptr && platform_window != main_window)
+  {
+    SDL_SetWindowAlwaysOnTop(platform_window, always_on_top ? SDL_TRUE : SDL_FALSE);
+  }
+#else
+  (void)viewport;
+  (void)main_window;
+  (void)always_on_top;
+#endif
+}
+
 void load_drawings_state()
 {
   g_folder_drawings.clear();
@@ -507,6 +536,7 @@ void App::load_state()
                     n.height = (float)json_find_int(nobj, "h", 260);
                     n.has_layout = json_find_bool(nobj, "has_layout", false);
                     n.hidden = json_find_bool(nobj, "hidden", false);
+                    n.always_on_top = json_find_bool(nobj, "always_on_top", false);
                     n.use_custom_color = json_find_bool(nobj, "use_custom_color", false);
                     n.color_r = (float)json_find_int(nobj, "color_r", 0) / 255.0f;
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
@@ -595,6 +625,7 @@ void App::save_index() const
           << ", \"h\": " << (int)std::lround(n.height)
           << ", \"has_layout\": " << (n.has_layout ? "true" : "false")
           << ", \"hidden\": " << (n.hidden ? "true" : "false")
+          << ", \"always_on_top\": " << (n.always_on_top ? "true" : "false")
           << ", \"use_custom_color\": " << (n.use_custom_color ? "true" : "false")
           << ", \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_r)) * 255.0f)
           << ", \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_g)) * 255.0f)
@@ -2751,7 +2782,7 @@ void App::frame_ui()
             ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoSavedSettings |
             ImGuiWindowFlags_NoDocking |
-            (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0) |
+            ImGuiWindowFlags_NoInputs |
             ImGuiWindowFlags_NoBringToFrontOnFocus |
             ImGuiWindowFlags_NoNavFocus |
             ImGuiWindowFlags_NoBackground);
@@ -3055,10 +3086,14 @@ void App::frame_ui()
       dl->PopClipRect();
     }
 
-    // Stable context target for right-click on empty background.
-    ImGui::SetCursorScreenPos(bg_p0);
-    ImGui::InvisibleButton("##notes_bg_ctx_target", ImVec2(bg_w, bg_h));
-    if(ImGui::BeginPopupContextItem("##notes_bg_ctx", ImGuiPopupFlags_MouseButtonRight))
+    if(notes_bg_hovered &&
+       !mouse_over_note_area &&
+       !popup_open &&
+       ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    {
+      ImGui::OpenPopup("##notes_bg_ctx");
+    }
+    if(ImGui::BeginPopup("##notes_bg_ctx"))
     {
       if(ImGui::MenuItem("New note"))
       {
@@ -3158,6 +3193,8 @@ void App::frame_ui()
       const float title_bar_h = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
       const ImVec2 mouse_pos = ImGui::GetMousePos();
       const std::string actions_popup_id = "Note Window Actions##" + note_uid;
+      ImGuiViewport *note_viewport = ImGui::GetWindowViewport();
+      const bool note_is_detached = viewport_is_detached_from_main(note_viewport, window_);
       const bool note_is_collapsed = ImGui::IsWindowCollapsed();
       const bool mouse_on_title =
           mouse_pos.x >= win_pos.x &&
@@ -3235,6 +3272,11 @@ void App::frame_ui()
         if(ImGui::MenuItem(note_is_collapsed ? "Expand" : "Compact"))
         {
           ImGui::SetWindowCollapsed(window_id.c_str(), !note_is_collapsed, ImGuiCond_Always);
+        }
+        if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
+        {
+          n.always_on_top = !n.always_on_top;
+          save_index();
         }
         if(ImGui::MenuItem("Hide"))
         {
@@ -3485,6 +3527,8 @@ void App::frame_ui()
       {
         ImGui::SetWindowSize(ImVec2(size.x, auto_h));
       }
+
+      apply_viewport_always_on_top(note_viewport, window_, n.always_on_top);
 
       ImVec2 effective_pos = pos;
       const bool allow_platform_windows = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
@@ -3767,12 +3811,15 @@ void App::frame_ui()
           ImGuiWindowFlags_NoScrollWithMouse |
           (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
 
-  // Right click on title bar to rename the note window title.
+  // Right click on title bar for note window actions.
   static bool open_rename_popup = false;
   static char rename_buf[256] = {};
   const ImVec2 win_pos = ImGui::GetWindowPos();
   const float title_bar_h = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
   const ImVec2 mouse_pos = ImGui::GetMousePos();
+  const std::string active_note_actions_popup_id = "Note Window Actions###ActiveNoteWindow";
+  ImGuiViewport *active_note_viewport = ImGui::GetWindowViewport();
+  const bool active_note_detached = viewport_is_detached_from_main(active_note_viewport, window_);
   const bool mouse_on_title =
       mouse_pos.x >= win_pos.x &&
       mouse_pos.x <= (win_pos.x + ImGui::GetWindowWidth()) &&
@@ -3786,8 +3833,21 @@ void App::frame_ui()
   }
   if(mouse_on_title && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
   {
-    std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
-    open_rename_popup = true;
+    ImGui::OpenPopup(active_note_actions_popup_id.c_str());
+  }
+  if(ImGui::BeginPopup(active_note_actions_popup_id.c_str()))
+  {
+    if(ImGui::MenuItem("Rename"))
+    {
+      std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
+      open_rename_popup = true;
+    }
+    if(active_note_detached && ImGui::MenuItem("Pin above OS windows", nullptr, active_note.always_on_top))
+    {
+      active_note.always_on_top = !active_note.always_on_top;
+      save_index();
+    }
+    ImGui::EndPopup();
   }
   if(request_rename_selected_)
   {
@@ -3812,6 +3872,8 @@ void App::frame_ui()
     }
     ImGui::EndPopup();
   }
+
+  apply_viewport_always_on_top(active_note_viewport, window_, active_note.always_on_top);
 
   static bool show_palette = false;
   static bool refocus_editor = false;

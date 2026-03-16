@@ -77,6 +77,7 @@ private:
     float height = 260.0f;
     bool has_layout = false;
     bool hidden = false;
+    bool always_on_top = false;
   };
   struct FolderMeta
   {
