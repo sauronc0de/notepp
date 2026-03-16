@@ -2002,21 +2002,15 @@ void render_list_description_popup(const std::string &popup_id, const ImVec2 &an
   ImGui::SetNextWindowPos(ImVec2(anchor.x + 10.0f, anchor.y + 8.0f));
   ImGui::SetNextWindowBgAlpha(0.96f);
   ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0.0f), ImVec2(std::max(220.0f, width), 420.0f));
-  if(ImGui::Begin(
-         popup_id.c_str(),
-         nullptr,
-         ImGuiWindowFlags_NoDecoration |
-             ImGuiWindowFlags_AlwaysAutoResize |
-             ImGuiWindowFlags_NoSavedSettings |
-             ImGuiWindowFlags_NoFocusOnAppearing |
-             ImGuiWindowFlags_NoNav |
-             ImGuiWindowFlags_NoMove))
+  if(ImGui::BeginTooltip())
   {
+    ImGui::PushID(popup_id.c_str());
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(220.0f, width));
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
     ImGui::PopTextWrapPos();
+    ImGui::PopID();
   }
-  ImGui::End();
+  ImGui::EndTooltip();
 }
 
 bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)

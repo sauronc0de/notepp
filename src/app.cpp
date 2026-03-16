@@ -904,18 +904,18 @@ void App::frame_begin()
       running_ = false;
     }
 
-    ImGui_ImplSDL2_ProcessEvent(&event);
-    const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
-
-    // While editing, keep Esc out of InputText so it doesn't cancel/revert the latest edit.
+    // While editing a note, swallow Esc before ImGui sees it so InputText
+    // cannot treat it as a cancel/revert key.
     if(editing_mode_ &&
-       !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE)
     {
       request_exit_edit_mode_ = true;
       continue;
     }
+
+    ImGui_ImplSDL2_ProcessEvent(&event);
+    const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
     if(editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
