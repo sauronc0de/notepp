@@ -8,6 +8,12 @@
 
 namespace UndoRedo
 {
+struct DebugEntry
+{
+  std::string label;
+  std::string context;
+};
+
 class Command
 {
 public:
@@ -16,6 +22,7 @@ public:
   virtual void execute() = 0;
   virtual void undo() = 0;
   virtual const std::string &label() const = 0;
+  virtual const std::string &debug_context() const = 0;
 };
 
 class LambdaCommand final : public Command
@@ -23,14 +30,16 @@ class LambdaCommand final : public Command
 public:
   using Fn = std::function<void()>;
 
-  LambdaCommand(std::string label, Fn execute, Fn undo);
+  LambdaCommand(std::string label, std::string debug_context, Fn execute, Fn undo);
 
   void execute() override;
   void undo() override;
   const std::string &label() const override;
+  const std::string &debug_context() const override;
 
 private:
   std::string label_;
+  std::string debug_context_;
   Fn execute_;
   Fn undo_;
 };
@@ -49,6 +58,8 @@ public:
   bool can_redo() const;
   std::string_view next_undo_label() const;
   std::string_view next_redo_label() const;
+  std::vector<DebugEntry> debug_undo_entries() const;
+  std::vector<DebugEntry> debug_redo_entries() const;
 
 private:
   void trim_if_needed(std::vector<std::unique_ptr<Command>> &stack);

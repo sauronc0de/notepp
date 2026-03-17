@@ -4,8 +4,9 @@
 
 namespace UndoRedo
 {
-LambdaCommand::LambdaCommand(std::string label, Fn execute, Fn undo)
+LambdaCommand::LambdaCommand(std::string label, std::string debug_context, Fn execute, Fn undo)
     : label_(std::move(label)),
+      debug_context_(std::move(debug_context)),
       execute_(std::move(execute)),
       undo_(std::move(undo))
 {
@@ -24,6 +25,11 @@ void LambdaCommand::undo()
 const std::string &LambdaCommand::label() const
 {
   return label_;
+}
+
+const std::string &LambdaCommand::debug_context() const
+{
+  return debug_context_;
 }
 
 HistoryManager::HistoryManager(size_t limit)
@@ -89,6 +95,30 @@ std::string_view HistoryManager::next_redo_label() const
 {
   if(redo_stack_.empty() || !redo_stack_.back()) return {};
   return redo_stack_.back()->label();
+}
+
+std::vector<DebugEntry> HistoryManager::debug_undo_entries() const
+{
+  std::vector<DebugEntry> entries;
+  entries.reserve(undo_stack_.size());
+  for(auto it = undo_stack_.rbegin(); it != undo_stack_.rend(); ++it)
+  {
+    if(!(*it)) continue;
+    entries.push_back(DebugEntry{(*it)->label(), (*it)->debug_context()});
+  }
+  return entries;
+}
+
+std::vector<DebugEntry> HistoryManager::debug_redo_entries() const
+{
+  std::vector<DebugEntry> entries;
+  entries.reserve(redo_stack_.size());
+  for(auto it = redo_stack_.rbegin(); it != redo_stack_.rend(); ++it)
+  {
+    if(!(*it)) continue;
+    entries.push_back(DebugEntry{(*it)->label(), (*it)->debug_context()});
+  }
+  return entries;
 }
 
 void HistoryManager::trim_if_needed(std::vector<std::unique_ptr<Command>> &stack)

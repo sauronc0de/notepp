@@ -40,6 +40,7 @@ add_compile_definitions(
   ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
   DATA_PATH="${CMAKE_SOURCE_DIR}/data"
   IMGUI_USE_WCHAR32
+  $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
   $<$<BOOL:${ENABLE_RENDER}>:ENABLE_RENDER=true>
 )

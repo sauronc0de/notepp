@@ -1258,8 +1258,10 @@ void App::record_workspace_history_action(std::string_view label, std::string be
   if(before_snapshot == after_snapshot) return;
 
   const std::string action_label = label.empty() ? "Edit workspace" : std::string(label);
+  const std::string debug_context = make_history_debug_context();
   history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
       action_label,
+      debug_context,
       [this, snapshot = after_snapshot]() { apply_workspace_snapshot(snapshot); },
       [this, snapshot = std::move(before_snapshot)]() { apply_workspace_snapshot(snapshot); }));
 }
@@ -1273,9 +1275,11 @@ void App::record_text_history_action(std::string_view label, const std::string &
   const std::string note_path = state_file_path_;
   const std::string context_snapshot = capture_text_context_snapshot();
   const std::string action_label = label.empty() ? "Edit text" : std::string(label);
+  const std::string debug_context = make_history_debug_context(note_path);
 
   history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
       action_label,
+      debug_context,
       [this, note_path, after_text, context_snapshot]() { apply_text_history_state(note_path, after_text, context_snapshot); },
       [this, note_path, before_text, context_snapshot]() { apply_text_history_state(note_path, before_text, context_snapshot); }));
 }
@@ -1313,8 +1317,10 @@ void App::flush_pending_text_history()
   if(pending.note_path.empty() || pending.before_text == pending.after_text) return;
 
   const std::string action_label = pending.label.empty() ? "Edit text" : pending.label;
+  const std::string debug_context = make_history_debug_context(pending.note_path);
   history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
       action_label,
+      debug_context,
       [this, note_path = pending.note_path, after_text = pending.after_text, context = pending.context_snapshot]() {
         apply_text_history_state(note_path, after_text, context);
       },
@@ -1364,6 +1370,43 @@ bool App::find_note_by_path(std::string_view path, int &folder_idx, int &note_id
   return false;
 }
 
+std::string App::make_history_debug_context(std::string_view preferred_note_path) const
+{
+  int folder_idx = active_folder_idx_;
+  int note_idx = active_note_idx_;
+  bool note_found = false;
+
+  if(!preferred_note_path.empty())
+  {
+    note_found = find_note_by_path(preferred_note_path, folder_idx, note_idx);
+  }
+  else if(has_active_note())
+  {
+    note_found = true;
+  }
+
+  if(note_found && folder_idx >= 0 && folder_idx < (int)folders_.size())
+  {
+    const FolderMeta &folder = folders_[(size_t)folder_idx];
+    if(note_idx >= 0 && note_idx < (int)folder.notes.size())
+    {
+      return folder.name + " / " + folder.notes[(size_t)note_idx].title;
+    }
+  }
+
+  if(folder_idx >= 0 && folder_idx < (int)folders_.size())
+  {
+    return std::string("Folder: ") + folders_[(size_t)folder_idx].name;
+  }
+
+  if(!preferred_note_path.empty())
+  {
+    return std::string(preferred_note_path);
+  }
+
+  return "Workspace";
+}
+
 void App::show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent)
 {
   history_indicator_.text.assign(prefix.begin(), prefix.end());
@@ -1407,6 +1450,86 @@ void App::render_history_indicator() const
       ImVec2(pos.x + pad.x, pos.y + pad.y),
       ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, 0.96f * alpha)),
       history_indicator_.text.c_str());
+}
+
+void App::render_debug_history_window() const
+{
+#ifndef NOTEPP_DEBUG_UI
+  return;
+#else
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  if(viewport == nullptr) return;
+
+  const std::vector<UndoRedo::DebugEntry> undo_entries = history_.debug_undo_entries();
+  const std::vector<UndoRedo::DebugEntry> redo_entries = history_.debug_redo_entries();
+
+  ImGui::SetNextWindowViewport(viewport->ID);
+  ImGui::SetNextWindowPos(
+      ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 20.0f, viewport->WorkPos.y + 20.0f),
+      ImGuiCond_FirstUseEver,
+      ImVec2(1.0f, 0.0f));
+  ImGui::SetNextWindowSize(ImVec2(360.0f, 420.0f), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowBgAlpha(0.9f);
+
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoDocking |
+      ImGuiWindowFlags_NoSavedSettings;
+
+  if(!ImGui::Begin("History Debug", nullptr, flags))
+  {
+    ImGui::End();
+    return;
+  }
+
+  ImGui::TextUnformatted("Debug-only history inspector");
+  ImGui::TextDisabled("Top item is the next action that Ctrl+Z / Ctrl+Y will use.");
+  ImGui::Spacing();
+  ImGui::Text("Undo: %d", (int)undo_entries.size());
+  ImGui::SameLine();
+  ImGui::Text("Redo: %d", (int)redo_entries.size());
+
+  auto render_entries = [](const char *title, const std::vector<UndoRedo::DebugEntry> &entries, ImVec4 accent) {
+    ImGui::SeparatorText(title);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.09f, 0.11f, 0.45f));
+    if(ImGui::BeginChild(title, ImVec2(0.0f, 145.0f), true, ImGuiWindowFlags_AlwaysVerticalScrollbar))
+    {
+      if(entries.empty())
+      {
+        ImGui::TextDisabled("Empty");
+      }
+      else
+      {
+        for(size_t i = 0; i < entries.size(); ++i)
+        {
+          const UndoRedo::DebugEntry &entry = entries[i];
+          if(i == 0)
+          {
+            ImGui::PushStyleColor(ImGuiCol_Text, accent);
+            ImGui::Text("#%d  %s", (int)(i + 1), entry.label.c_str());
+            ImGui::PopStyleColor();
+          }
+          else
+          {
+            ImGui::Text("#%d  %s", (int)(i + 1), entry.label.c_str());
+          }
+
+          if(entry.context.empty())
+            ImGui::TextDisabled("Context: Workspace");
+          else
+            ImGui::TextDisabled("Context: %s", entry.context.c_str());
+
+          if(i + 1 < entries.size()) ImGui::Separator();
+        }
+      }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+  };
+
+  render_entries("Undo Stack", undo_entries, ImVec4(0.93f, 0.58f, 0.24f, 1.0f));
+  render_entries("Redo Stack", redo_entries, ImVec4(0.22f, 0.74f, 0.58f, 1.0f));
+  ImGui::End();
+#endif
 }
 
 void App::frame_begin()
@@ -4460,6 +4583,7 @@ __CURSOR__)MD");
       save_index();
       layout_dirty_ = false;
     }
+    render_debug_history_window();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     return;
@@ -4492,6 +4616,7 @@ __CURSOR__)MD");
       record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
       deferred_sidebar_snapshot_before.clear();
     }
+    render_debug_history_window();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     return;
@@ -4900,6 +5025,7 @@ __CURSOR__)MD");
     save_index();
     layout_dirty_ = false;
   }
+  render_debug_history_window();
   if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
   if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
 }

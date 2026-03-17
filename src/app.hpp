@@ -57,8 +57,10 @@ private:
   bool apply_global_undo();
   bool apply_global_redo();
   bool find_note_by_path(std::string_view path, int &folder_idx, int &note_idx) const;
+  std::string make_history_debug_context(std::string_view preferred_note_path = {}) const;
   void show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent);
   void render_history_indicator() const;
+  void render_debug_history_window() const;
   void shutdown();
 
   void frame_begin();
