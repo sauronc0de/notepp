@@ -1,7 +1,13 @@
 #pragma once
+
+#include "undo_redo.hpp"
+
+#include <imgui.h>
+
 #include <string>
-#include <vector>
+#include <string_view>
 #include <unordered_set>
+#include <vector>
 
 struct SDL_Window;
 
@@ -14,7 +20,7 @@ private:
   void init_sdl_gl();
   void init_imgui();
   void load_state();
-  void save_state() const;
+  void save_state();
   void save_index() const;
   void load_note_content_for_active();
   void set_active_note(int folder_idx, int note_idx);
@@ -39,6 +45,20 @@ private:
   void push_undo_snapshot();
   void apply_undo_snapshot();
   void apply_redo_snapshot();
+  std::string capture_workspace_snapshot() const;
+  void apply_workspace_snapshot(std::string_view snapshot);
+  std::string capture_text_context_snapshot() const;
+  void apply_text_history_state(std::string_view note_path, std::string_view text, std::string_view context_snapshot);
+  void record_workspace_history_action(std::string_view label, std::string before_snapshot);
+  void record_text_history_action(std::string_view label, const std::string &before_text, const std::string &after_text);
+  void update_pending_text_history(std::string_view label, const std::string &before_text, const std::string &after_text, bool start_new_chunk);
+  void flush_pending_text_history();
+  void discard_pending_text_history();
+  bool apply_global_undo();
+  bool apply_global_redo();
+  bool find_note_by_path(std::string_view path, int &folder_idx, int &note_idx) const;
+  void show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent);
+  void render_history_indicator() const;
   void shutdown();
 
   void frame_begin();
@@ -62,6 +82,7 @@ private:
   bool request_copy_sidebar_ = false;
   bool request_paste_sidebar_ = false;
   bool layout_locked_ = false;
+  bool history_replay_in_progress_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta
@@ -91,9 +112,28 @@ private:
   int active_note_idx_ = 0;
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
-  std::vector<std::string> undo_stack_;
-  std::vector<std::string> redo_stack_;
+  UndoRedo::HistoryManager history_;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;
+
+  struct PendingTextHistory
+  {
+    bool active = false;
+    std::string label;
+    std::string note_path;
+    std::string before_text;
+    std::string after_text;
+    std::string context_snapshot;
+  };
+  PendingTextHistory pending_text_history_;
+  std::string deferred_text_snapshot_before_;
+
+  struct HistoryIndicator
+  {
+    std::string text;
+    ImVec4 accent = ImVec4(0.26f, 0.59f, 0.98f, 1.0f);
+    double until = 0.0;
+  };
+  HistoryIndicator history_indicator_;
 
   std::string markdown_text_ =
       "# Notes (Markdown preview)\n"

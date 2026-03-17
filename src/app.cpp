@@ -7,6 +7,8 @@
 #include "string_utils.hpp"
 #include "tiny_json.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <stdexcept>
 #include <cstdio>
 #include <cstring>
@@ -65,6 +67,8 @@ using TinyJson::json_find_int;
 using TinyJson::json_find_string;
 using TinyJson::json_unescape;
 
+using Json = nlohmann::json;
+
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
@@ -113,6 +117,21 @@ bool g_has_copied_folder = false;
 std::string g_copied_folder_root_name;
 std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
+
+std::string read_text_file(const std::string &path)
+{
+  std::ifstream in(path, std::ios::binary);
+  if(!in) return {};
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+void write_text_file(const std::string &path, std::string_view content)
+{
+  if(path.empty()) return;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if(out) out.write(content.data(), static_cast<std::streamsize>(content.size()));
+}
 
 float dist2(ImVec2 a, ImVec2 b)
 {
@@ -508,6 +527,8 @@ void App::shutdown()
 
 void App::load_state()
 {
+  discard_pending_text_history();
+  history_.clear();
   folders_.clear();
   pending_fs_delete_paths_.clear();
   active_folder_idx_ = 0;
@@ -612,8 +633,16 @@ void App::load_state()
   load_note_content_for_active();
 }
 
-void App::save_state() const
+void App::save_state()
 {
+  const bool record_text_change =
+      !history_replay_in_progress_ &&
+      !state_file_path_.empty() &&
+      !deferred_text_snapshot_before_.empty() &&
+      deferred_text_snapshot_before_ != markdown_text_;
+  const std::string before_text = std::move(deferred_text_snapshot_before_);
+  deferred_text_snapshot_before_.clear();
+
   if(!state_file_path_.empty())
   {
     std::ofstream out(state_file_path_, std::ios::binary | std::ios::trunc);
@@ -622,6 +651,11 @@ void App::save_state() const
   save_index();
   save_drawings_state();
   save_note_clipboard();
+
+  if(record_text_change)
+  {
+    record_text_history_action("Edit text", before_text, markdown_text_);
+  }
 }
 
 void App::save_index() const
@@ -756,14 +790,15 @@ bool App::has_active_note() const
 
 void App::load_note_content_for_active()
 {
+  if(!history_replay_in_progress_) flush_pending_text_history();
+
   ensure_default_index();
   if(!has_active_note())
   {
     state_file_path_.clear();
     note_title_ = "Note";
     markdown_text_.clear();
-    undo_stack_.clear();
-    redo_stack_.clear();
+    discard_pending_text_history();
     request_undo_edit_ = false;
     request_redo_edit_ = false;
     return;
@@ -785,14 +820,14 @@ void App::load_note_content_for_active()
     markdown_text_.clear();
     save_state();
   }
-  undo_stack_.clear();
-  redo_stack_.clear();
+  discard_pending_text_history();
   request_undo_edit_ = false;
   request_redo_edit_ = false;
 }
 
 void App::set_active_note(int folder_idx, int note_idx)
 {
+  flush_pending_text_history();
   ensure_default_index();
   folder_idx = std::max(0, std::min(folder_idx, (int)folders_.size() - 1));
   const int note_count = (int)folders_[(size_t)folder_idx].notes.size();
@@ -883,39 +918,495 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
   save_index();
 }
 
+void App::push_undo_snapshot_from(const std::string &snapshot)
+{
+  if(history_replay_in_progress_ || state_file_path_.empty()) return;
+  deferred_text_snapshot_before_ = snapshot;
+}
+
 void App::push_undo_snapshot()
 {
   push_undo_snapshot_from(markdown_text_);
 }
 
-void App::push_undo_snapshot_from(const std::string &snapshot)
-{
-  if(!undo_stack_.empty() && undo_stack_.back() == snapshot) return;
-  if(undo_stack_.size() >= 64) undo_stack_.erase(undo_stack_.begin());
-  undo_stack_.push_back(snapshot);
-  redo_stack_.clear();
-}
-
 void App::apply_undo_snapshot()
 {
-  if(undo_stack_.empty()) return;
-  if(redo_stack_.size() >= 64) redo_stack_.erase(redo_stack_.begin());
-  redo_stack_.push_back(markdown_text_);
-  markdown_text_ = undo_stack_.back();
-  undo_stack_.pop_back();
-  normalize_input_text_buffer(markdown_text_);
-  save_state();
+  (void)apply_global_undo();
 }
 
 void App::apply_redo_snapshot()
 {
-  if(redo_stack_.empty()) return;
-  if(undo_stack_.size() >= 64) undo_stack_.erase(undo_stack_.begin());
-  undo_stack_.push_back(markdown_text_);
-  markdown_text_ = redo_stack_.back();
-  redo_stack_.pop_back();
-  normalize_input_text_buffer(markdown_text_);
+  (void)apply_global_redo();
+}
+
+std::string App::capture_workspace_snapshot() const
+{
+  Json root;
+  root["active_folder"] = active_folder_idx_;
+  root["active_note"] = active_note_idx_;
+  root["folder_overview"] = folder_overview_mode_;
+  root["editing_mode"] = editing_mode_;
+  root["layout_locked"] = layout_locked_;
+
+  std::vector<std::string> pending_paths = pending_fs_delete_paths_;
+  std::sort(pending_paths.begin(), pending_paths.end());
+  root["pending_delete_paths"] = pending_paths;
+
+  Json folders_json = Json::array();
+  for(const FolderMeta &folder : folders_)
+  {
+    Json folder_json;
+    folder_json["name"] = folder.name;
+
+    Json notes_json = Json::array();
+    for(const NoteMeta &note : folder.notes)
+    {
+      Json note_json;
+      note_json["title"] = note.title;
+      note_json["path"] = note.path;
+      note_json["use_custom_color"] = note.use_custom_color;
+      note_json["color_r"] = note.color_r;
+      note_json["color_g"] = note.color_g;
+      note_json["color_b"] = note.color_b;
+      note_json["pos_x"] = note.pos_x;
+      note_json["pos_y"] = note.pos_y;
+      note_json["width"] = note.width;
+      note_json["height"] = note.height;
+      note_json["has_layout"] = note.has_layout;
+      note_json["hidden"] = note.hidden;
+      note_json["always_on_top"] = note.always_on_top;
+      note_json["content"] = (note.path == state_file_path_) ? markdown_text_ : read_text_file(note.path);
+      notes_json.push_back(std::move(note_json));
+    }
+
+    folder_json["notes"] = std::move(notes_json);
+    folders_json.push_back(std::move(folder_json));
+  }
+  root["folders"] = std::move(folders_json);
+
+  std::vector<std::string> drawing_keys;
+  drawing_keys.reserve(g_folder_drawings.size());
+  for(const auto &[folder_key, strokes] : g_folder_drawings)
+  {
+    (void)strokes;
+    drawing_keys.push_back(folder_key);
+  }
+  std::sort(drawing_keys.begin(), drawing_keys.end());
+
+  Json drawings_json = Json::array();
+  for(const std::string &folder_key : drawing_keys)
+  {
+    Json folder_json;
+    folder_json["folder"] = folder_key;
+
+    Json strokes_json = Json::array();
+    const auto it = g_folder_drawings.find(folder_key);
+    if(it != g_folder_drawings.end())
+    {
+      for(const FreeStroke &stroke : it->second)
+      {
+        Json stroke_json;
+        stroke_json["thickness"] = stroke.thickness;
+        stroke_json["color"] = Json::array({stroke.color.x, stroke.color.y, stroke.color.z, stroke.color.w});
+
+        Json points_json = Json::array();
+        for(const ImVec2 &point : stroke.points)
+        {
+          points_json.push_back(Json::array({point.x, point.y}));
+        }
+        stroke_json["points"] = std::move(points_json);
+        strokes_json.push_back(std::move(stroke_json));
+      }
+    }
+
+    folder_json["strokes"] = std::move(strokes_json);
+    drawings_json.push_back(std::move(folder_json));
+  }
+  root["drawings"] = std::move(drawings_json);
+
+  return root.dump();
+}
+
+void App::apply_workspace_snapshot(std::string_view snapshot)
+{
+  const Json root = Json::parse(snapshot.begin(), snapshot.end(), nullptr, false);
+  if(root.is_discarded()) return;
+
+  discard_pending_text_history();
+  const bool previous_replay = history_replay_in_progress_;
+  history_replay_in_progress_ = true;
+
+  std::unordered_set<std::string> current_paths;
+  for(const FolderMeta &folder : folders_)
+  {
+    for(const NoteMeta &note : folder.notes)
+    {
+      if(!note.path.empty()) current_paths.insert(note.path);
+    }
+  }
+  for(const std::string &path : pending_fs_delete_paths_)
+  {
+    if(!path.empty()) current_paths.insert(path);
+  }
+
+  std::vector<FolderMeta> restored_folders;
+  std::unordered_map<std::string, std::string> restored_contents;
+  if(root.contains("folders") && root["folders"].is_array())
+  {
+    for(const Json &folder_json : root["folders"])
+    {
+      FolderMeta folder;
+      folder.name = folder_json.value("name", std::string("General"));
+
+      if(folder_json.contains("notes") && folder_json["notes"].is_array())
+      {
+        for(const Json &note_json : folder_json["notes"])
+        {
+          NoteMeta note;
+          note.title = note_json.value("title", std::string("Note"));
+          note.path = note_json.value("path", std::string());
+          note.use_custom_color = note_json.value("use_custom_color", false);
+          note.color_r = note_json.value("color_r", 0.0f);
+          note.color_g = note_json.value("color_g", 0.0f);
+          note.color_b = note_json.value("color_b", 0.0f);
+          note.pos_x = note_json.value("pos_x", 0.0f);
+          note.pos_y = note_json.value("pos_y", 0.0f);
+          note.width = note_json.value("width", 520.0f);
+          note.height = note_json.value("height", 260.0f);
+          note.has_layout = note_json.value("has_layout", false);
+          note.hidden = note_json.value("hidden", false);
+          note.always_on_top = note_json.value("always_on_top", false);
+          if(note.path.empty()) note.path = make_note_path(folder.name, note.title);
+
+          restored_contents[note.path] = note_json.value("content", std::string());
+          folder.notes.push_back(std::move(note));
+        }
+      }
+
+      restored_folders.push_back(std::move(folder));
+    }
+  }
+
+  std::unordered_map<std::string, std::vector<FreeStroke>> restored_drawings;
+  if(root.contains("drawings") && root["drawings"].is_array())
+  {
+    for(const Json &folder_json : root["drawings"])
+    {
+      const std::string folder_key = folder_json.value("folder", std::string());
+      if(folder_key.empty()) continue;
+
+      std::vector<FreeStroke> strokes;
+      if(folder_json.contains("strokes") && folder_json["strokes"].is_array())
+      {
+        for(const Json &stroke_json : folder_json["strokes"])
+        {
+          FreeStroke stroke;
+          stroke.thickness = stroke_json.value("thickness", 2.2f);
+
+          if(stroke_json.contains("color") && stroke_json["color"].is_array() && stroke_json["color"].size() == 4)
+          {
+            stroke.color = ImVec4(
+                stroke_json["color"][0].get<float>(),
+                stroke_json["color"][1].get<float>(),
+                stroke_json["color"][2].get<float>(),
+                stroke_json["color"][3].get<float>());
+          }
+
+          if(stroke_json.contains("points") && stroke_json["points"].is_array())
+          {
+            for(const Json &point_json : stroke_json["points"])
+            {
+              if(!point_json.is_array() || point_json.size() != 2) continue;
+              stroke.points.push_back(ImVec2(point_json[0].get<float>(), point_json[1].get<float>()));
+            }
+          }
+
+          strokes.push_back(std::move(stroke));
+        }
+      }
+
+      restored_drawings[folder_key] = std::move(strokes);
+    }
+  }
+
+  std::unordered_set<std::string> target_paths;
+  target_paths.reserve(restored_contents.size());
+  for(const auto &[path, content] : restored_contents)
+  {
+    (void)content;
+    target_paths.insert(path);
+  }
+
+  for(const auto &[path, content] : restored_contents)
+  {
+    write_text_file(path, content);
+  }
+  for(const std::string &path : current_paths)
+  {
+    if(path.empty() || target_paths.count(path) != 0) continue;
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(path), ec);
+  }
+
+  folders_ = std::move(restored_folders);
+  g_folder_drawings = std::move(restored_drawings);
+  g_draw_undo.clear();
+  g_draw_redo.clear();
+  g_drawings_legacy_checked.clear();
+
+  pending_fs_delete_paths_.clear();
+  if(root.contains("pending_delete_paths") && root["pending_delete_paths"].is_array())
+  {
+    for(const Json &path_json : root["pending_delete_paths"])
+    {
+      pending_fs_delete_paths_.push_back(path_json.get<std::string>());
+    }
+  }
+
+  active_folder_idx_ = root.value("active_folder", 0);
+  active_note_idx_ = root.value("active_note", -1);
+  folder_overview_mode_ = root.value("folder_overview", false);
+  editing_mode_ = root.value("editing_mode", false);
+  layout_locked_ = root.value("layout_locked", false);
+  request_exit_edit_mode_ = false;
+
+  ensure_default_index();
+  normalize_active_indices();
+
+  if(has_active_note())
+  {
+    const NoteMeta &active_note = folders_[(size_t)active_folder_idx_].notes[(size_t)active_note_idx_];
+    state_file_path_ = active_note.path;
+    note_title_ = active_note.title;
+    markdown_text_ = restored_contents[active_note.path];
+    normalize_input_text_buffer(markdown_text_);
+  }
+  else
+  {
+    state_file_path_.clear();
+    note_title_ = "Note";
+    markdown_text_.clear();
+  }
+
+  g_drawings_dirty = false;
+  layout_dirty_ = false;
   save_state();
+
+  history_replay_in_progress_ = previous_replay;
+}
+
+std::string App::capture_text_context_snapshot() const
+{
+  Json root;
+  root["active_folder"] = active_folder_idx_;
+  root["active_note"] = active_note_idx_;
+  root["folder_overview"] = folder_overview_mode_;
+  root["editing_mode"] = editing_mode_;
+  root["active_note_path"] = has_active_note() ? folders_[(size_t)active_folder_idx_].notes[(size_t)active_note_idx_].path : std::string();
+  return root.dump();
+}
+
+void App::apply_text_history_state(std::string_view note_path, std::string_view text, std::string_view context_snapshot)
+{
+  const Json context = Json::parse(context_snapshot.begin(), context_snapshot.end(), nullptr, false);
+
+  discard_pending_text_history();
+  const bool previous_replay = history_replay_in_progress_;
+  history_replay_in_progress_ = true;
+
+  write_text_file(std::string(note_path), text);
+
+  folder_overview_mode_ = context.value("folder_overview", folder_overview_mode_);
+  editing_mode_ = context.value("editing_mode", editing_mode_);
+
+  int target_folder_idx = context.value("active_folder", active_folder_idx_);
+  int target_note_idx = context.value("active_note", active_note_idx_);
+  bool found_note = false;
+
+  if(context.contains("active_note_path"))
+  {
+    const std::string active_note_path = context.value("active_note_path", std::string());
+    found_note = find_note_by_path(active_note_path, target_folder_idx, target_note_idx);
+  }
+  if(!found_note)
+  {
+    found_note = find_note_by_path(note_path, target_folder_idx, target_note_idx);
+  }
+
+  active_folder_idx_ = target_folder_idx;
+  active_note_idx_ = found_note ? target_note_idx : target_note_idx;
+  ensure_default_index();
+  normalize_active_indices();
+  load_note_content_for_active();
+
+  if(has_active_note() && state_file_path_ == note_path)
+  {
+    markdown_text_.assign(text.begin(), text.end());
+    normalize_input_text_buffer(markdown_text_);
+  }
+
+  save_state();
+  history_replay_in_progress_ = previous_replay;
+}
+
+void App::record_workspace_history_action(std::string_view label, std::string before_snapshot)
+{
+  if(history_replay_in_progress_) return;
+
+  flush_pending_text_history();
+  const std::string after_snapshot = capture_workspace_snapshot();
+  if(before_snapshot == after_snapshot) return;
+
+  const std::string action_label = label.empty() ? "Edit workspace" : std::string(label);
+  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+      action_label,
+      [this, snapshot = after_snapshot]() { apply_workspace_snapshot(snapshot); },
+      [this, snapshot = std::move(before_snapshot)]() { apply_workspace_snapshot(snapshot); }));
+}
+
+void App::record_text_history_action(std::string_view label, const std::string &before_text, const std::string &after_text)
+{
+  if(history_replay_in_progress_ || state_file_path_.empty() || before_text == after_text) return;
+
+  flush_pending_text_history();
+
+  const std::string note_path = state_file_path_;
+  const std::string context_snapshot = capture_text_context_snapshot();
+  const std::string action_label = label.empty() ? "Edit text" : std::string(label);
+
+  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+      action_label,
+      [this, note_path, after_text, context_snapshot]() { apply_text_history_state(note_path, after_text, context_snapshot); },
+      [this, note_path, before_text, context_snapshot]() { apply_text_history_state(note_path, before_text, context_snapshot); }));
+}
+
+void App::update_pending_text_history(std::string_view label, const std::string &before_text, const std::string &after_text, bool start_new_chunk)
+{
+  if(history_replay_in_progress_ || state_file_path_.empty() || before_text == after_text) return;
+
+  if(start_new_chunk) flush_pending_text_history();
+
+  const std::string context_snapshot = capture_text_context_snapshot();
+  if(!pending_text_history_.active || pending_text_history_.note_path != state_file_path_)
+  {
+    pending_text_history_.active = true;
+    pending_text_history_.label = label.empty() ? "Edit text" : std::string(label);
+    pending_text_history_.note_path = state_file_path_;
+    pending_text_history_.before_text = before_text;
+    pending_text_history_.after_text = after_text;
+    pending_text_history_.context_snapshot = context_snapshot;
+    return;
+  }
+
+  pending_text_history_.label = label.empty() ? pending_text_history_.label : std::string(label);
+  pending_text_history_.after_text = after_text;
+  pending_text_history_.context_snapshot = context_snapshot;
+}
+
+void App::flush_pending_text_history()
+{
+  if(history_replay_in_progress_ || !pending_text_history_.active) return;
+
+  PendingTextHistory pending = std::move(pending_text_history_);
+  pending_text_history_ = PendingTextHistory{};
+
+  if(pending.note_path.empty() || pending.before_text == pending.after_text) return;
+
+  const std::string action_label = pending.label.empty() ? "Edit text" : pending.label;
+  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+      action_label,
+      [this, note_path = pending.note_path, after_text = pending.after_text, context = pending.context_snapshot]() {
+        apply_text_history_state(note_path, after_text, context);
+      },
+      [this, note_path = pending.note_path, before_text = pending.before_text, context = pending.context_snapshot]() {
+        apply_text_history_state(note_path, before_text, context);
+      }));
+}
+
+void App::discard_pending_text_history()
+{
+  pending_text_history_ = PendingTextHistory{};
+}
+
+bool App::apply_global_undo()
+{
+  flush_pending_text_history();
+  const std::string label(history_.next_undo_label());
+  if(!history_.undo()) return false;
+  show_history_indicator("Undo", label, ImVec4(0.93f, 0.58f, 0.24f, 1.0f));
+  return true;
+}
+
+bool App::apply_global_redo()
+{
+  flush_pending_text_history();
+  const std::string label(history_.next_redo_label());
+  if(!history_.redo()) return false;
+  show_history_indicator("Redo", label, ImVec4(0.22f, 0.74f, 0.58f, 1.0f));
+  return true;
+}
+
+bool App::find_note_by_path(std::string_view path, int &folder_idx, int &note_idx) const
+{
+  for(int fi = 0; fi < (int)folders_.size(); ++fi)
+  {
+    const FolderMeta &folder = folders_[(size_t)fi];
+    for(int ni = 0; ni < (int)folder.notes.size(); ++ni)
+    {
+      if(folder.notes[(size_t)ni].path == path)
+      {
+        folder_idx = fi;
+        note_idx = ni;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void App::show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent)
+{
+  history_indicator_.text.assign(prefix.begin(), prefix.end());
+  if(!label.empty())
+  {
+    history_indicator_.text += ": ";
+    history_indicator_.text.append(label.begin(), label.end());
+  }
+  history_indicator_.accent = accent;
+  history_indicator_.until = ImGui::GetTime() + 1.15;
+}
+
+void App::render_history_indicator() const
+{
+  if(history_indicator_.text.empty()) return;
+
+  const double remaining = history_indicator_.until - ImGui::GetTime();
+  if(remaining <= 0.0) return;
+
+  ImGuiViewport *viewport = ImGui::GetMainViewport();
+  if(viewport == nullptr) return;
+
+  const float fade = clamp01f(static_cast<float>(remaining / 1.15));
+  const float alpha = 0.18f + 0.82f * fade;
+  const ImVec2 pad(10.0f, 7.0f);
+  const ImVec2 text_size = ImGui::CalcTextSize(history_indicator_.text.c_str());
+  const ImVec2 size(text_size.x + pad.x * 2.0f, text_size.y + pad.y * 2.0f);
+  const ImVec2 pos(
+      viewport->Pos.x + viewport->Size.x * 0.5f - size.x * 0.5f,
+      viewport->Pos.y + viewport->Size.y - size.y - 22.0f);
+  const ImVec2 max(pos.x + size.x, pos.y + size.y);
+
+  ImDrawList *fg = ImGui::GetForegroundDrawList(viewport);
+  const ImVec4 bg(0.08f, 0.09f, 0.11f, 0.86f * alpha);
+  const ImVec4 border = mix_color(ImVec4(0.42f, 0.45f, 0.50f, 1.0f), history_indicator_.accent, 0.55f);
+  const ImVec4 text = mix_color(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), history_indicator_.accent, 0.18f);
+
+  fg->AddRectFilled(pos, max, ImGui::GetColorU32(bg), 8.0f);
+  fg->AddRect(pos, max, ImGui::GetColorU32(ImVec4(border.x, border.y, border.z, 0.62f * alpha)), 8.0f, 0, 1.0f);
+  fg->AddText(
+      ImVec2(pos.x + pad.x, pos.y + pad.y),
+      ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, 0.96f * alpha)),
+      history_indicator_.text.c_str());
 }
 
 void App::frame_begin()
@@ -945,11 +1436,17 @@ void App::frame_begin()
 
     ImGui_ImplSDL2_ProcessEvent(&event);
     const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
+    const bool is_keydown = event.type == SDL_KEYDOWN;
+    const SDL_Keycode key_sym = is_keydown ? event.key.keysym.sym : SDLK_UNKNOWN;
+    const Uint16 key_mod = is_keydown ? event.key.keysym.mod : KMOD_NONE;
+    const bool ctrl_down = (key_mod & KMOD_CTRL) != 0;
+    const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
+    const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
+    const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
     if(editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
-       event.key.keysym.sym == SDLK_z)
+       undo_shortcut)
     {
       request_undo_edit_ = true;
       continue;
@@ -957,8 +1454,7 @@ void App::frame_begin()
     if(editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
-       event.key.keysym.sym == SDLK_y)
+       redo_shortcut)
     {
       request_redo_edit_ = true;
       continue;
@@ -991,8 +1487,7 @@ void App::frame_begin()
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
-       event.key.keysym.sym == SDLK_z)
+       undo_shortcut)
     {
       request_undo_edit_ = true;
       request_undo_draw_ = true;
@@ -1001,8 +1496,7 @@ void App::frame_begin()
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
-       event.key.keysym.sym == SDLK_y)
+       redo_shortcut)
     {
       request_redo_edit_ = true;
       request_redo_draw_ = true;
@@ -1011,7 +1505,7 @@ void App::frame_begin()
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
+       ctrl_down &&
        event.key.keysym.sym == SDLK_c)
     {
       request_copy_sidebar_ = true;
@@ -1020,7 +1514,7 @@ void App::frame_begin()
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
-       (event.key.keysym.mod & KMOD_CTRL) &&
+       ctrl_down &&
        event.key.keysym.sym == SDLK_v)
     {
       request_paste_sidebar_ = true;
@@ -1127,21 +1621,6 @@ void App::frame_ui()
   static int pending_move_folder_target_idx = -1;
   static int drag_hover_folder_idx = -1;
   static std::unordered_map<std::string, SidebarFlash> sidebar_flashes;
-  struct SidebarSnapshot
-  {
-    std::vector<FolderMeta> folders;
-    std::unordered_map<std::string, std::vector<FreeStroke>> drawings;
-    std::vector<std::string> pending_delete_paths;
-    std::unordered_set<int> selected_notes;
-    std::unordered_set<int> selected_strokes;
-    int active_folder = 0;
-    int active_note = -1;
-    int pending_focus_note = -1;
-    bool folder_overview = true;
-    bool editing = false;
-  };
-  static std::vector<SidebarSnapshot> sidebar_undo;
-  static std::vector<SidebarSnapshot> sidebar_redo;
 
   auto remove_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -1184,65 +1663,24 @@ void App::frame_ui()
     if(std::find(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path) == pending_fs_delete_paths_.end())
       pending_fs_delete_paths_.push_back(path);
   };
-  auto capture_sidebar_snapshot = [&]() -> SidebarSnapshot {
-    SidebarSnapshot s;
-    s.folders = folders_;
-    s.drawings = g_folder_drawings;
-    s.pending_delete_paths = pending_fs_delete_paths_;
-    s.selected_notes = selected_note_indices;
-    s.selected_strokes = selected_stroke_indices;
-    s.active_folder = active_folder_idx_;
-    s.active_note = active_note_idx_;
-    s.pending_focus_note = pending_focus_note_idx;
-    s.folder_overview = folder_overview_mode_;
-    s.editing = editing_mode_;
-    return s;
+  auto capture_workspace_before = [&]() {
+    flush_pending_text_history();
+    return capture_workspace_snapshot();
   };
-  auto apply_sidebar_snapshot = [&](const SidebarSnapshot &s) {
-    folders_ = s.folders;
-    g_folder_drawings = s.drawings;
-    pending_fs_delete_paths_ = s.pending_delete_paths;
-    selected_note_indices = s.selected_notes;
-    selected_stroke_indices = s.selected_strokes;
-    active_folder_idx_ = s.active_folder;
-    active_note_idx_ = s.active_note;
-    pending_focus_note_idx = s.pending_focus_note;
-    folder_overview_mode_ = s.folder_overview;
-    editing_mode_ = s.editing;
-    request_exit_edit_mode_ = false;
-    ensure_default_index();
-    normalize_active_indices();
-    load_note_content_for_active();
-    save_index();
-    g_drawings_dirty = true;
+  auto record_workspace_after = [&](std::string_view label, std::string before_snapshot) {
+    record_workspace_history_action(label, std::move(before_snapshot));
   };
+  auto perform_workspace_change = [&](std::string_view label, auto &&mutate) {
+    std::string before_snapshot = capture_workspace_before();
+    mutate();
+    record_workspace_after(label, std::move(before_snapshot));
+  };
+  static std::string deferred_sidebar_snapshot_before;
   auto push_sidebar_snapshot = [&]() {
-    if(sidebar_undo.size() >= 64) sidebar_undo.erase(sidebar_undo.begin());
-    sidebar_undo.push_back(capture_sidebar_snapshot());
-    sidebar_redo.clear();
+    if(deferred_sidebar_snapshot_before.empty()) deferred_sidebar_snapshot_before = capture_workspace_before();
   };
-  auto apply_sidebar_undo = [&]() -> bool {
-    if(sidebar_undo.empty()) return false;
-    if(sidebar_redo.size() >= 64) sidebar_redo.erase(sidebar_redo.begin());
-    sidebar_redo.push_back(capture_sidebar_snapshot());
-    SidebarSnapshot prev = sidebar_undo.back();
-    sidebar_undo.pop_back();
-    apply_sidebar_snapshot(prev);
-    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
-      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
-    return true;
-  };
-  auto apply_sidebar_redo = [&]() -> bool {
-    if(sidebar_redo.empty()) return false;
-    if(sidebar_undo.size() >= 64) sidebar_undo.erase(sidebar_undo.begin());
-    sidebar_undo.push_back(capture_sidebar_snapshot());
-    SidebarSnapshot next = sidebar_redo.back();
-    sidebar_redo.pop_back();
-    apply_sidebar_snapshot(next);
-    if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
-      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
-    return true;
-  };
+  auto apply_sidebar_undo = [&]() -> bool { return apply_global_undo(); };
+  auto apply_sidebar_redo = [&]() -> bool { return apply_global_redo(); };
 
   if(request_clear_selection_)
   {
@@ -1252,6 +1690,24 @@ void App::frame_ui()
     request_clear_selection_ = false;
   }
   drag_hover_folder_idx = -1;
+
+  if(request_undo_edit_ || request_undo_draw_)
+  {
+    if(apply_global_undo() && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
+    request_undo_edit_ = false;
+    request_redo_edit_ = false;
+    request_undo_draw_ = false;
+    request_redo_draw_ = false;
+  }
+  else if(request_redo_edit_ || request_redo_draw_)
+  {
+    if(apply_global_redo() && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+    request_redo_edit_ = false;
+    request_undo_draw_ = false;
+    request_redo_draw_ = false;
+  }
 
   // Creation is handled from context menus (right-click).
 
@@ -1295,37 +1751,38 @@ void App::frame_ui()
     if(ImGui::InputText("Name", new_folder_buf, sizeof(new_folder_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
-      push_sidebar_snapshot();
-      std::string base_name = sanitize_note_filename(new_folder_buf);
-      if(base_name.empty()) base_name = "Folder";
-      std::string parent_path;
-      if(new_folder_parent_idx >= 0 && new_folder_parent_idx < (int)folders_.size())
-        parent_path = folders_[(size_t)new_folder_parent_idx].name;
-      std::string candidate = parent_path.empty() ? base_name : (parent_path + "/" + base_name);
-      int suffix = 2;
-      auto folder_exists = [&](const std::string &n) {
-        for(const auto &fx : folders_)
+      perform_workspace_change("Create folder", [&]() {
+        std::string base_name = sanitize_note_filename(new_folder_buf);
+        if(base_name.empty()) base_name = "Folder";
+        std::string parent_path;
+        if(new_folder_parent_idx >= 0 && new_folder_parent_idx < (int)folders_.size())
+          parent_path = folders_[(size_t)new_folder_parent_idx].name;
+        std::string candidate = parent_path.empty() ? base_name : (parent_path + "/" + base_name);
+        int suffix = 2;
+        auto folder_exists = [&](const std::string &n) {
+          for(const auto &fx : folders_)
+          {
+            if(fx.name == n) return true;
+          }
+          return false;
+        };
+        while(folder_exists(candidate))
         {
-          if(fx.name == n) return true;
+          const std::string s = base_name + " " + std::to_string(suffix++);
+          candidate = parent_path.empty() ? s : (parent_path + "/" + s);
         }
-        return false;
-      };
-      while(folder_exists(candidate))
-      {
-        const std::string s = base_name + " " + std::to_string(suffix++);
-        candidate = parent_path.empty() ? s : (parent_path + "/" + s);
-      }
 
-      FolderMeta f;
-      f.name = candidate;
-      folders_.push_back(std::move(f));
-      save_state();
-      active_folder_idx_ = (int)folders_.size() - 1;
-      active_note_idx_ = -1;
-      folder_overview_mode_ = true;
-      flash_mark_folder(candidate, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-      load_note_content_for_active();
-      save_index();
+        FolderMeta f;
+        f.name = candidate;
+        folders_.push_back(std::move(f));
+        save_state();
+        active_folder_idx_ = (int)folders_.size() - 1;
+        active_note_idx_ = -1;
+        folder_overview_mode_ = true;
+        flash_mark_folder(candidate, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+        load_note_content_for_active();
+        save_index();
+      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -1342,25 +1799,26 @@ void App::frame_ui()
     if(ImGui::InputText("Title", new_note_buf, sizeof(new_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
-      push_sidebar_snapshot();
-      ensure_default_index();
-      const int target_folder_idx =
-          (new_note_target_folder_idx >= 0 && new_note_target_folder_idx < (int)folders_.size())
-              ? new_note_target_folder_idx
-              : active_folder_idx_;
-      FolderMeta &f = folders_[(size_t)target_folder_idx];
-      NoteMeta n;
-      n.title = make_unique_note_title(target_folder_idx, new_note_buf);
-      n.path = make_note_path(f.name, n.title);
-      remove_pending_delete_path(n.path);
-      f.notes.push_back(std::move(n));
-      flash_mark_note(f.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-      flash_mark_folder(f.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-      active_folder_idx_ = target_folder_idx;
-      active_note_idx_ = (int)f.notes.size() - 1;
-      force_open_folder_idx = target_folder_idx;
-      load_note_content_for_active();
-      save_index();
+      perform_workspace_change("Create note", [&]() {
+        ensure_default_index();
+        const int target_folder_idx =
+            (new_note_target_folder_idx >= 0 && new_note_target_folder_idx < (int)folders_.size())
+                ? new_note_target_folder_idx
+                : active_folder_idx_;
+        FolderMeta &f = folders_[(size_t)target_folder_idx];
+        NoteMeta n;
+        n.title = make_unique_note_title(target_folder_idx, new_note_buf);
+        n.path = make_note_path(f.name, n.title);
+        remove_pending_delete_path(n.path);
+        f.notes.push_back(std::move(n));
+        flash_mark_note(f.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+        flash_mark_folder(f.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+        active_folder_idx_ = target_folder_idx;
+        active_note_idx_ = (int)f.notes.size() - 1;
+        force_open_folder_idx = target_folder_idx;
+        load_note_content_for_active();
+        save_index();
+      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -1374,17 +1832,18 @@ void App::frame_ui()
     {
       if(rename_note_folder_idx >= 0 && rename_note_idx >= 0)
       {
-        push_sidebar_snapshot();
-        rename_note_by_index(rename_note_folder_idx, rename_note_idx, rename_note_buf);
-        if(rename_note_folder_idx >= 0 && rename_note_folder_idx < (int)folders_.size())
-        {
-          const FolderMeta &rf = folders_[(size_t)rename_note_folder_idx];
-          if(rename_note_idx >= 0 && rename_note_idx < (int)rf.notes.size())
+        perform_workspace_change("Rename note", [&]() {
+          rename_note_by_index(rename_note_folder_idx, rename_note_idx, rename_note_buf);
+          if(rename_note_folder_idx >= 0 && rename_note_folder_idx < (int)folders_.size())
           {
-            remove_pending_delete_path(rf.notes[(size_t)rename_note_idx].path);
-            flash_mark_note(rf.notes[(size_t)rename_note_idx].path, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+            const FolderMeta &rf = folders_[(size_t)rename_note_folder_idx];
+            if(rename_note_idx >= 0 && rename_note_idx < (int)rf.notes.size())
+            {
+              remove_pending_delete_path(rf.notes[(size_t)rename_note_idx].path);
+              flash_mark_note(rf.notes[(size_t)rename_note_idx].path, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+            }
           }
-        }
+        });
       }
       ImGui::CloseCurrentPopup();
     }
@@ -1399,8 +1858,8 @@ void App::frame_ui()
     {
       if(rename_folder_idx >= 0 && rename_folder_idx < (int)folders_.size())
       {
-        push_sidebar_snapshot();
-        FolderMeta &rf = folders_[(size_t)rename_folder_idx];
+        perform_workspace_change("Rename folder", [&]() {
+          FolderMeta &rf = folders_[(size_t)rename_folder_idx];
         const std::string old_name = rf.name;
         const std::string new_name = sanitize_note_filename(rename_folder_buf);
         if(!new_name.empty())
@@ -1447,11 +1906,12 @@ void App::frame_ui()
               g_folder_drawings.erase(it);
               g_drawings_dirty = true;
             }
-            save_index();
-            flash_mark_folder(rf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
-            if(rename_folder_idx == active_folder_idx_) load_note_content_for_active();
+              save_index();
+              flash_mark_folder(rf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
+              if(rename_folder_idx == active_folder_idx_) load_note_content_for_active();
+            }
           }
-        }
+        });
       }
       ImGui::CloseCurrentPopup();
     }
@@ -1469,28 +1929,28 @@ void App::frame_ui()
         bool changed = false;
         if(ImGui::Checkbox("Use default", &note_color_use_default))
         {
-          push_sidebar_snapshot();
           changed = true;
         }
         if(!note_color_use_default)
         {
           if(ImGui::ColorEdit3("Color", note_color_buf, ImGuiColorEditFlags_NoInputs))
           {
-            if(!changed) push_sidebar_snapshot();
             changed = true;
           }
         }
         if(changed)
         {
-          cn.use_custom_color = !note_color_use_default;
-          if(!note_color_use_default)
-          {
-            cn.color_r = clamp01f(note_color_buf[0]);
-            cn.color_g = clamp01f(note_color_buf[1]);
-            cn.color_b = clamp01f(note_color_buf[2]);
-          }
-          flash_mark_note(cn.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-          save_index();
+          perform_workspace_change("Set note color", [&]() {
+            cn.use_custom_color = !note_color_use_default;
+            if(!note_color_use_default)
+            {
+              cn.color_r = clamp01f(note_color_buf[0]);
+              cn.color_g = clamp01f(note_color_buf[1]);
+              cn.color_b = clamp01f(note_color_buf[2]);
+            }
+            flash_mark_note(cn.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+            save_index();
+          });
         }
       }
     }
@@ -1631,37 +2091,38 @@ void App::frame_ui()
       }
       else if(g_has_copied_folder && !g_copied_folder_entries.empty())
       {
-        push_sidebar_snapshot();
-        const std::string dst_parent = folders_[(size_t)active_folder_idx_].name;
-        const std::string new_root = make_unique_folder_path(dst_parent, folder_base_name(g_copied_folder_root_name));
-        for(const CopiedFolderEntry &e : g_copied_folder_entries)
-        {
-          FolderMeta nf;
-          nf.name = new_root + e.rel_path;
-          std::unordered_set<std::string> used_titles;
-          for(const CopiedNoteItem &cn : e.notes)
+        perform_workspace_change("Paste folder", [&]() {
+          const std::string dst_parent = folders_[(size_t)active_folder_idx_].name;
+          const std::string new_root = make_unique_folder_path(dst_parent, folder_base_name(g_copied_folder_root_name));
+          for(const CopiedFolderEntry &e : g_copied_folder_entries)
           {
-            NoteMeta nn;
-            std::string base_title = sanitize_note_filename(cn.title.empty() ? "Note" : cn.title);
-            std::string candidate = base_title;
-            int suffix = 2;
-            while(used_titles.count(candidate) != 0)
+            FolderMeta nf;
+            nf.name = new_root + e.rel_path;
+            std::unordered_set<std::string> used_titles;
+            for(const CopiedNoteItem &cn : e.notes)
             {
-              candidate = base_title + " " + std::to_string(suffix++);
+              NoteMeta nn;
+              std::string base_title = sanitize_note_filename(cn.title.empty() ? "Note" : cn.title);
+              std::string candidate = base_title;
+              int suffix = 2;
+              while(used_titles.count(candidate) != 0)
+              {
+                candidate = base_title + " " + std::to_string(suffix++);
+              }
+              used_titles.insert(candidate);
+              nn.title = candidate;
+              nn.path = make_note_path(nf.name, nn.title);
+              remove_pending_delete_path(nn.path);
+              std::filesystem::create_directories(std::filesystem::path(nn.path).parent_path());
+              std::ofstream out_note(nn.path, std::ios::binary | std::ios::trunc);
+              if(out_note) out_note << cn.content;
+              nf.notes.push_back(std::move(nn));
             }
-            used_titles.insert(candidate);
-            nn.title = candidate;
-            nn.path = make_note_path(nf.name, nn.title);
-            remove_pending_delete_path(nn.path);
-            std::filesystem::create_directories(std::filesystem::path(nn.path).parent_path());
-            std::ofstream out_note(nn.path, std::ios::binary | std::ios::trunc);
-            if(out_note) out_note << cn.content;
-            nf.notes.push_back(std::move(nn));
+            folders_.push_back(std::move(nf));
           }
-          folders_.push_back(std::move(nf));
-        }
-        flash_mark_folder(new_root, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-        save_index();
+          flash_mark_folder(new_root, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+          save_index();
+        });
       }
     }
     request_paste_sidebar_ = false;
@@ -2513,82 +2974,25 @@ void App::frame_ui()
     }
     topbar_tooltip_text.clear();
     if(!ImGui::IsMouseDown(ImGuiMouseButton_Left)) note_drag_snapshot_taken = false;
+    static std::string deferred_draw_snapshot_before;
+    static std::string deferred_selection_snapshot_before;
     auto push_draw_snapshot = [&](const std::string &folder_key) {
-      auto &u = g_draw_undo[folder_key];
-      auto &r = g_draw_redo[folder_key];
-      const auto &cur = g_folder_drawings[folder_key];
-      if(u.size() >= 64) u.erase(u.begin());
-      u.push_back(cur);
-      r.clear();
+      (void)folder_key;
+      if(deferred_draw_snapshot_before.empty()) deferred_draw_snapshot_before = capture_workspace_before();
     };
     auto apply_draw_undo = [&](const std::string &folder_key) {
-      auto &u = g_draw_undo[folder_key];
-      auto &r = g_draw_redo[folder_key];
-      auto &cur = g_folder_drawings[folder_key];
-      if(u.empty()) return;
-      if(r.size() >= 64) r.erase(r.begin());
-      r.push_back(cur);
-      cur = u.back();
-      u.pop_back();
-      g_drawings_dirty = true;
+      (void)folder_key;
+      return apply_global_undo();
     };
     auto apply_draw_redo = [&](const std::string &folder_key) {
-      auto &u = g_draw_undo[folder_key];
-      auto &r = g_draw_redo[folder_key];
-      auto &cur = g_folder_drawings[folder_key];
-      if(r.empty()) return;
-      if(u.size() >= 64) u.erase(u.begin());
-      u.push_back(cur);
-      cur = r.back();
-      r.pop_back();
-      g_drawings_dirty = true;
-    };
-    auto capture_selection_snapshot = [&]() -> SelectionSnapshot {
-      SelectionSnapshot s;
-      s.notes = f.notes;
-      s.strokes = g_folder_drawings[f.name];
-      s.selected_notes = selected_note_indices;
-      s.selected_strokes = selected_stroke_indices;
-      s.active_note = active_note_idx_;
-      return s;
-    };
-    auto apply_selection_snapshot = [&](const SelectionSnapshot &s) {
-      f.notes = s.notes;
-      g_folder_drawings[f.name] = s.strokes;
-      selected_note_indices = s.selected_notes;
-      selected_stroke_indices = s.selected_strokes;
-      if(f.notes.empty())
-        active_note_idx_ = -1;
-      else
-        active_note_idx_ = std::max(0, std::min(s.active_note, (int)f.notes.size() - 1));
-      load_note_content_for_active();
-      save_index();
-      g_drawings_dirty = true;
+      (void)folder_key;
+      return apply_global_redo();
     };
     auto push_selection_snapshot = [&]() {
-      SelectionSnapshot s = capture_selection_snapshot();
-      if(selection_undo.size() >= 64) selection_undo.erase(selection_undo.begin());
-      selection_undo.push_back(std::move(s));
-      selection_redo.clear();
+      if(deferred_selection_snapshot_before.empty()) deferred_selection_snapshot_before = capture_workspace_before();
     };
-    auto apply_selection_undo = [&]() -> bool {
-      if(selection_undo.empty()) return false;
-      if(selection_redo.size() >= 64) selection_redo.erase(selection_redo.begin());
-      selection_redo.push_back(capture_selection_snapshot());
-      SelectionSnapshot prev = selection_undo.back();
-      selection_undo.pop_back();
-      apply_selection_snapshot(prev);
-      return true;
-    };
-    auto apply_selection_redo = [&]() -> bool {
-      if(selection_redo.empty()) return false;
-      if(selection_undo.size() >= 64) selection_undo.erase(selection_undo.begin());
-      selection_undo.push_back(capture_selection_snapshot());
-      SelectionSnapshot next = selection_redo.back();
-      selection_redo.pop_back();
-      apply_selection_snapshot(next);
-      return true;
-    };
+    auto apply_selection_undo = [&]() -> bool { return apply_global_undo(); };
+    auto apply_selection_redo = [&]() -> bool { return apply_global_redo(); };
 
     {
       const bool has_anchor_selection = (anchor_sel_start != anchor_sel_end);
@@ -3034,6 +3438,7 @@ __CURSOR__)MD");
                ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                : ImGui::Button(layout_locked_ ? "Unlock" : "Lock"))
         {
+          push_sidebar_snapshot();
           layout_locked_ = !layout_locked_;
           save_index();
         }
@@ -3433,7 +3838,9 @@ __CURSOR__)MD");
       {
         if(rename_win_folder_idx >= 0 && rename_win_note_idx >= 0)
         {
-          rename_note_by_index(rename_win_folder_idx, rename_win_note_idx, rename_win_buf);
+          perform_workspace_change("Rename note", [&]() {
+            rename_note_by_index(rename_win_folder_idx, rename_win_note_idx, rename_win_buf);
+          });
         }
         ImGui::CloseCurrentPopup();
       }
@@ -3569,11 +3976,13 @@ __CURSOR__)MD");
         }
         if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
         {
+          push_sidebar_snapshot();
           n.always_on_top = !n.always_on_top;
           save_index();
         }
         if(ImGui::MenuItem("Hide"))
         {
+          push_sidebar_snapshot();
           n.hidden = true;
           if(is_editing_this)
           {
@@ -3644,8 +4053,11 @@ __CURSOR__)MD");
         normalize_input_text_buffer(markdown_text_);
         if(changed)
         {
-          if(should_push_word_granular_undo(before_edit, markdown_text_, fmt_folder))
-            push_undo_snapshot_from(before_edit);
+          update_pending_text_history(
+              "Edit text",
+              before_edit,
+              markdown_text_,
+              should_push_word_granular_undo(before_edit, markdown_text_, fmt_folder));
           save_state();
         }
         if(request_undo_edit_)
@@ -3716,7 +4128,7 @@ __CURSOR__)MD");
             if(out) out << preview_text;
           }
         }
-        if(is_current_note_document && request_undo_edit_ && !undo_stack_.empty())
+        if(is_current_note_document && request_undo_edit_ && history_.can_undo())
         {
           apply_undo_snapshot();
           request_undo_edit_ = false;
@@ -3724,7 +4136,7 @@ __CURSOR__)MD");
           request_undo_draw_ = false;
           request_redo_draw_ = false;
         }
-        if(is_current_note_document && request_redo_edit_ && !redo_stack_.empty())
+        if(is_current_note_document && request_redo_edit_ && history_.can_redo())
         {
           apply_redo_snapshot();
           request_redo_edit_ = false;
@@ -3869,6 +4281,7 @@ __CURSOR__)MD");
 
       if(!note_window_open)
       {
+        push_sidebar_snapshot();
         n.hidden = true;
         if(is_editing_this)
         {
@@ -4026,6 +4439,22 @@ __CURSOR__)MD");
       request_exit_edit_mode_ = false;
     }
 
+    if(!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !deferred_selection_snapshot_before.empty())
+    {
+      record_workspace_after("Move selection", std::move(deferred_selection_snapshot_before));
+      deferred_selection_snapshot_before.clear();
+    }
+    if(!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !deferred_draw_snapshot_before.empty())
+    {
+      record_workspace_after("Edit drawings", std::move(deferred_draw_snapshot_before));
+      deferred_draw_snapshot_before.clear();
+    }
+    if(!deferred_sidebar_snapshot_before.empty())
+    {
+      record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
+      deferred_sidebar_snapshot_before.clear();
+    }
+
     if(layout_dirty_ && !ImGui::IsAnyMouseDown())
     {
       save_index();
@@ -4058,6 +4487,11 @@ __CURSOR__)MD");
     ImGui::TextUnformatted("Right click in Explorer or Notes background to create one.");
     ImGui::End();
 
+    if(!deferred_sidebar_snapshot_before.empty())
+    {
+      record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
+      deferred_sidebar_snapshot_before.clear();
+    }
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     return;
@@ -4139,6 +4573,7 @@ __CURSOR__)MD");
     }
     if(active_note_detached && ImGui::MenuItem("Pin above OS windows", nullptr, active_note.always_on_top))
     {
+      push_sidebar_snapshot();
       active_note.always_on_top = !active_note.always_on_top;
       save_index();
     }
@@ -4161,8 +4596,10 @@ __CURSOR__)MD");
     ImGui::SetNextItemWidth(260.0f);
     if(ImGui::InputText("##rename_note_title", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue))
     {
-      normalize_input_text_buffer(markdown_text_);
-      rename_note_storage_for_title(rename_buf);
+      perform_workspace_change("Rename note", [&]() {
+        normalize_input_text_buffer(markdown_text_);
+        rename_note_storage_for_title(rename_buf);
+      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -4195,7 +4632,7 @@ __CURSOR__)MD");
       if(markdown_text_ != preview_before) push_undo_snapshot_from(preview_before);
       save_state();
     }
-    if(request_undo_edit_ && !undo_stack_.empty())
+    if(request_undo_edit_ && history_.can_undo())
     {
       apply_undo_snapshot();
       request_undo_edit_ = false;
@@ -4203,7 +4640,7 @@ __CURSOR__)MD");
       request_undo_draw_ = false;
       request_redo_draw_ = false;
     }
-    if(request_redo_edit_ && !redo_stack_.empty())
+    if(request_redo_edit_ && history_.can_redo())
     {
       apply_redo_snapshot();
       request_redo_edit_ = false;
@@ -4259,8 +4696,11 @@ __CURSOR__)MD");
     normalize_input_text_buffer(markdown_text_);
     if(text_changed)
     {
-      if(should_push_word_granular_undo(before_edit, markdown_text_, fmt))
-        push_undo_snapshot_from(before_edit);
+      update_pending_text_history(
+          "Edit text",
+          before_edit,
+          markdown_text_,
+          should_push_word_granular_undo(before_edit, markdown_text_, fmt));
       save_state();
     }
     if(request_undo_edit_)
@@ -4449,6 +4889,12 @@ __CURSOR__)MD");
   ImGui::End();
   ImGui::PopStyleColor(active_folder_theme_count);
 
+  if(!deferred_sidebar_snapshot_before.empty())
+  {
+    record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
+    deferred_sidebar_snapshot_before.clear();
+  }
+
   if(layout_dirty_ && !ImGui::IsAnyMouseDown())
   {
     save_index();
@@ -4460,6 +4906,7 @@ __CURSOR__)MD");
 
 void App::frame_end()
 {
+  render_history_indicator();
   ImGui::Render();
 
   int display_w = 0, display_h = 0;
