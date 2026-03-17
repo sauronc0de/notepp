@@ -63,4 +63,4 @@ add_subdirectory(src)
 
 add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
-target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui note_ui)
+target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui markdown_code_highlight note_ui)

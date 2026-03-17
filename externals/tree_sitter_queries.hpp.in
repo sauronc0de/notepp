@@ -1,0 +1,9 @@
+#pragma once
+
+namespace MarkdownCodeHighlight::BuiltinQueries
+{
+inline constexpr const char *kTreeSitterCHighlights = R"TS(@TREE_SITTER_C_HIGHLIGHTS_QUERY@)TS";
+inline constexpr const char *kTreeSitterCppHighlights = R"TS(@TREE_SITTER_CPP_HIGHLIGHTS_QUERY@)TS";
+inline constexpr const char *kTreeSitterPythonHighlights = R"TS(@TREE_SITTER_PYTHON_HIGHLIGHTS_QUERY@)TS";
+inline constexpr const char *kTreeSitterBashHighlights = R"TS(@TREE_SITTER_BASH_HIGHLIGHTS_QUERY@)TS";
+} // namespace MarkdownCodeHighlight::BuiltinQueries

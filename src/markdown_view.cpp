@@ -1,5 +1,6 @@
 #include "markdown_view.hpp"
 #include "helpers.hpp"
+#include "markdown_code_highlight.hpp"
 #include "markdown_sections.hpp"
 #include "string_utils.hpp"
 
@@ -1001,6 +1002,7 @@ static void render_markdown_block_with_tables(std::string_view text)
 
   std::string normal_acc;
   int table_id = 0;
+  int code_block_id = 0;
 
   size_t pos = 0;
   while(pos < text.size())
@@ -1009,6 +1011,44 @@ static void render_markdown_block_with_tables(std::string_view text)
     const bool has_nl = (line_end != std::string_view::npos);
     if(!has_nl) line_end = text.size();
     std::string_view line = text.substr(pos, line_end - pos);
+    const std::string_view trimmed_line = trim(line);
+
+    if(starts_with(trimmed_line, "```"))
+    {
+      const std::string fence_info = std::string(trim(trimmed_line.substr(3)));
+      size_t scan = has_nl ? (line_end + 1) : text.size();
+      size_t block_end = text.size();
+      std::string code;
+      bool closed = false;
+
+      while(scan < text.size())
+      {
+        size_t code_line_end = text.find('\n', scan);
+        const bool code_has_nl = (code_line_end != std::string_view::npos);
+        if(!code_has_nl) code_line_end = text.size();
+
+        const std::string_view code_line = text.substr(scan, code_line_end - scan);
+        if(trim(code_line) == "```")
+        {
+          block_end = code_has_nl ? (code_line_end + 1) : code_line_end;
+          closed = true;
+          break;
+        }
+
+        code.append(code_line.data(), code_line.size());
+        if(code_has_nl) code.push_back('\n');
+        scan = code_has_nl ? (code_line_end + 1) : code_line_end;
+      }
+
+      if(closed)
+      {
+        render_non_table(normal_acc);
+        normal_acc.clear();
+        MarkdownCodeHighlight::render_code_block(fence_info, code, 0x50000 + code_block_id++);
+        pos = block_end;
+        continue;
+      }
+    }
 
     const std::vector<std::string> header = split_md_table_cells(line);
     std::vector<std::vector<std::string>> rows;

@@ -145,3 +145,106 @@ target_include_directories(imgui_md PUBLIC
 
 target_link_libraries(imgui_md PUBLIC imgui md4c)
 # ------------------------------------------------------------#
+
+# ------------------------------------------------------------#
+# 🌐 Added Tree-sitter runtime + grammars --------------------#
+include(FetchContent)
+
+FetchContent_Declare(
+  tree_sitter_fc
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+  GIT_TAG        master
+)
+FetchContent_GetProperties(tree_sitter_fc)
+if(NOT tree_sitter_fc_POPULATED)
+  FetchContent_Populate(tree_sitter_fc)
+endif()
+
+add_library(tree_sitter_runtime STATIC
+  ${tree_sitter_fc_SOURCE_DIR}/lib/src/lib.c
+)
+target_include_directories(tree_sitter_runtime
+  PUBLIC ${tree_sitter_fc_SOURCE_DIR}/lib/include
+  PRIVATE ${tree_sitter_fc_SOURCE_DIR}/lib/src
+)
+
+function(notepp_add_tree_sitter_grammar target_name)
+  set(options)
+  set(oneValueArgs SOURCE_DIR)
+  cmake_parse_arguments(GRAMMAR "${options}" "${oneValueArgs}" "" ${ARGN})
+
+  add_library(${target_name} STATIC
+    ${GRAMMAR_SOURCE_DIR}/src/parser.c
+  )
+
+  if(EXISTS "${GRAMMAR_SOURCE_DIR}/src/scanner.c")
+    target_sources(${target_name} PRIVATE ${GRAMMAR_SOURCE_DIR}/src/scanner.c)
+  endif()
+
+  if(EXISTS "${GRAMMAR_SOURCE_DIR}/src/scanner.cc")
+    target_sources(${target_name} PRIVATE ${GRAMMAR_SOURCE_DIR}/src/scanner.cc)
+  endif()
+
+  target_link_libraries(${target_name} PUBLIC tree_sitter_runtime)
+  target_include_directories(${target_name} PRIVATE ${GRAMMAR_SOURCE_DIR}/src)
+endfunction()
+
+FetchContent_Declare(
+  tree_sitter_c_fc
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-c.git
+  GIT_TAG        master
+)
+FetchContent_GetProperties(tree_sitter_c_fc)
+if(NOT tree_sitter_c_fc_POPULATED)
+  FetchContent_Populate(tree_sitter_c_fc)
+endif()
+notepp_add_tree_sitter_grammar(tree_sitter_c_grammar SOURCE_DIR ${tree_sitter_c_fc_SOURCE_DIR})
+
+FetchContent_Declare(
+  tree_sitter_cpp_fc
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-cpp.git
+  GIT_TAG        master
+)
+FetchContent_GetProperties(tree_sitter_cpp_fc)
+if(NOT tree_sitter_cpp_fc_POPULATED)
+  FetchContent_Populate(tree_sitter_cpp_fc)
+endif()
+notepp_add_tree_sitter_grammar(tree_sitter_cpp_grammar SOURCE_DIR ${tree_sitter_cpp_fc_SOURCE_DIR})
+
+FetchContent_Declare(
+  tree_sitter_python_fc
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-python.git
+  GIT_TAG        master
+)
+FetchContent_GetProperties(tree_sitter_python_fc)
+if(NOT tree_sitter_python_fc_POPULATED)
+  FetchContent_Populate(tree_sitter_python_fc)
+endif()
+notepp_add_tree_sitter_grammar(tree_sitter_python_grammar SOURCE_DIR ${tree_sitter_python_fc_SOURCE_DIR})
+
+FetchContent_Declare(
+  tree_sitter_bash_fc
+  GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter-bash.git
+  GIT_TAG        master
+)
+FetchContent_GetProperties(tree_sitter_bash_fc)
+if(NOT tree_sitter_bash_fc_POPULATED)
+  FetchContent_Populate(tree_sitter_bash_fc)
+endif()
+notepp_add_tree_sitter_grammar(tree_sitter_bash_grammar SOURCE_DIR ${tree_sitter_bash_fc_SOURCE_DIR})
+
+file(READ "${tree_sitter_c_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_C_HIGHLIGHTS_QUERY)
+file(READ "${tree_sitter_cpp_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_CPP_EXTENSION_HIGHLIGHTS_QUERY)
+set(TREE_SITTER_CPP_HIGHLIGHTS_QUERY "${TREE_SITTER_C_HIGHLIGHTS_QUERY}\n${TREE_SITTER_CPP_EXTENSION_HIGHLIGHTS_QUERY}")
+file(READ "${tree_sitter_python_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_PYTHON_HIGHLIGHTS_QUERY)
+file(READ "${tree_sitter_bash_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_BASH_HIGHLIGHTS_QUERY)
+
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/tree_sitter_queries.hpp.in
+  ${CMAKE_BINARY_DIR}/generated/tree_sitter_queries.hpp
+  @ONLY
+)
+
+add_library(tree_sitter_queries INTERFACE)
+target_include_directories(tree_sitter_queries INTERFACE ${CMAKE_BINARY_DIR}/generated)
+# ------------------------------------------------------------#
