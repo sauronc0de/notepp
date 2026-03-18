@@ -573,6 +573,29 @@ void save_preview_state_if_dirty()
   g_preview_state_dirty = false;
 }
 
+std::string capture_preview_state_snapshot_impl()
+{
+  ensure_preview_state_loaded();
+  return g_preview_state_json.dump();
+}
+
+void apply_preview_state_snapshot_impl(std::string_view snapshot)
+{
+  g_preview_state_loaded = true;
+  g_preview_state_dirty = false;
+  g_table_state_cache.clear();
+  g_cell_editor_state = CellEditorState{};
+  g_filter_dialog_state = FilterDialogState{};
+
+  g_preview_state_json = Json::parse(snapshot.begin(), snapshot.end(), nullptr, false);
+  if(g_preview_state_json.is_discarded() || !g_preview_state_json.is_object()) g_preview_state_json = Json::object();
+  if(!g_preview_state_json.contains("documents") || !g_preview_state_json["documents"].is_object())
+    g_preview_state_json["documents"] = Json::object();
+
+  std::ofstream out(kMarkdownPreviewStateFile, std::ios::binary | std::ios::trunc);
+  if(out) out << g_preview_state_json.dump(2);
+}
+
 std::vector<std::string> split_md_table_cells(std::string_view line)
 {
   std::vector<std::string> cells;
@@ -1932,6 +1955,16 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   if(result.preview_state_changed) save_preview_state_if_dirty();
   render_link_hover_preview_popup();
   return result;
+}
+
+std::string capture_preview_state_snapshot()
+{
+  return capture_preview_state_snapshot_impl();
+}
+
+void apply_preview_state_snapshot(std::string_view snapshot)
+{
+  apply_preview_state_snapshot_impl(snapshot);
 }
 
 bool render_preview_with_task_checkboxes(std::string &markdown)

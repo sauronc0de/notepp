@@ -49,8 +49,10 @@ private:
   void apply_workspace_snapshot(std::string_view snapshot);
   std::string capture_text_context_snapshot() const;
   void apply_text_history_state(std::string_view note_path, std::string_view text, std::string_view context_snapshot);
+  void apply_preview_history_state(std::string_view note_path, std::string_view text, std::string_view preview_state_snapshot);
   void record_workspace_history_action(std::string_view label, std::string before_snapshot);
   void record_text_history_action(std::string_view label, const std::string &before_text, const std::string &after_text);
+  void record_preview_history_action(std::string_view label, std::string_view note_path, const std::string &before_text, const std::string &after_text, const std::string &before_preview_state, const std::string &after_preview_state);
   void update_pending_text_history(std::string_view label, const std::string &before_text, const std::string &after_text, bool start_new_chunk);
   void flush_pending_text_history();
   void discard_pending_text_history();

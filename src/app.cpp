@@ -34,7 +34,9 @@
 
 using MarkdownSupport::apply_color_wrap_string;
 using MarkdownSupport::apply_note_quote;
+using MarkdownSupport::apply_preview_state_snapshot;
 using MarkdownSupport::apply_wrap_string;
+using MarkdownSupport::capture_preview_state_snapshot;
 using MarkdownSupport::insert_checklist_item_at_cursor;
 using MarkdownSupport::insert_markdown_table_at_cursor;
 using MarkdownSupport::line_bounds_from_cursor;
@@ -947,6 +949,7 @@ std::string App::capture_workspace_snapshot() const
   root["folder_overview"] = folder_overview_mode_;
   root["editing_mode"] = editing_mode_;
   root["layout_locked"] = layout_locked_;
+  root["preview_state"] = capture_preview_state_snapshot();
 
   std::vector<std::string> pending_paths = pending_fs_delete_paths_;
   std::sort(pending_paths.begin(), pending_paths.end());
@@ -1163,6 +1166,8 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
     }
   }
 
+  apply_preview_state_snapshot(root.value("preview_state", std::string("{\"documents\":{}}")));
+
   active_folder_idx_ = root.value("active_folder", 0);
   active_note_idx_ = root.value("active_note", -1);
   folder_overview_mode_ = root.value("folder_overview", false);
@@ -1265,6 +1270,46 @@ void App::record_workspace_history_action(std::string_view label, std::string be
       debug_context,
       [this, snapshot = after_snapshot]() { apply_workspace_snapshot(snapshot); },
       [this, snapshot = std::move(before_snapshot)]() { apply_workspace_snapshot(snapshot); }));
+}
+
+void App::apply_preview_history_state(std::string_view note_path, std::string_view text, std::string_view preview_state_snapshot)
+{
+  discard_pending_text_history();
+  const bool previous_replay = history_replay_in_progress_;
+  history_replay_in_progress_ = true;
+
+  write_text_file(std::string(note_path), text);
+  apply_preview_state_snapshot(preview_state_snapshot);
+
+  if(!state_file_path_.empty() && state_file_path_ == note_path)
+  {
+    markdown_text_.assign(text.begin(), text.end());
+    normalize_input_text_buffer(markdown_text_);
+  }
+
+  history_replay_in_progress_ = previous_replay;
+}
+
+void App::record_preview_history_action(std::string_view label, std::string_view note_path, const std::string &before_text, const std::string &after_text, const std::string &before_preview_state, const std::string &after_preview_state)
+{
+  if(history_replay_in_progress_) return;
+  if(before_text == after_text && before_preview_state == after_preview_state) return;
+
+  flush_pending_text_history();
+
+  const std::string target_note_path(note_path);
+  const std::string action_label = label.empty() ? "Edit preview widget" : std::string(label);
+  const std::string debug_context = make_history_debug_context(target_note_path);
+
+  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+      action_label,
+      debug_context,
+      [this, target_note_path, after_text, after_preview_state]() {
+        apply_preview_history_state(target_note_path, after_text, after_preview_state);
+      },
+      [this, target_note_path, before_text, before_preview_state]() {
+        apply_preview_history_state(target_note_path, before_text, before_preview_state);
+      }));
 }
 
 void App::record_text_history_action(std::string_view label, const std::string &before_text, const std::string &after_text)
@@ -3017,6 +3062,7 @@ void App::frame_ui()
     ensure_default_index();
     normalize_active_indices();
     FolderMeta &f = folders_[(size_t)active_folder_idx_];
+    const std::string preview_state_before_frame = capture_preview_state_snapshot();
     const ImVec4 neutral_sel(0.26f, 0.59f, 0.98f, 1.0f);
     for(auto it = selected_note_indices.begin(); it != selected_note_indices.end();)
     {
@@ -3396,7 +3442,7 @@ __CURSOR__)MD");
           }
           if(ImGui::MenuItem("Text input"))
           {
-            insert_topbar_snippet(R"MD(name("Sergi")
+            insert_topbar_snippet(R"MD(name("Sauron")
 text(name, "Name", 150, "Edit the name")
 __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
@@ -4244,24 +4290,27 @@ __CURSOR__)MD");
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
         set_preview_document_path(n.path);
         const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(preview_text);
+        const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;
         changed = preview_result.markdown_changed;
         table_ctx_right_click_consumed = preview_result.consumed_right_click;
         table_ctx_double_click_consumed = preview_result.consumed_double_click;
         ImGui::PopTextWrapPos();
-        if(changed)
+        if(preview_changed)
         {
+          const std::string preview_state_after = capture_preview_state_snapshot();
           if(is_current_note_document)
           {
-            if(preview_text != preview_before) push_undo_snapshot_from(preview_before);
             markdown_text_ = preview_text;
             normalize_input_text_buffer(markdown_text_);
             save_state();
           }
-          else
+          else if(preview_text != preview_before)
           {
             std::ofstream out(n.path, std::ios::binary | std::ios::trunc);
             if(out) out << preview_text;
           }
+
+          record_preview_history_action("Edit preview widget", n.path, preview_before, preview_text, preview_state_before_frame, preview_state_after);
         }
         if(is_current_note_document && request_undo_edit_ && history_.can_undo())
         {
@@ -4757,18 +4806,20 @@ __CURSOR__)MD");
     // Preview mode (interactive)
     const float start_y = ImGui::GetCursorPosY();
     const std::string preview_before = markdown_text_;
+    const std::string preview_state_before = capture_preview_state_snapshot();
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
     MarkdownView::set_render_width(preview_w);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     set_preview_document_path(state_file_path_);
     const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
-    const bool task_changed = preview_result.markdown_changed;
+    const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;
     const bool table_double_click_consumed = preview_result.consumed_double_click;
     ImGui::PopTextWrapPos();
-    if(task_changed)
+    if(preview_changed)
     {
-      if(markdown_text_ != preview_before) push_undo_snapshot_from(preview_before);
+      const std::string preview_state_after = capture_preview_state_snapshot();
       save_state();
+      record_preview_history_action("Edit preview widget", state_file_path_, preview_before, markdown_text_, preview_state_before, preview_state_after);
     }
     if(request_undo_edit_ && history_.can_undo())
     {

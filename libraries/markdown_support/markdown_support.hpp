@@ -63,4 +63,6 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
 void set_preview_document_path(std::string_view path);
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
 bool render_preview_with_task_checkboxes(std::string &markdown);
+std::string capture_preview_state_snapshot();
+void apply_preview_state_snapshot(std::string_view snapshot);
 } // namespace MarkdownSupport
