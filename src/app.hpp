@@ -85,6 +85,7 @@ private:
   bool request_paste_sidebar_ = false;
   bool layout_locked_ = false;
   bool history_replay_in_progress_ = false;
+  bool force_note_layout_restore_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta

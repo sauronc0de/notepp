@@ -459,7 +459,7 @@ void App::init_imgui()
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   io.IniFilename = kImGuiIniFile;
 
   ImGui::StyleColorsDark();
@@ -1190,6 +1190,7 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
 
   g_drawings_dirty = false;
   layout_dirty_ = false;
+  force_note_layout_restore_ = true;
   save_state();
 
   history_replay_in_progress_ = previous_replay;
@@ -1643,7 +1644,6 @@ void App::frame_begin()
       request_paste_sidebar_ = true;
       continue;
     }
-
   }
 
   ImGui_ImplOpenGL3_NewFrame();
@@ -1983,52 +1983,52 @@ void App::frame_ui()
       {
         perform_workspace_change("Rename folder", [&]() {
           FolderMeta &rf = folders_[(size_t)rename_folder_idx];
-        const std::string old_name = rf.name;
-        const std::string new_name = sanitize_note_filename(rename_folder_buf);
-        if(!new_name.empty())
-        {
-          const size_t slash = old_name.rfind('/');
-          const std::string parent = (slash == std::string::npos) ? std::string{} : old_name.substr(0, slash);
-          std::string target_name = parent.empty() ? new_name : (parent + "/" + new_name);
-          int suffix = 2;
-          auto folder_exists = [&](const std::string &n) {
-            for(int i = 0; i < (int)folders_.size(); ++i)
-            {
-              if(i == rename_folder_idx) continue;
-              if(folders_[(size_t)i].name == n) return true;
-            }
-            return false;
-          };
-          while(folder_exists(target_name))
+          const std::string old_name = rf.name;
+          const std::string new_name = sanitize_note_filename(rename_folder_buf);
+          if(!new_name.empty())
           {
-            const std::string s = new_name + " " + std::to_string(suffix++);
-            target_name = parent.empty() ? s : (parent + "/" + s);
-          }
-
-          if(target_name != old_name)
-          {
-            for(NoteMeta &n : rf.notes)
-            {
-              const std::string new_path = make_note_path(target_name, n.title);
-              std::filesystem::create_directories(std::filesystem::path(new_path).parent_path());
-              std::error_code ec;
-              if(std::filesystem::exists(std::filesystem::path(n.path), ec))
+            const size_t slash = old_name.rfind('/');
+            const std::string parent = (slash == std::string::npos) ? std::string{} : old_name.substr(0, slash);
+            std::string target_name = parent.empty() ? new_name : (parent + "/" + new_name);
+            int suffix = 2;
+            auto folder_exists = [&](const std::string &n) {
+              for(int i = 0; i < (int)folders_.size(); ++i)
               {
-                if(std::filesystem::exists(std::filesystem::path(new_path), ec))
-                  std::filesystem::remove(std::filesystem::path(new_path), ec);
-                std::filesystem::rename(std::filesystem::path(n.path), std::filesystem::path(new_path), ec);
+                if(i == rename_folder_idx) continue;
+                if(folders_[(size_t)i].name == n) return true;
               }
-              n.path = new_path;
-            }
-            rf.name = target_name;
-
-            auto it = g_folder_drawings.find(old_name);
-            if(it != g_folder_drawings.end())
+              return false;
+            };
+            while(folder_exists(target_name))
             {
-              g_folder_drawings[target_name] = std::move(it->second);
-              g_folder_drawings.erase(it);
-              g_drawings_dirty = true;
+              const std::string s = new_name + " " + std::to_string(suffix++);
+              target_name = parent.empty() ? s : (parent + "/" + s);
             }
+
+            if(target_name != old_name)
+            {
+              for(NoteMeta &n : rf.notes)
+              {
+                const std::string new_path = make_note_path(target_name, n.title);
+                std::filesystem::create_directories(std::filesystem::path(new_path).parent_path());
+                std::error_code ec;
+                if(std::filesystem::exists(std::filesystem::path(n.path), ec))
+                {
+                  if(std::filesystem::exists(std::filesystem::path(new_path), ec))
+                    std::filesystem::remove(std::filesystem::path(new_path), ec);
+                  std::filesystem::rename(std::filesystem::path(n.path), std::filesystem::path(new_path), ec);
+                }
+                n.path = new_path;
+              }
+              rf.name = target_name;
+
+              auto it = g_folder_drawings.find(old_name);
+              if(it != g_folder_drawings.end())
+              {
+                g_folder_drawings[target_name] = std::move(it->second);
+                g_folder_drawings.erase(it);
+                g_drawings_dirty = true;
+              }
               save_index();
               flash_mark_folder(rf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
               if(rename_folder_idx == active_folder_idx_) load_note_content_for_active();
@@ -3194,10 +3194,18 @@ void App::frame_ui()
         {
           switch(c)
           {
-          case '\\': out += "\\\\"; break;
-          case '"': out += "\\\""; break;
-          case '\n': out += "\\n"; break;
-          default: out.push_back(c); break;
+          case '\\':
+            out += "\\\\";
+            break;
+          case '"':
+            out += "\\\"";
+            break;
+          case '\n':
+            out += "\\n";
+            break;
+          default:
+            out.push_back(c);
+            break;
           }
         }
         return out;
@@ -3983,10 +3991,11 @@ __CURSOR__)MD");
       }
       const std::string window_id = n.title + "###FolderNote_" + note_uid;
 
-      if(request_reset_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+      const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
+      if(force_note_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
       if(n.has_layout)
       {
-        const ImGuiCond cond = request_reset_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+        const ImGuiCond cond = force_note_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
         ImGui::SetNextWindowPos(ImVec2(n.pos_x, n.pos_y), cond);
         ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, n.width), std::max(140.0f, n.height)), cond);
       }
@@ -4539,6 +4548,7 @@ __CURSOR__)MD");
         }
       }
     }
+    force_note_layout_restore_ = false;
     request_reset_layout = false;
 
     if(!topbar_tooltip_text.empty())
