@@ -1560,6 +1560,7 @@ void App::frame_begin()
 
     ImGui_ImplSDL2_ProcessEvent(&event);
     const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
+    const bool imgui_wants_text_input = ImGui::GetIO().WantTextInput;
     const bool is_keydown = event.type == SDL_KEYDOWN;
     const SDL_Keycode key_sym = is_keydown ? event.key.keysym.sym : SDLK_UNKNOWN;
     const Uint16 key_mod = is_keydown ? event.key.keysym.mod : KMOD_NONE;
@@ -1609,7 +1610,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
-       !imgui_wants_keyboard &&
+       !imgui_wants_text_input &&
        event.type == SDL_KEYDOWN &&
        undo_shortcut)
     {
@@ -1618,7 +1619,7 @@ void App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
-       !imgui_wants_keyboard &&
+       !imgui_wants_text_input &&
        event.type == SDL_KEYDOWN &&
        redo_shortcut)
     {
