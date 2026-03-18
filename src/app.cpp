@@ -1862,7 +1862,7 @@ void App::frame_ui()
   }
   drag_hover_folder_idx = -1;
 
-  if(request_undo_edit_ || request_undo_draw_)
+  if(!editing_mode_ && (request_undo_edit_ || request_undo_draw_))
   {
     if(apply_global_undo() && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
       flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
@@ -1871,7 +1871,7 @@ void App::frame_ui()
     request_undo_draw_ = false;
     request_redo_draw_ = false;
   }
-  else if(request_redo_edit_ || request_redo_draw_)
+  else if(!editing_mode_ && (request_redo_edit_ || request_redo_draw_))
   {
     if(apply_global_redo() && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
       flash_mark_folder(folders_[(size_t)active_folder_idx_].name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
@@ -4198,6 +4198,29 @@ __CURSOR__)MD");
 
       if(is_editing_this)
       {
+        if(request_undo_edit_ && history_.can_undo())
+        {
+          apply_undo_snapshot();
+          request_undo_edit_ = false;
+          request_redo_edit_ = false;
+          ImGui::ClearActiveID();
+          fmt_folder.typing_word_group = false;
+          fmt_folder.deleting_word_group = false;
+          fmt_folder.last_edit_cursor = -1;
+          refocus_folder_editor = true;
+        }
+        else if(request_redo_edit_ && history_.can_redo())
+        {
+          apply_redo_snapshot();
+          request_redo_edit_ = false;
+          ImGui::ClearActiveID();
+          fmt_folder.typing_word_group = false;
+          fmt_folder.deleting_word_group = false;
+          fmt_folder.last_edit_cursor = -1;
+          refocus_folder_editor = true;
+        }
+
+
         ImGuiInputTextFlags flags =
             ImGuiInputTextFlags_AllowTabInput |
             ImGuiInputTextFlags_CallbackResize |
@@ -4208,6 +4231,9 @@ __CURSOR__)MD");
 
         if(refocus_folder_editor)
         {
+          fmt_folder.typing_word_group = false;
+          fmt_folder.deleting_word_group = false;
+          fmt_folder.last_edit_cursor = -1;
           ImGui::SetKeyboardFocusHere();
           refocus_folder_editor = false;
         }
@@ -4241,18 +4267,6 @@ __CURSOR__)MD");
               should_push_word_granular_undo(before_edit, markdown_text_, fmt_folder));
           save_state();
         }
-        if(request_undo_edit_)
-        {
-          apply_undo_snapshot();
-          request_undo_edit_ = false;
-          request_redo_edit_ = false;
-        }
-        if(request_redo_edit_)
-        {
-          apply_redo_snapshot();
-          request_redo_edit_ = false;
-        }
-
         const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         const ImGuiIO &io = ImGui::GetIO();
         if(editor_hovered && io.MouseClickedCount[ImGuiMouseButton_Left] >= 3)
@@ -4852,6 +4866,32 @@ __CURSOR__)MD");
   else
   {
     // Plain text editor mode
+    if(request_undo_edit_ && history_.can_undo())
+    {
+      apply_undo_snapshot();
+      request_undo_edit_ = false;
+      request_redo_edit_ = false;
+      request_undo_draw_ = false;
+      request_redo_draw_ = false;
+      ImGui::ClearActiveID();
+      fmt.typing_word_group = false;
+      fmt.deleting_word_group = false;
+      fmt.last_edit_cursor = -1;
+      refocus_editor = true;
+    }
+    else if(request_redo_edit_ && history_.can_redo())
+    {
+      apply_redo_snapshot();
+      request_redo_edit_ = false;
+      request_undo_draw_ = false;
+      request_redo_draw_ = false;
+      ImGui::ClearActiveID();
+      fmt.typing_word_group = false;
+      fmt.deleting_word_group = false;
+      fmt.last_edit_cursor = -1;
+      refocus_editor = true;
+    }
+
     ImGuiInputTextFlags flags =
         ImGuiInputTextFlags_AllowTabInput |
         ImGuiInputTextFlags_CallbackResize |
@@ -4859,6 +4899,9 @@ __CURSOR__)MD");
         ImGuiInputTextFlags_CallbackAlways;
     if(refocus_editor)
     {
+      fmt.typing_word_group = false;
+      fmt.deleting_word_group = false;
+      fmt.last_edit_cursor = -1;
       ImGui::SetKeyboardFocusHere();
       refocus_editor = false;
     }
@@ -4892,18 +4935,6 @@ __CURSOR__)MD");
           should_push_word_granular_undo(before_edit, markdown_text_, fmt));
       save_state();
     }
-    if(request_undo_edit_)
-    {
-      apply_undo_snapshot();
-      request_undo_edit_ = false;
-      request_redo_edit_ = false;
-    }
-    if(request_redo_edit_)
-    {
-      apply_redo_snapshot();
-      request_redo_edit_ = false;
-    }
-
     // After the widget: show popup if selection is non-empty and editor is focused/active
     const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const ImGuiIO &io = ImGui::GetIO();
