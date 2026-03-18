@@ -1990,7 +1990,17 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       }
       ImGui::SameLine();
       ImGui::AlignTextToFramePadding();
-      MarkdownView::render_inline(std::string(label));
+      if(checked)
+      {
+        std::string struck_label("~~");
+        struck_label.append(label);
+        struck_label.append("~~");
+        MarkdownView::render_inline(struck_label);
+      }
+      else
+      {
+        MarkdownView::render_inline(std::string(label));
+      }
       ImGui::PopID();
       ImGui::PopStyleVar(2);
     }
