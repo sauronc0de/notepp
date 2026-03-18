@@ -580,6 +580,7 @@ private:
 struct EvalContext
 {
   const ParsedBlock &block;
+  bool preview_state_changed = false;
   std::unordered_map<std::string, Value> overrides;
   std::unordered_map<std::string, Value> cache;
   std::unordered_map<std::string, std::string> cache_errors;
@@ -2010,10 +2011,11 @@ struct ListPopupEditorState
   char tooltip[4096]{};
 };
 
+std::unordered_map<std::string, bool> g_list_collapsed_paths;
+
 bool &list_item_collapsed_state(const std::string &path_text)
 {
-  static std::unordered_map<std::string, bool> collapsed_paths;
-  return collapsed_paths[path_text];
+  return g_list_collapsed_paths[path_text];
 }
 
 void render_list_description_popup(const std::string &popup_id, const ImVec2 &anchor, float width, std::string_view text)
@@ -2034,7 +2036,7 @@ void render_list_description_popup(const std::string &popup_id, const ImVec2 &an
   ImGui::EndTooltip();
 }
 
-bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
+bool render_list_row(EvalContext &ctx, Value &root, Value &item, const std::vector<int> &item_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
 {
   std::string name;
   std::string tooltip;
@@ -2085,6 +2087,7 @@ bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path
     if(row_clicked && mouse.x <= min.x + arrow_width + style.FramePadding.x)
     {
       collapsed = !collapsed;
+      ctx.preview_state_changed = true;
     }
 
     ImVec2 a, b, c;
@@ -2190,6 +2193,7 @@ bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path
     if(has_children && ImGui::MenuItem(collapsed ? "Expand children" : "Collapse children"))
     {
       collapsed = !collapsed;
+      ctx.preview_state_changed = true;
     }
     if(ImGui::MenuItem("Remove"))
     {
@@ -2205,7 +2209,7 @@ bool render_list_row(Value &root, Value &item, const std::vector<int> &item_path
   return mutation.kind != ListMutation::Kind::None;
 }
 
-void render_list_branch(Value &root, Value &array_value, const std::vector<int> &parent_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
+void render_list_branch(EvalContext &ctx, Value &root, Value &array_value, const std::vector<int> &parent_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
 {
   if(array_value.kind != ValueKind::Array) return;
 
@@ -2215,11 +2219,11 @@ void render_list_branch(Value &root, Value &array_value, const std::vector<int> 
     std::vector<int> item_path = parent_path;
     item_path.push_back(static_cast<int>(i));
     const std::string path_text = make_index_path(item_path);
-    if(render_list_row(root, item, item_path, allow_children, payload_type, width, changed, mutation)) return;
+    if(render_list_row(ctx, root, item, item_path, allow_children, payload_type, width, changed, mutation)) return;
 
     if(Value *children = get_children_array(item); children && !children->array.empty() && !list_item_collapsed_state(path_text))
     {
-      render_list_branch(root, *children, item_path, true, payload_type, width, changed, mutation);
+      render_list_branch(ctx, root, *children, item_path, true, payload_type, width, changed, mutation);
       if(mutation.kind != ListMutation::Kind::None) return;
     }
   }
@@ -2284,7 +2288,7 @@ void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statem
     else
     {
       ListMutation mutation;
-      render_list_branch(updated, updated, {}, allow_children, payload_type.c_str(), widget_width - 10.0f, changed, mutation);
+      render_list_branch(ctx, updated, updated, {}, allow_children, payload_type.c_str(), widget_width - 10.0f, changed, mutation);
       if(mutation.kind == ListMutation::Kind::InsertAfter)
         changed = insert_list_item_after(updated, mutation.path, make_list_item_value("New item", "")) || changed;
       else if(mutation.kind == ListMutation::Kind::InsertChild)
@@ -3060,6 +3064,39 @@ void apply_replacements(std::string &markdown, const ParsedBlock &block, const s
 
 } // namespace
 
+std::string capture_ui_state_snapshot()
+{
+  std::string snapshot;
+  for(const auto &[path, is_collapsed] : g_list_collapsed_paths)
+  {
+    snapshot += (is_collapsed ? "1\t" : "0\t");
+    snapshot += path;
+    snapshot += "\n";
+  }
+  return snapshot;
+}
+
+void apply_ui_state_snapshot(std::string_view snapshot)
+{
+  g_list_collapsed_paths.clear();
+
+  size_t start = 0;
+  while(start < snapshot.size())
+  {
+    size_t end = snapshot.find("\n", start);
+    if(end == std::string_view::npos) end = snapshot.size();
+    const std::string_view line = snapshot.substr(start, end - start);
+    const size_t tab = line.find("\t");
+    if(tab != std::string_view::npos && tab > 0)
+    {
+      const bool is_collapsed = line.front() == '1';
+      const std::string path(line.substr(tab + 1));
+      if(!path.empty()) g_list_collapsed_paths[path] = is_collapsed;
+    }
+    start = end + 1;
+  }
+}
+
 RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size_t fence_line_end, size_t block_end)
 {
   RenderResult result;
@@ -3110,6 +3147,7 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
     apply_replacements(markdown, block, replacements);
     result.markdown_changed = true;
   }
+  result.preview_state_changed = ctx.preview_state_changed;
   return result;
 }
 } // namespace MarkdownUi

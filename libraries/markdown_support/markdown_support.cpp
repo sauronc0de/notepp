@@ -505,6 +505,34 @@ TableViewState parse_table_state_from_json(const Json &obj)
   return st;
 }
 
+bool try_get_header_open_state(const std::string &doc_key, int header_id, bool &open_out)
+{
+  ensure_preview_state_loaded();
+
+  const Json &docs = g_preview_state_json["documents"];
+  auto doc_it = docs.find(doc_key);
+  if(doc_it == docs.end() || !doc_it->is_object()) return false;
+  const Json &headers = doc_it->value("headers", Json::object());
+  auto header_it = headers.find(std::to_string(header_id));
+  if(header_it == headers.end() || !header_it->is_boolean()) return false;
+  open_out = header_it->get<bool>();
+  return true;
+}
+
+void sync_header_open_state_to_json(const std::string &doc_key, int header_id, bool open)
+{
+  ensure_preview_state_loaded();
+
+  Json &doc = g_preview_state_json["documents"][doc_key];
+  if(!doc.is_object()) doc = Json::object();
+
+  Json &headers = doc["headers"];
+  if(!headers.is_object()) headers = Json::object();
+
+  headers[std::to_string(header_id)] = open;
+  g_preview_state_dirty = true;
+}
+
 void sync_table_state_to_json(const std::string &doc_key, int table_id, const TableViewState &st)
 {
   ensure_preview_state_loaded();
@@ -576,7 +604,14 @@ void save_preview_state_if_dirty()
 std::string capture_preview_state_snapshot_impl()
 {
   ensure_preview_state_loaded();
-  return g_preview_state_json.dump();
+
+  Json root = Json::object();
+  root["preview"] = g_preview_state_json;
+
+  Json ui_state = Json::parse(MarkdownUi::capture_ui_state_snapshot(), nullptr, false);
+  if(ui_state.is_discarded() || !ui_state.is_object()) ui_state = Json::object();
+  root["ui"] = std::move(ui_state);
+  return root.dump();
 }
 
 void apply_preview_state_snapshot_impl(std::string_view snapshot)
@@ -587,10 +622,30 @@ void apply_preview_state_snapshot_impl(std::string_view snapshot)
   g_cell_editor_state = CellEditorState{};
   g_filter_dialog_state = FilterDialogState{};
 
-  g_preview_state_json = Json::parse(snapshot.begin(), snapshot.end(), nullptr, false);
-  if(g_preview_state_json.is_discarded() || !g_preview_state_json.is_object()) g_preview_state_json = Json::object();
-  if(!g_preview_state_json.contains("documents") || !g_preview_state_json["documents"].is_object())
-    g_preview_state_json["documents"] = Json::object();
+    Json root = Json::parse(snapshot.begin(), snapshot.end(), nullptr, false);
+  Json preview_state;
+  Json ui_state;
+  if(root.is_discarded() || !root.is_object())
+  {
+    preview_state = Json::object();
+    ui_state = Json::object();
+  }
+  else if(root.contains("preview") || root.contains("ui"))
+  {
+    preview_state = root.value("preview", Json::object());
+    ui_state = root.value("ui", Json::object());
+  }
+  else
+  {
+    preview_state = std::move(root);
+    ui_state = Json::object();
+  }
+
+  if(!preview_state.is_object()) preview_state = Json::object();
+  if(!preview_state.contains("documents") || !preview_state["documents"].is_object())
+    preview_state["documents"] = Json::object();
+  g_preview_state_json = std::move(preview_state);
+  MarkdownUi::apply_ui_state_snapshot(ui_state.dump());
 
   std::ofstream out(kMarkdownPreviewStateFile, std::ios::binary | std::ios::trunc);
   if(out) out << g_preview_state_json.dump(2);
@@ -1749,12 +1804,21 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         pos = has_newline ? line_end + 1 : line_end;
         continue;
       }
+      const std::string doc_key = current_document_key();
+      bool saved_open = false;
+      const bool has_saved_open = try_get_header_open_state(doc_key, static_cast<int>(line_start), saved_open);
       if(g_force_open_preview_headers) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      else if(has_saved_open) ImGui::SetNextItemOpen(saved_open, ImGuiCond_Always);
       const bool open = ImGui::TreeNodeEx(
           reinterpret_cast<void *>(static_cast<intptr_t>(static_cast<int>(line_start) + 0x10000)),
           ImGuiTreeNodeFlags_SpanAvailWidth | (g_force_open_preview_headers ? ImGuiTreeNodeFlags_DefaultOpen : 0),
           "%s",
           std::string(heading_title).c_str());
+      if(!g_force_open_preview_headers && (!has_saved_open || saved_open != open))
+      {
+        sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
+        result.preview_state_changed = true;
+      }
       header_stack.push_back(HeaderUi{heading_level, open});
       pos = has_newline ? line_end + 1 : line_end;
       continue;
@@ -1794,6 +1858,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         flush_chunk();
         const MarkdownUi::RenderResult ui_result = MarkdownUi::try_render_ui_block(markdown, line_start, line_end, block_end);
         result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
+        result.preview_state_changed = result.preview_state_changed || ui_result.preview_state_changed;
         pos = block_end;
         continue;
       }
