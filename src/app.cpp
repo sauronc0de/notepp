@@ -1548,14 +1548,32 @@ void App::frame_begin()
       running_ = false;
     }
 
-    // While editing a note, swallow Esc before ImGui sees it so InputText
-    // cannot treat it as a cancel/revert key.
+    // While editing a note, swallow editor control shortcuts before ImGui sees them
+    // so our grouped history handles them instead of InputText's per-character stack.
     if(editing_mode_ &&
-       event.type == SDL_KEYDOWN &&
-       event.key.keysym.sym == SDLK_ESCAPE)
+       event.type == SDL_KEYDOWN)
     {
-      request_exit_edit_mode_ = true;
-      continue;
+      const SDL_Keycode edit_key_sym = event.key.keysym.sym;
+      const Uint16 edit_key_mod = event.key.keysym.mod;
+      const bool edit_ctrl_down = (edit_key_mod & KMOD_CTRL) != 0;
+      const bool edit_shift_down = (edit_key_mod & KMOD_SHIFT) != 0;
+      const bool edit_undo_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_z;
+      const bool edit_redo_shortcut = edit_ctrl_down && (edit_key_sym == SDLK_y || (edit_shift_down && edit_key_sym == SDLK_z));
+      if(edit_key_sym == SDLK_ESCAPE)
+      {
+        request_exit_edit_mode_ = true;
+        continue;
+      }
+      if(edit_undo_shortcut)
+      {
+        request_undo_edit_ = true;
+        continue;
+      }
+      if(edit_redo_shortcut)
+      {
+        request_redo_edit_ = true;
+        continue;
+      }
     }
 
     ImGui_ImplSDL2_ProcessEvent(&event);
@@ -1568,22 +1586,6 @@ void App::frame_begin()
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
     const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
-    if(editing_mode_ &&
-       !imgui_wants_keyboard &&
-       event.type == SDL_KEYDOWN &&
-       undo_shortcut)
-    {
-      request_undo_edit_ = true;
-      continue;
-    }
-    if(editing_mode_ &&
-       !imgui_wants_keyboard &&
-       event.type == SDL_KEYDOWN &&
-       redo_shortcut)
-    {
-      request_redo_edit_ = true;
-      continue;
-    }
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
@@ -3350,7 +3352,7 @@ void App::frame_ui()
             insert_topbar_snippet(
                 R"MD(```UI
 count(10)
-name("Sergi")
+name("Sauron")
 enabled(true)
 mode("Home")
 tags(["daily", "important"])
