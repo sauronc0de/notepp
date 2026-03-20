@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "git_sync.hpp"
 #include "helpers.hpp"
 #include "markdown_sections.hpp"
 #include "markdown_support.hpp"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <ctime>
 #include <iterator>
 #include <filesystem>
 #include <unordered_map>
@@ -83,6 +85,20 @@ constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
 constexpr const char *kImGuiIniFile = DATA_PATH "/imgui_layout.ini";
 constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
 constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
+
+std::string make_git_commit_message()
+{
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+#if defined(_WIN32)
+  localtime_s(&tm, &now);
+#else
+  localtime_r(&now, &tm);
+#endif
+  char buf[128] = {};
+  if(std::strftime(buf, sizeof(buf), "notepp auto-save %Y-%m-%d %H:%M:%S", &tm) == 0) return "notepp auto-save";
+  return buf;
+}
 
 struct FreeStroke
 {
@@ -341,6 +357,202 @@ void save_note_clipboard()
 }
 } // namespace
 
+void App::load_git_settings_from_json(std::string_view doc)
+{
+  git_config_.enabled = json_find_bool(doc, "git_enabled", false);
+  git_config_.auto_pull_on_start = json_find_bool(doc, "git_auto_pull_on_start", true);
+  git_config_.auto_push_on_close = json_find_bool(doc, "git_auto_push_on_close", true);
+  git_config_.remote_url = json_find_string(doc, "git_remote_url");
+  git_config_.branch = json_find_string(doc, "git_branch");
+  if(git_config_.branch.empty()) git_config_.branch = "main";
+
+  git_conflict_.pending = json_find_bool(doc, "git_conflict_pending", false);
+  git_conflict_.branch = json_find_string(doc, "git_conflict_branch");
+  git_conflict_.local_commit = json_find_string(doc, "git_conflict_local_commit");
+  git_conflict_.remote_commit = json_find_string(doc, "git_conflict_remote_commit");
+  git_conflict_.message = json_find_string(doc, "git_conflict_message");
+
+  std::snprintf(git_remote_url_buf_.data(), git_remote_url_buf_.size(), "%s", git_config_.remote_url.c_str());
+  std::snprintf(git_branch_buf_.data(), git_branch_buf_.size(), "%s", git_config_.branch.c_str());
+  std::snprintf(git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size(), "%s", git_config_.branch.c_str());
+}
+
+void App::save_git_settings_json(std::ostream &out) const
+{
+  out << ",\n";
+  out << "  \"git_enabled\": " << (git_config_.enabled ? "true" : "false") << ",\n";
+  out << "  \"git_auto_pull_on_start\": " << (git_config_.auto_pull_on_start ? "true" : "false") << ",\n";
+  out << "  \"git_auto_push_on_close\": " << (git_config_.auto_push_on_close ? "true" : "false") << ",\n";
+  out << "  \"git_remote_url\": \"" << json_escape(git_config_.remote_url) << "\",\n";
+  out << "  \"git_branch\": \"" << json_escape(git_config_.branch) << "\",\n";
+  out << "  \"git_conflict_pending\": " << (git_conflict_.pending ? "true" : "false") << ",\n";
+  out << "  \"git_conflict_branch\": \"" << json_escape(git_conflict_.branch) << "\",\n";
+  out << "  \"git_conflict_local_commit\": \"" << json_escape(git_conflict_.local_commit) << "\",\n";
+  out << "  \"git_conflict_remote_commit\": \"" << json_escape(git_conflict_.remote_commit) << "\",\n";
+  out << "  \"git_conflict_message\": \"" << json_escape(git_conflict_.message) << "\"";
+}
+
+void App::set_git_message(std::string message, bool is_error)
+{
+  git_last_message_ = std::move(message);
+  git_last_message_is_error_ = is_error;
+}
+
+bool App::git_is_connected() const
+{
+  return git_config_.enabled && !git_config_.remote_url.empty();
+}
+
+void App::refresh_git_status(bool force)
+{
+  const double now = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
+  if(!force && git_status_.valid && now < git_status_refresh_at_) return;
+
+  GitSync::Client git(DATA_PATH);
+  const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+
+  git_status_.valid = true;
+  git_status_.git_available = status.git_available;
+  git_status_.repo_exists = status.repo_exists;
+  git_status_.remote_configured = status.remote_configured;
+  git_status_.clean = status.clean;
+  git_status_.current_branch = status.current_branch;
+  git_status_.branches = status.local_branches;
+  git_status_.remote_url = status.remote_url;
+
+  git_status_refresh_at_ = now + 2.0;
+}
+
+void App::finalize_pending_file_deletions()
+{
+  std::unordered_set<std::string> alive_paths;
+  for(const FolderMeta &f : folders_)
+  {
+    for(const NoteMeta &n : f.notes)
+    {
+      if(!n.path.empty()) alive_paths.insert(n.path);
+    }
+  }
+
+  for(const std::string &p : pending_fs_delete_paths_)
+  {
+    if(p.empty()) continue;
+    if(alive_paths.find(p) != alive_paths.end()) continue;
+    std::error_code ec;
+    std::filesystem::remove(std::filesystem::path(p), ec);
+  }
+  pending_fs_delete_paths_.clear();
+}
+
+void App::perform_startup_git_sync()
+{
+  if(!git_is_connected() || !git_config_.auto_pull_on_start) return;
+
+  GitSync::Client git(DATA_PATH);
+  std::string message;
+  if(!git.set_remote_origin(git_config_.remote_url, &message))
+  {
+    set_git_message(message.empty() ? "Unable to configure the remote repository." : message, true);
+    refresh_git_status(true);
+    return;
+  }
+
+  GitSync::SyncResult branch_result = git.checkout_branch(git_config_.branch, true);
+  if(!branch_result.ok)
+  {
+    set_git_message(branch_result.message, true);
+    refresh_git_status(true);
+    return;
+  }
+
+  GitSync::SyncResult sync_result = git.pull_latest(git_config_.branch);
+  if(sync_result.conflict)
+  {
+    const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+    git_conflict_.pending = true;
+    git_conflict_.branch = git_config_.branch;
+    git_conflict_.local_commit = status.head_commit;
+    git_conflict_.remote_commit = status.remote_commit;
+    git_conflict_.message = sync_result.message;
+    set_git_message(sync_result.message, true);
+    save_index();
+  }
+  else
+  {
+    if(sync_result.ok)
+    {
+      git_conflict_ = GitConflictState{};
+      set_git_message(sync_result.message, false);
+      save_index();
+    }
+    else
+    {
+      set_git_message(sync_result.message, true);
+    }
+  }
+  refresh_git_status(true);
+}
+
+void App::perform_shutdown_git_sync()
+{
+  if(!git_config_.enabled) return;
+
+  GitSync::Client git(DATA_PATH);
+  std::string message;
+  if(!git.ensure_repo(&message))
+  {
+    set_git_message(message.empty() ? "Git is not available." : message, true);
+    return;
+  }
+
+  GitSync::SyncResult branch_result = git.checkout_branch(git_config_.branch, true);
+  if(!branch_result.ok)
+  {
+    set_git_message(branch_result.message, true);
+    return;
+  }
+
+  GitSync::SyncResult commit_result = git.commit_all(make_git_commit_message());
+  if(!commit_result.ok)
+  {
+    set_git_message(commit_result.message, true);
+    return;
+  }
+
+  if(!git_is_connected() || !git_config_.auto_push_on_close)
+  {
+    set_git_message(commit_result.message, false);
+    return;
+  }
+
+  GitSync::SyncResult push_result = git.push_branch(git_config_.branch, false);
+  if(push_result.conflict)
+  {
+    const GitSync::SyncResult fetch_result = git.fetch();
+    (void)fetch_result;
+    const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+    git_conflict_.pending = true;
+    git_conflict_.branch = git_config_.branch;
+    git_conflict_.local_commit = status.head_commit;
+    git_conflict_.remote_commit = status.remote_commit;
+    git_conflict_.message = "Push was rejected because the remote branch changed. Resolve it on next launch.";
+    save_index();
+    set_git_message(git_conflict_.message, true);
+    return;
+  }
+
+  if(push_result.ok)
+  {
+    git_conflict_ = GitConflictState{};
+    save_index();
+    set_git_message(push_result.message, false);
+  }
+  else
+  {
+    set_git_message(push_result.message, true);
+  }
+}
+
 int App::run()
 {
   try
@@ -348,6 +560,9 @@ int App::run()
     init_sdl_gl();
     init_imgui();
     load_state();
+    perform_startup_git_sync();
+    load_state();
+    refresh_git_status(true);
 
     while(running_)
     {
@@ -357,6 +572,8 @@ int App::run()
     }
 
     save_state();
+    finalize_pending_file_deletions();
+    perform_shutdown_git_sync();
     shutdown();
     return 0;
   }
@@ -487,24 +704,7 @@ void App::init_imgui()
 void App::shutdown()
 {
   clear_toolbar_icon_cache();
-
-  std::unordered_set<std::string> alive_paths;
-  for(const FolderMeta &f : folders_)
-  {
-    for(const NoteMeta &n : f.notes)
-    {
-      if(!n.path.empty()) alive_paths.insert(n.path);
-    }
-  }
-
-  for(const std::string &p : pending_fs_delete_paths_)
-  {
-    if(p.empty()) continue;
-    if(alive_paths.find(p) != alive_paths.end()) continue;
-    std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(p), ec);
-  }
-  pending_fs_delete_paths_.clear();
+  finalize_pending_file_deletions();
 
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
@@ -540,6 +740,7 @@ void App::load_state()
   active_note_idx_ = 0;
   folder_overview_mode_ = false;
   layout_locked_ = false;
+  git_status_ = GitStatusView{};
 
   std::ifstream in_index(kIndexFile);
   if(in_index)
@@ -549,6 +750,7 @@ void App::load_state()
     active_note_idx_ = json_find_int(doc, "active_note", 0);
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
     layout_locked_ = json_find_bool(doc, "layout_locked", false);
+    load_git_settings_from_json(doc);
 
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
@@ -629,6 +831,7 @@ void App::load_state()
       f.notes.push_back(std::move(n));
     }
     folders_.push_back(std::move(f));
+    load_git_settings_from_json({});
   }
 
   ensure_default_index();
@@ -672,7 +875,9 @@ void App::save_index() const
   out << "  \"active_folder\": " << active_folder_idx_ << ",\n";
   out << "  \"active_note\": " << active_note_idx_ << ",\n";
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
-  out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
+  out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false");
+  save_git_settings_json(out);
+  out << ",\n";
   out << "  \"folders\": [\n";
   for(size_t fi = 0; fi < folders_.size(); ++fi)
   {
@@ -2305,6 +2510,309 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("Paste Note");
     open_paste_note_popup = false;
+  }
+
+  refresh_git_status();
+  if(ImGui::CollapsingHeader("Git Sync", ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    GitSync::Client git(DATA_PATH);
+    ImGui::TextDisabled("Notes repository: %s", DATA_PATH);
+    if(!git_status_.git_available)
+    {
+      ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "Git is not available on this system.");
+    }
+    else
+    {
+      ImGui::TextDisabled("Mode: %s", git_is_connected() ? "Remote sync enabled" : "Local only");
+      ImGui::TextDisabled("Current branch: %s", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str());
+      ImGui::TextDisabled("Workspace: %s", git_status_.clean ? "Clean" : "Local changes pending");
+    }
+
+    if(!git_last_message_.empty())
+    {
+      const ImVec4 message_color = git_last_message_is_error_
+                                       ? ImVec4(0.95f, 0.35f, 0.35f, 1.0f)
+                                       : ImVec4(0.36f, 0.86f, 0.48f, 1.0f);
+      ImGui::PushStyleColor(ImGuiCol_Text, message_color);
+      ImGui::TextWrapped("%s", git_last_message_.c_str());
+      ImGui::PopStyleColor();
+    }
+
+    if(ImGui::Checkbox("Remote sync enabled", &git_config_.enabled)) save_index();
+    ImGui::SameLine();
+    if(ImGui::Checkbox("Auto pull on start", &git_config_.auto_pull_on_start)) save_index();
+    ImGui::SameLine();
+    if(ImGui::Checkbox("Auto push on close", &git_config_.auto_push_on_close)) save_index();
+
+    ImGui::SetNextItemWidth(-1.0f);
+    if(ImGui::InputText("Repository URL", git_remote_url_buf_.data(), git_remote_url_buf_.size()))
+    {
+      git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
+      save_index();
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    if(ImGui::InputText("Branch", git_branch_buf_.data(), git_branch_buf_.size()))
+    {
+      git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
+      if(git_config_.branch.empty()) git_config_.branch = "main";
+      std::snprintf(git_branch_buf_.data(), git_branch_buf_.size(), "%s", git_config_.branch.c_str());
+      save_index();
+    }
+
+    if(ImGui::Button("Connect Remote"))
+    {
+      git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
+      git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
+      if(git_config_.branch.empty()) git_config_.branch = "main";
+      if(git_config_.remote_url.empty())
+      {
+        set_git_message("Enter a repository URL first.", true);
+      }
+      else
+      {
+        std::string message;
+        if(git.set_remote_origin(git_config_.remote_url, &message))
+        {
+          git_config_.enabled = true;
+          GitSync::SyncResult checkout_result = git.checkout_branch(git_config_.branch, true);
+          if(checkout_result.ok)
+          {
+            GitSync::SyncResult sync_result = git.pull_latest(git_config_.branch);
+            if(sync_result.conflict)
+            {
+              const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+              git_conflict_.pending = true;
+              git_conflict_.branch = git_config_.branch;
+              git_conflict_.local_commit = status.head_commit;
+              git_conflict_.remote_commit = status.remote_commit;
+              git_conflict_.message = sync_result.message;
+              set_git_message(sync_result.message, true);
+            }
+            else
+            {
+              if(sync_result.ok)
+              {
+                git_conflict_ = GitConflictState{};
+                save_index();
+                load_state();
+              }
+              set_git_message(sync_result.message.empty() ? message : sync_result.message, !sync_result.ok);
+            }
+          }
+          else
+          {
+            set_git_message(checkout_result.message, true);
+          }
+          save_index();
+          refresh_git_status(true);
+        }
+        else
+        {
+          set_git_message(message, true);
+        }
+      }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Disconnect"))
+    {
+      std::string message;
+      if(git.clear_remote_origin(&message))
+      {
+        git_config_.enabled = false;
+        git_config_.remote_url.clear();
+        git_conflict_ = GitConflictState{};
+        std::snprintf(git_remote_url_buf_.data(), git_remote_url_buf_.size(), "%s", "");
+        save_index();
+        set_git_message(message, false);
+        refresh_git_status(true);
+      }
+      else
+      {
+        set_git_message(message, true);
+      }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Refresh"))
+    {
+      refresh_git_status(true);
+      set_git_message("Git status refreshed.", false);
+    }
+
+    if(!git_status_.branches.empty())
+    {
+      if(ImGui::BeginCombo("Known branches", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str()))
+      {
+        for(const std::string &branch_name : git_status_.branches)
+        {
+          const bool selected = branch_name == git_config_.branch;
+          if(ImGui::Selectable(branch_name.c_str(), selected))
+          {
+            std::snprintf(git_branch_buf_.data(), git_branch_buf_.size(), "%s", branch_name.c_str());
+            git_config_.branch = branch_name;
+            save_index();
+          }
+          if(selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+    }
+
+    if(ImGui::Button("Switch Branch"))
+    {
+      save_state();
+      finalize_pending_file_deletions();
+      git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
+      if(git_config_.branch.empty()) git_config_.branch = "main";
+      GitSync::SyncResult checkout_result = git.checkout_branch(git_config_.branch, true);
+      if(checkout_result.ok)
+      {
+        git_conflict_ = GitConflictState{};
+        save_index();
+        load_state();
+        refresh_git_status(true);
+        set_git_message(checkout_result.message, false);
+      }
+      else
+      {
+        set_git_message(checkout_result.message, true);
+      }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Fetch/Pull Latest"))
+    {
+      save_state();
+      GitSync::SyncResult sync_result = git.pull_latest(git_config_.branch);
+      if(sync_result.conflict)
+      {
+        const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+        git_conflict_.pending = true;
+        git_conflict_.branch = git_config_.branch;
+        git_conflict_.local_commit = status.head_commit;
+        git_conflict_.remote_commit = status.remote_commit;
+        git_conflict_.message = sync_result.message;
+        save_index();
+        set_git_message(sync_result.message, true);
+      }
+      else if(sync_result.ok)
+      {
+        git_conflict_ = GitConflictState{};
+        save_index();
+        load_state();
+        refresh_git_status(true);
+        set_git_message(sync_result.message, false);
+      }
+      else
+      {
+        set_git_message(sync_result.message, true);
+      }
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Commit/Push Now"))
+    {
+      save_state();
+      finalize_pending_file_deletions();
+      GitSync::SyncResult commit_result = git.commit_all(make_git_commit_message());
+      if(commit_result.ok)
+      {
+        GitSync::SyncResult push_result = git.push_branch(git_config_.branch, false);
+        if(push_result.conflict)
+        {
+          const GitSync::RepoStatus status = git.query_status(git_config_.branch);
+          git_conflict_.pending = true;
+          git_conflict_.branch = git_config_.branch;
+          git_conflict_.local_commit = status.head_commit;
+          git_conflict_.remote_commit = status.remote_commit;
+          git_conflict_.message = "Push was rejected because the remote branch changed.";
+          save_index();
+          set_git_message(git_conflict_.message, true);
+        }
+        else
+        {
+          if(push_result.ok) git_conflict_ = GitConflictState{};
+          save_index();
+          refresh_git_status(true);
+          set_git_message(push_result.message, !push_result.ok);
+        }
+      }
+      else
+      {
+        set_git_message(commit_result.message, true);
+      }
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputText("New tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
+    ImGui::SameLine();
+    if(ImGui::Button("Create Tag"))
+    {
+      const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
+      GitSync::SyncResult tag_result = git.create_tag(tag_name, git_is_connected());
+      if(tag_result.ok)
+      {
+        std::snprintf(git_new_tag_buf_.data(), git_new_tag_buf_.size(), "%s", "");
+        refresh_git_status(true);
+      }
+      set_git_message(tag_result.message, !tag_result.ok);
+    }
+
+    if(git_conflict_.pending)
+    {
+      ImGui::Separator();
+      ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.25f, 1.0f), "Remote conflict detected");
+      if(!git_conflict_.message.empty()) ImGui::TextWrapped("%s", git_conflict_.message.c_str());
+      if(!git_conflict_.branch.empty()) ImGui::TextDisabled("Tracked branch: %s", git_conflict_.branch.c_str());
+      if(!git_conflict_.local_commit.empty()) ImGui::TextDisabled("Local: %.12s", git_conflict_.local_commit.c_str());
+      if(!git_conflict_.remote_commit.empty()) ImGui::TextDisabled("Remote: %.12s", git_conflict_.remote_commit.c_str());
+
+      if(ImGui::Button("Keep Local And Force Push"))
+      {
+        GitSync::SyncResult push_result = git.push_branch(git_conflict_.branch.empty() ? git_config_.branch : git_conflict_.branch, true);
+        if(push_result.ok)
+        {
+          git_conflict_ = GitConflictState{};
+          save_index();
+          refresh_git_status(true);
+        }
+        set_git_message(push_result.message, !push_result.ok);
+      }
+
+      ImGui::SetNextItemWidth(220.0f);
+      ImGui::InputText("Conflict branch", git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size());
+      ImGui::SameLine();
+      if(ImGui::Button("Push To New Branch"))
+      {
+        const std::string new_branch = std::string(NoteCore::trim(std::string_view(git_conflict_branch_buf_.data())));
+        if(new_branch.empty())
+        {
+          set_git_message("Enter a branch name for the conflict copy.", true);
+        }
+        else
+        {
+          GitSync::SyncResult checkout_result = git.checkout_branch(new_branch, true);
+          if(checkout_result.ok)
+          {
+            git_config_.branch = new_branch;
+            std::snprintf(git_branch_buf_.data(), git_branch_buf_.size(), "%s", new_branch.c_str());
+            GitSync::SyncResult push_result = git.push_branch(new_branch, false);
+            if(push_result.ok)
+            {
+              git_conflict_ = GitConflictState{};
+              save_index();
+              load_state();
+              refresh_git_status(true);
+            }
+            set_git_message(push_result.message, !push_result.ok);
+          }
+          else
+          {
+            set_git_message(checkout_result.message, true);
+          }
+        }
+      }
+    }
+
+    ImGui::Separator();
   }
 
   if(ImGui::BeginPopup("New Folder"))

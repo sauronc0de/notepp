@@ -62,6 +62,6 @@ add_subdirectory(libraries)
 add_subdirectory(examples)
 add_subdirectory(src)
 
-add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp src/undo_redo.cpp)
+add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/git_sync.cpp src/markdown_sections.cpp src/markdown_view.cpp src/undo_redo.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui markdown_code_highlight note_ui)

@@ -2,6 +2,8 @@
 
 #include "undo_redo.hpp"
 
+#include <array>
+#include <iosfwd>
 #include <imgui.h>
 
 #include <string>
@@ -63,6 +65,14 @@ private:
   void show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent);
   void render_history_indicator() const;
   void render_debug_history_window() const;
+  void load_git_settings_from_json(std::string_view doc);
+  void save_git_settings_json(std::ostream &out) const;
+  void refresh_git_status(bool force = false);
+  void set_git_message(std::string message, bool is_error);
+  bool git_is_connected() const;
+  void finalize_pending_file_deletions();
+  void perform_startup_git_sync();
+  void perform_shutdown_git_sync();
   void shutdown();
 
   void frame_begin();
@@ -161,4 +171,45 @@ private:
       "```cpp\n"
       "int main(){ return 0; }\n"
       "```\n";
+
+  struct GitConfig
+  {
+    bool enabled = false;
+    bool auto_pull_on_start = true;
+    bool auto_push_on_close = true;
+    std::string remote_url;
+    std::string branch = "main";
+  };
+
+  struct GitConflictState
+  {
+    bool pending = false;
+    std::string branch;
+    std::string local_commit;
+    std::string remote_commit;
+    std::string message;
+  };
+
+  struct GitStatusView
+  {
+    bool valid = false;
+    bool git_available = false;
+    bool repo_exists = false;
+    bool remote_configured = false;
+    bool clean = true;
+    std::string current_branch;
+    std::vector<std::string> branches;
+    std::string remote_url;
+  };
+
+  GitConfig git_config_;
+  GitConflictState git_conflict_;
+  GitStatusView git_status_;
+  double git_status_refresh_at_ = 0.0;
+  std::string git_last_message_;
+  bool git_last_message_is_error_ = false;
+  std::array<char, 512> git_remote_url_buf_{};
+  std::array<char, 128> git_branch_buf_{};
+  std::array<char, 128> git_new_tag_buf_{};
+  std::array<char, 128> git_conflict_branch_buf_{};
 };
