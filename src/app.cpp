@@ -2741,13 +2741,12 @@ void App::frame_ui()
       }
     }
 
-    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("New tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
-    ImGui::SameLine();
-    if(ImGui::Button("Create Tag"))
+    if(ImGui::Button("Create Local Tag"))
     {
       const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
-      GitSync::SyncResult tag_result = git.create_tag(tag_name, git_is_connected());
+      GitSync::SyncResult tag_result = git.create_tag(tag_name, false);
       if(tag_result.ok)
       {
         std::snprintf(git_new_tag_buf_.data(), git_new_tag_buf_.size(), "%s", "");
@@ -2755,6 +2754,20 @@ void App::frame_ui()
       }
       set_git_message(tag_result.message, !tag_result.ok);
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!git_is_connected());
+    if(ImGui::Button("Create And Push Tag"))
+    {
+      const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
+      GitSync::SyncResult tag_result = git.create_tag(tag_name, true);
+      if(tag_result.ok)
+      {
+        std::snprintf(git_new_tag_buf_.data(), git_new_tag_buf_.size(), "%s", "");
+        refresh_git_status(true);
+      }
+      set_git_message(tag_result.message, !tag_result.ok);
+    }
+    ImGui::EndDisabled();
 
     if(git_conflict_.pending)
     {
