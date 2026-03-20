@@ -2513,7 +2513,7 @@ void App::frame_ui()
   }
 
   refresh_git_status();
-  if(ImGui::CollapsingHeader("Git Sync", ImGuiTreeNodeFlags_DefaultOpen))
+  if(ImGui::CollapsingHeader("Git", ImGuiTreeNodeFlags_DefaultOpen))
   {
     GitSync::Client git(DATA_PATH);
     ImGui::TextDisabled("Notes repository: %s", DATA_PATH);
@@ -3205,39 +3205,41 @@ void App::frame_ui()
   folder_overview_mode_ = true;
   ensure_default_index();
   normalize_active_indices();
-  const ImGuiStyle &sidebar_style = ImGui::GetStyle();
-  const ImVec4 sidebar_select_gray(0.35f, 0.37f, 0.40f, 1.0f);
-  const ImVec4 sidebar_hover_fill = with_alpha(sidebar_select_gray, 0.20f);
-  const ImVec4 sidebar_hover_stroke = with_alpha(sidebar_select_gray, 0.82f);
-  const ImVec4 sidebar_note_hover_fill = with_alpha(sidebar_select_gray, 0.14f);
-  const ImVec4 sidebar_note_hover_stroke = with_alpha(sidebar_select_gray, 0.50f);
-  ImGui::PushStyleColor(ImGuiCol_Header, with_alpha(sidebar_select_gray, 0.32f));
-  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, with_alpha(sidebar_select_gray, 0.40f));
-  ImGui::PushStyleColor(ImGuiCol_HeaderActive, with_alpha(sidebar_select_gray, 0.50f));
-  ImGui::PushStyleColor(ImGuiCol_NavHighlight, with_alpha(sidebar_select_gray, 0.92f));
-  const double now_time = ImGui::GetTime();
-  std::unordered_map<std::string, std::vector<int>> folder_children;
-  folder_children.reserve(folders_.size() * 2 + 4);
-  for(int fi = 0; fi < (int)folders_.size(); ++fi)
+  if(ImGui::CollapsingHeader("Explorer Folders", ImGuiTreeNodeFlags_DefaultOpen))
   {
-    folder_children[folder_parent_path(folders_[(size_t)fi].name)].push_back(fi);
-  }
-  for(auto &kv : folder_children)
-  {
-    std::sort(kv.second.begin(), kv.second.end(), [&](int a, int b) {
-      return folder_base_name(folders_[(size_t)a].name) < folder_base_name(folders_[(size_t)b].name);
-    });
-  }
-  struct SidebarRect
-  {
-    ImVec2 min;
-    ImVec2 max;
-    bool valid = false;
-  };
-  std::vector<SidebarRect> folder_row_rects(folders_.size());
-  std::vector<std::vector<SidebarRect>> folder_note_row_rects(folders_.size());
-  for(size_t i = 0; i < folders_.size(); ++i) folder_note_row_rects[i].reserve(folders_[i].notes.size());
-  auto render_folder_node = [&](auto &&self, int fi) -> void {
+    const ImGuiStyle &sidebar_style = ImGui::GetStyle();
+    const ImVec4 sidebar_select_gray(0.35f, 0.37f, 0.40f, 1.0f);
+    const ImVec4 sidebar_hover_fill = with_alpha(sidebar_select_gray, 0.20f);
+    const ImVec4 sidebar_hover_stroke = with_alpha(sidebar_select_gray, 0.82f);
+    const ImVec4 sidebar_note_hover_fill = with_alpha(sidebar_select_gray, 0.14f);
+    const ImVec4 sidebar_note_hover_stroke = with_alpha(sidebar_select_gray, 0.50f);
+    ImGui::PushStyleColor(ImGuiCol_Header, with_alpha(sidebar_select_gray, 0.32f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, with_alpha(sidebar_select_gray, 0.40f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, with_alpha(sidebar_select_gray, 0.50f));
+    ImGui::PushStyleColor(ImGuiCol_NavHighlight, with_alpha(sidebar_select_gray, 0.92f));
+    const double now_time = ImGui::GetTime();
+    std::unordered_map<std::string, std::vector<int>> folder_children;
+    folder_children.reserve(folders_.size() * 2 + 4);
+    for(int fi = 0; fi < (int)folders_.size(); ++fi)
+    {
+      folder_children[folder_parent_path(folders_[(size_t)fi].name)].push_back(fi);
+    }
+    for(auto &kv : folder_children)
+    {
+      std::sort(kv.second.begin(), kv.second.end(), [&](int a, int b) {
+        return folder_base_name(folders_[(size_t)a].name) < folder_base_name(folders_[(size_t)b].name);
+      });
+    }
+    struct SidebarRect
+    {
+      ImVec2 min;
+      ImVec2 max;
+      bool valid = false;
+    };
+    std::vector<SidebarRect> folder_row_rects(folders_.size());
+    std::vector<std::vector<SidebarRect>> folder_note_row_rects(folders_.size());
+    for(size_t i = 0; i < folders_.size(); ++i) folder_note_row_rects[i].reserve(folders_[i].notes.size());
+    auto render_folder_node = [&](auto &&self, int fi) -> void {
     FolderMeta &f = folders_[(size_t)fi];
     if(fi == force_open_folder_idx) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     ImGuiTreeNodeFlags ff =
@@ -3590,27 +3592,34 @@ void App::frame_ui()
       }
       ImGui::TreePop();
     }
-  };
-  auto roots_it = folder_children.find(std::string{});
-  if(roots_it != folder_children.end())
-  {
-    for(int rfi : roots_it->second) render_folder_node(render_folder_node, rfi);
+    };
+    auto roots_it = folder_children.find(std::string{});
+    if(roots_it != folder_children.end())
+    {
+      for(int rfi : roots_it->second) render_folder_node(render_folder_node, rfi);
+    }
+    if(drag_hover_folder_idx >= 0 && drag_hover_folder_idx < (int)folders_.size())
+    {
+      ImDrawList *dl = ImGui::GetWindowDrawList();
+      const SidebarRect &fr = folder_row_rects[(size_t)drag_hover_folder_idx];
+      if(fr.valid)
+      {
+        dl->AddRectFilled(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_fill), 3.0f);
+        dl->AddRect(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_stroke), 3.0f, 0, 1.2f);
+      }
+      for(const SidebarRect &nr : folder_note_row_rects[(size_t)drag_hover_folder_idx])
+      {
+        if(!nr.valid) continue;
+        dl->AddRectFilled(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_fill), 2.0f);
+        dl->AddRect(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_stroke), 2.0f, 0, 1.0f);
+      }
+    }
+    force_open_folder_idx = -1;
+    ImGui::PopStyleColor(4);
   }
-  if(drag_hover_folder_idx >= 0 && drag_hover_folder_idx < (int)folders_.size())
+  else
   {
-    ImDrawList *dl = ImGui::GetWindowDrawList();
-    const SidebarRect &fr = folder_row_rects[(size_t)drag_hover_folder_idx];
-    if(fr.valid)
-    {
-      dl->AddRectFilled(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_fill), 3.0f);
-      dl->AddRect(fr.min, fr.max, ImGui::GetColorU32(sidebar_hover_stroke), 3.0f, 0, 1.2f);
-    }
-    for(const SidebarRect &nr : folder_note_row_rects[(size_t)drag_hover_folder_idx])
-    {
-      if(!nr.valid) continue;
-      dl->AddRectFilled(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_fill), 2.0f);
-      dl->AddRect(nr.min, nr.max, ImGui::GetColorU32(sidebar_note_hover_stroke), 2.0f, 0, 1.0f);
-    }
+    force_open_folder_idx = -1;
   }
   if(pending_delete_note_folder_idx >= 0 &&
      (!pending_delete_note_indices.empty() || pending_delete_note_idx >= 0))
@@ -3914,8 +3923,6 @@ void App::frame_ui()
     pending_move_folder_source_idx = -1;
     pending_move_folder_target_idx = -1;
   }
-  force_open_folder_idx = -1;
-  ImGui::PopStyleColor(4);
   ImGui::End();
 
   auto read_file_text = [](const std::string &path) -> std::string {
