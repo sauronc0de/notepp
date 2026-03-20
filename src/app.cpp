@@ -2516,16 +2516,19 @@ void App::frame_ui()
   if(ImGui::CollapsingHeader("Git", ImGuiTreeNodeFlags_DefaultOpen))
   {
     GitSync::Client git(DATA_PATH);
-    ImGui::TextDisabled("Notes repository: %s", DATA_PATH);
+    const float git_panel_width = ImGui::GetContentRegionAvail().x;
+    const float button_width = std::max(120.0f, git_panel_width);
+    ImGui::TextDisabled("Notes repository:");
+    ImGui::TextWrapped("%s", DATA_PATH);
     if(!git_status_.git_available)
     {
-      ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "Git is not available on this system.");
+      ImGui::TextWrapped("Git is not available on this system.");
     }
     else
     {
-      ImGui::TextDisabled("Mode: %s", git_is_connected() ? "Remote sync enabled" : "Local only");
-      ImGui::TextDisabled("Current branch: %s", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str());
-      ImGui::TextDisabled("Workspace: %s", git_status_.clean ? "Clean" : "Local changes pending");
+      ImGui::TextWrapped("Mode: %s", git_is_connected() ? "Remote sync enabled" : "Local only");
+      ImGui::TextWrapped("Current branch: %s", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str());
+      ImGui::TextWrapped("Workspace: %s", git_status_.clean ? "Clean" : "Local changes pending");
     }
 
     if(!git_last_message_.empty())
@@ -2539,20 +2542,20 @@ void App::frame_ui()
     }
 
     if(ImGui::Checkbox("Remote sync enabled", &git_config_.enabled)) save_index();
-    ImGui::SameLine();
     if(ImGui::Checkbox("Auto pull on start", &git_config_.auto_pull_on_start)) save_index();
-    ImGui::SameLine();
     if(ImGui::Checkbox("Auto push on close", &git_config_.auto_push_on_close)) save_index();
 
+    ImGui::TextUnformatted("Repository URL");
     ImGui::SetNextItemWidth(-1.0f);
-    if(ImGui::InputText("Repository URL", git_remote_url_buf_.data(), git_remote_url_buf_.size()))
+    if(ImGui::InputText("##git_repository_url", git_remote_url_buf_.data(), git_remote_url_buf_.size()))
     {
       git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
       save_index();
     }
 
-    ImGui::SetNextItemWidth(220.0f);
-    if(ImGui::InputText("Branch", git_branch_buf_.data(), git_branch_buf_.size()))
+    ImGui::TextUnformatted("Branch");
+    ImGui::SetNextItemWidth(-1.0f);
+    if(ImGui::InputText("##git_branch", git_branch_buf_.data(), git_branch_buf_.size()))
     {
       git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
       if(git_config_.branch.empty()) git_config_.branch = "main";
@@ -2560,7 +2563,7 @@ void App::frame_ui()
       save_index();
     }
 
-    if(ImGui::Button("Connect Remote"))
+    if(ImGui::Button("Connect Remote", ImVec2(button_width, 0.0f)))
     {
       git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
       git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
@@ -2613,8 +2616,7 @@ void App::frame_ui()
         }
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Disconnect"))
+    if(ImGui::Button("Disconnect", ImVec2(button_width, 0.0f)))
     {
       std::string message;
       if(git.clear_remote_origin(&message))
@@ -2632,8 +2634,7 @@ void App::frame_ui()
         set_git_message(message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Refresh"))
+    if(ImGui::Button("Refresh", ImVec2(button_width, 0.0f)))
     {
       refresh_git_status(true);
       set_git_message("Git status refreshed.", false);
@@ -2641,7 +2642,9 @@ void App::frame_ui()
 
     if(!git_status_.branches.empty())
     {
-      if(ImGui::BeginCombo("Known branches", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str()))
+      ImGui::TextUnformatted("Known branches");
+      ImGui::SetNextItemWidth(-1.0f);
+      if(ImGui::BeginCombo("##git_known_branches", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str()))
       {
         for(const std::string &branch_name : git_status_.branches)
         {
@@ -2658,7 +2661,7 @@ void App::frame_ui()
       }
     }
 
-    if(ImGui::Button("Switch Branch"))
+    if(ImGui::Button("Switch Branch", ImVec2(button_width, 0.0f)))
     {
       save_state();
       finalize_pending_file_deletions();
@@ -2678,8 +2681,7 @@ void App::frame_ui()
         set_git_message(checkout_result.message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Fetch/Pull Latest"))
+    if(ImGui::Button("Fetch/Pull Latest", ImVec2(button_width, 0.0f)))
     {
       save_state();
       GitSync::SyncResult sync_result = git.pull_latest(git_config_.branch);
@@ -2707,8 +2709,7 @@ void App::frame_ui()
         set_git_message(sync_result.message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Commit/Push Now"))
+    if(ImGui::Button("Commit/Push Now", ImVec2(button_width, 0.0f)))
     {
       save_state();
       finalize_pending_file_deletions();
@@ -2741,9 +2742,10 @@ void App::frame_ui()
       }
     }
 
+    ImGui::TextUnformatted("New tag");
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("New tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
-    if(ImGui::Button("Create Local Tag"))
+    ImGui::InputText("##git_new_tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
+    if(ImGui::Button("Create Local Tag", ImVec2(button_width, 0.0f)))
     {
       const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
       GitSync::SyncResult tag_result = git.create_tag(tag_name, false);
@@ -2754,9 +2756,8 @@ void App::frame_ui()
       }
       set_git_message(tag_result.message, !tag_result.ok);
     }
-    ImGui::SameLine();
     ImGui::BeginDisabled(!git_is_connected());
-    if(ImGui::Button("Create And Push Tag"))
+    if(ImGui::Button("Create And Push Tag", ImVec2(button_width, 0.0f)))
     {
       const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
       GitSync::SyncResult tag_result = git.create_tag(tag_name, true);
@@ -2774,11 +2775,11 @@ void App::frame_ui()
       ImGui::Separator();
       ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.25f, 1.0f), "Remote conflict detected");
       if(!git_conflict_.message.empty()) ImGui::TextWrapped("%s", git_conflict_.message.c_str());
-      if(!git_conflict_.branch.empty()) ImGui::TextDisabled("Tracked branch: %s", git_conflict_.branch.c_str());
-      if(!git_conflict_.local_commit.empty()) ImGui::TextDisabled("Local: %.12s", git_conflict_.local_commit.c_str());
-      if(!git_conflict_.remote_commit.empty()) ImGui::TextDisabled("Remote: %.12s", git_conflict_.remote_commit.c_str());
+      if(!git_conflict_.branch.empty()) ImGui::TextWrapped("Tracked branch: %s", git_conflict_.branch.c_str());
+      if(!git_conflict_.local_commit.empty()) ImGui::TextWrapped("Local: %.12s", git_conflict_.local_commit.c_str());
+      if(!git_conflict_.remote_commit.empty()) ImGui::TextWrapped("Remote: %.12s", git_conflict_.remote_commit.c_str());
 
-      if(ImGui::Button("Keep Local And Force Push"))
+      if(ImGui::Button("Keep Local And Force Push", ImVec2(button_width, 0.0f)))
       {
         GitSync::SyncResult push_result = git.push_branch(git_conflict_.branch.empty() ? git_config_.branch : git_conflict_.branch, true);
         if(push_result.ok)
@@ -2790,10 +2791,10 @@ void App::frame_ui()
         set_git_message(push_result.message, !push_result.ok);
       }
 
-      ImGui::SetNextItemWidth(220.0f);
-      ImGui::InputText("Conflict branch", git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size());
-      ImGui::SameLine();
-      if(ImGui::Button("Push To New Branch"))
+      ImGui::TextUnformatted("Conflict branch");
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputText("##git_conflict_branch", git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size());
+      if(ImGui::Button("Push To New Branch", ImVec2(button_width, 0.0f)))
       {
         const std::string new_branch = std::string(NoteCore::trim(std::string_view(git_conflict_branch_buf_.data())));
         if(new_branch.empty())
