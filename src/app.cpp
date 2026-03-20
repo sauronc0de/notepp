@@ -1596,6 +1596,14 @@ void App::frame_begin()
       running_ = false;
     }
 
+    if(event.type == SDL_KEYDOWN &&
+       event.key.keysym.sym == SDLK_ESCAPE &&
+       search_window_visible_)
+    {
+      request_close_search_ = true;
+      continue;
+    }
+
     // While editing a note, swallow editor control shortcuts before ImGui sees them
     // so our grouped history handles them instead of InputText's per-character stack.
     if(editing_mode_ &&
@@ -1605,6 +1613,8 @@ void App::frame_begin()
       const Uint16 edit_key_mod = event.key.keysym.mod;
       const bool edit_ctrl_down = (edit_key_mod & KMOD_CTRL) != 0;
       const bool edit_shift_down = (edit_key_mod & KMOD_SHIFT) != 0;
+      const bool edit_find_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_f;
+      const bool edit_find_project_shortcut = edit_ctrl_down && edit_shift_down && edit_key_sym == SDLK_f;
       const bool edit_undo_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_z;
       const bool edit_redo_shortcut = edit_ctrl_down && (edit_key_sym == SDLK_y || (edit_shift_down && edit_key_sym == SDLK_z));
       if(edit_key_sym == SDLK_ESCAPE)
@@ -1612,6 +1622,18 @@ void App::frame_begin()
         request_exit_edit_mode_ = true;
         continue;
       }
+    if(edit_find_project_shortcut)
+    {
+      request_open_project_search_ = true;
+      request_open_search_ = false;
+      continue;
+    }
+    if(edit_find_shortcut)
+    {
+      request_open_search_ = true;
+      request_open_project_search_ = false;
+      continue;
+    }
       if(edit_undo_shortcut)
       {
         request_undo_edit_ = true;
@@ -1634,6 +1656,26 @@ void App::frame_begin()
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
     const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
+    if(!editing_mode_ &&
+       event.type == SDL_KEYDOWN &&
+       ctrl_down &&
+       !shift_down &&
+       event.key.keysym.sym == SDLK_f)
+    {
+      request_open_search_ = true;
+      request_open_project_search_ = false;
+      continue;
+    }
+    if(!editing_mode_ &&
+       event.type == SDL_KEYDOWN &&
+       ctrl_down &&
+       shift_down &&
+       event.key.keysym.sym == SDLK_f)
+    {
+      request_open_project_search_ = true;
+      request_open_search_ = false;
+      continue;
+    }
     if(!editing_mode_ &&
        !imgui_wants_keyboard &&
        event.type == SDL_KEYDOWN &&
@@ -1795,6 +1837,43 @@ void App::frame_ui()
   static int pending_move_folder_target_idx = -1;
   static int drag_hover_folder_idx = -1;
   static std::unordered_map<std::string, SidebarFlash> sidebar_flashes;
+  enum class SearchScope
+  {
+    CurrentEditorNote,
+    SelectedPreviewNotes,
+    CurrentPageNotes,
+    FullProject
+  };
+  struct SearchResult
+  {
+    int folder_idx = -1;
+    int note_idx = -1;
+    std::string note_title;
+    std::string note_path;
+    std::string field_label;
+    std::string preview;
+    int offset = -1;
+    int length = 0;
+    int line = 1;
+    int column = 1;
+    bool content_match = false;
+  };
+  struct SearchDialogState
+  {
+    bool visible = false;
+    bool focus_input = false;
+    bool just_opened = false;
+    SearchScope scope = SearchScope::CurrentPageNotes;
+    char query[256] = {};
+    std::string scope_label;
+    std::vector<SearchResult> results;
+    int scanned_notes = 0;
+    int total_matches = 0;
+    bool truncated = false;
+    std::string last_query;
+    SearchScope last_scope = SearchScope::CurrentPageNotes;
+  };
+  static SearchDialogState search_dialog;
 
   auto remove_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -1831,6 +1910,315 @@ void App::frame_ui()
     ImVec4 c = it->second.color;
     c.w *= (0.55f + 0.45f * a);
     return c;
+  };
+  auto to_lower_ascii = [](std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for(char c : text) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return out;
+  };
+  auto make_search_preview = [](std::string_view text, size_t match_pos, size_t match_len) {
+    if(match_pos > text.size()) match_pos = text.size();
+    const size_t context_before = 36;
+    const size_t context_after = 56;
+    const size_t start = (match_pos > context_before) ? (match_pos - context_before) : 0;
+    const size_t end = std::min(text.size(), match_pos + std::max<size_t>(match_len, 1) + context_after);
+    std::string out;
+    if(start > 0) out += "...";
+    out.append(text.substr(start, end - start));
+    if(end < text.size()) out += "...";
+    for(char &c : out)
+    {
+      if(c == '\n' || c == '\r' || c == '\t') c = ' ';
+    }
+    return out;
+  };
+  auto compute_line_col = [](std::string_view text, size_t match_pos, int &line_out, int &column_out) {
+    line_out = 1;
+    column_out = 1;
+    const size_t limit = std::min(match_pos, text.size());
+    for(size_t i = 0; i < limit; ++i)
+    {
+      if(text[i] == '\n')
+      {
+        ++line_out;
+        column_out = 1;
+      }
+      else
+      {
+        ++column_out;
+      }
+    }
+  };
+  auto scope_label_for = [&](SearchScope scope) {
+    switch(scope)
+    {
+    case SearchScope::CurrentEditorNote:
+      return std::string("Current note (edit mode)");
+    case SearchScope::SelectedPreviewNotes:
+      return std::string("Selected notes");
+    case SearchScope::CurrentPageNotes:
+      return std::string("Current page");
+    case SearchScope::FullProject:
+      return std::string("All folders and notes");
+    }
+    return std::string("Search");
+  };
+  auto navigate_to_search_result = [&](const SearchResult &result, bool prefer_edit) {
+    if(result.folder_idx < 0 || result.folder_idx >= (int)folders_.size()) return;
+    const FolderMeta &target_folder = folders_[(size_t)result.folder_idx];
+    if(result.note_idx < 0 || result.note_idx >= (int)target_folder.notes.size()) return;
+
+    if(folder_overview_mode_)
+    {
+      flush_pending_text_history();
+      active_folder_idx_ = result.folder_idx;
+      active_note_idx_ = result.note_idx;
+      folder_overview_mode_ = true;
+      selected_note_indices.clear();
+      selected_note_indices.insert(result.note_idx);
+      selected_stroke_indices.clear();
+      pending_focus_note_idx = result.note_idx;
+      load_note_content_for_active();
+      save_index();
+    }
+    else
+    {
+      set_active_note(result.folder_idx, result.note_idx);
+      editing_mode_ = prefer_edit;
+    }
+
+    search_jump_note_path_ = result.note_path;
+    search_jump_pos_ = result.offset;
+    search_jump_len_ = result.length;
+    search_jump_force_edit_ = prefer_edit && result.content_match && result.offset >= 0;
+    search_request_window_focus_ = prefer_edit;
+  };
+  auto refresh_search_results = [&]() {
+    search_dialog.results.clear();
+    search_dialog.scanned_notes = 0;
+    search_dialog.total_matches = 0;
+    search_dialog.truncated = false;
+
+    const std::string query_text(search_dialog.query);
+    const std::string query_trim = std::string(NoteCore::trim(query_text));
+    if(query_trim.empty()) return;
+
+    const std::string query_lower = to_lower_ascii(query_trim);
+    static constexpr int kMaxSearchResults = 400;
+
+    auto append_matches_in_text = [&](int folder_idx, int note_idx, const std::string &note_title, const std::string &note_path, const std::string &field_label, const std::string &text, bool content_match) {
+      const std::string haystack_lower = to_lower_ascii(text);
+      size_t pos = haystack_lower.find(query_lower);
+      while(pos != std::string::npos)
+      {
+        SearchResult result;
+        result.folder_idx = folder_idx;
+        result.note_idx = note_idx;
+        result.note_title = note_title;
+        result.note_path = note_path;
+        result.field_label = field_label;
+        result.offset = content_match ? static_cast<int>(pos) : -1;
+        result.length = static_cast<int>(query_trim.size());
+        result.content_match = content_match;
+        if(content_match)
+        {
+          compute_line_col(text, pos, result.line, result.column);
+          result.preview = make_search_preview(text, pos, query_trim.size());
+        }
+        else
+        {
+          result.preview = text;
+        }
+
+        search_dialog.results.push_back(std::move(result));
+        ++search_dialog.total_matches;
+        if((int)search_dialog.results.size() >= kMaxSearchResults)
+        {
+          search_dialog.truncated = true;
+          return false;
+        }
+        pos = haystack_lower.find(query_lower, pos + 1);
+      }
+      return true;
+    };
+
+    auto search_note = [&](int folder_idx, int note_idx, bool include_names) {
+      if(folder_idx < 0 || folder_idx >= (int)folders_.size()) return true;
+      const FolderMeta &folder = folders_[(size_t)folder_idx];
+      if(note_idx < 0 || note_idx >= (int)folder.notes.size()) return true;
+      const NoteMeta &note = folder.notes[(size_t)note_idx];
+      ++search_dialog.scanned_notes;
+
+      if(include_names)
+      {
+        if(!append_matches_in_text(folder_idx, note_idx, note.title, note.path, "Title", note.title, false)) return false;
+        if(!append_matches_in_text(folder_idx, note_idx, note.title, note.path, "Path", note.path, false)) return false;
+      }
+
+      const std::string content = (note.path == state_file_path_) ? markdown_text_ : read_text_file(note.path);
+      if(!append_matches_in_text(folder_idx, note_idx, note.title, note.path, "Content", content, true)) return false;
+      return true;
+    };
+
+    switch(search_dialog.scope)
+    {
+    case SearchScope::CurrentEditorNote: {
+      if(has_active_note()) search_note(active_folder_idx_, active_note_idx_, false);
+      break;
+    }
+    case SearchScope::SelectedPreviewNotes: {
+      if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      {
+        std::vector<int> indices(selected_note_indices.begin(), selected_note_indices.end());
+        if(indices.empty() && has_active_note()) indices.push_back(active_note_idx_);
+        std::sort(indices.begin(), indices.end());
+        for(int idx : indices)
+        {
+          if(!search_note(active_folder_idx_, idx, false)) break;
+        }
+      }
+      break;
+    }
+    case SearchScope::CurrentPageNotes: {
+      if(folder_overview_mode_ && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+      {
+        const FolderMeta &folder = folders_[(size_t)active_folder_idx_];
+        for(int idx = 0; idx < (int)folder.notes.size(); ++idx)
+        {
+          if(!search_note(active_folder_idx_, idx, false)) break;
+        }
+      }
+      else if(has_active_note())
+      {
+        search_note(active_folder_idx_, active_note_idx_, false);
+      }
+      break;
+    }
+    case SearchScope::FullProject: {
+      for(int fi = 0; fi < (int)folders_.size(); ++fi)
+      {
+        const FolderMeta &folder = folders_[(size_t)fi];
+        for(int ni = 0; ni < (int)folder.notes.size(); ++ni)
+        {
+          if(!search_note(fi, ni, true)) break;
+        }
+        if(search_dialog.truncated) break;
+      }
+      break;
+    }
+    }
+  };
+  auto open_search_dialog = [&](SearchScope scope) {
+    search_dialog.scope = scope;
+    search_dialog.scope_label = scope_label_for(scope);
+    search_dialog.visible = true;
+    search_dialog.focus_input = true;
+    search_dialog.just_opened = true;
+  };
+  auto open_default_search_dialog = [&]() {
+    if(request_open_project_search_)
+    {
+      open_search_dialog(SearchScope::FullProject);
+      request_open_project_search_ = false;
+    }
+    if(request_open_search_)
+    {
+      SearchScope scope = SearchScope::CurrentPageNotes;
+      if(editing_mode_ && has_active_note())
+        scope = SearchScope::CurrentEditorNote;
+      else if(folder_overview_mode_ && (!selected_note_indices.empty() || has_active_note()))
+        scope = SearchScope::SelectedPreviewNotes;
+      else if(!folder_overview_mode_ && has_active_note())
+        scope = SearchScope::CurrentPageNotes;
+      open_search_dialog(scope);
+      request_open_search_ = false;
+    }
+  };
+  auto render_search_dialog = [&]() {
+    open_default_search_dialog();
+    if(request_close_search_)
+    {
+      search_dialog.visible = false;
+      request_close_search_ = false;
+    }
+    search_window_visible_ = search_dialog.visible;
+    if(!search_dialog.visible) return;
+
+    const ImGuiCond placement_cond = search_dialog.just_opened ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowSize(ImVec2(680.0f, 480.0f), placement_cond);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond, ImVec2(0.5f, 0.5f));
+    if(search_dialog.just_opened) ImGui::SetNextWindowFocus();
+    if(!ImGui::Begin("Search", &search_dialog.visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+    {
+      search_dialog.just_opened = false;
+      ImGui::End();
+      return;
+    }
+    search_dialog.just_opened = false;
+
+    if(search_dialog.focus_input)
+    {
+      ImGui::SetKeyboardFocusHere();
+      search_dialog.focus_input = false;
+    }
+
+    ImGui::SetNextItemWidth(420.0f);
+    const bool query_changed = ImGui::InputText(
+        "Query",
+        search_dialog.query,
+        sizeof(search_dialog.query),
+        ImGuiInputTextFlags_AutoSelectAll);
+
+    const std::string current_query(search_dialog.query);
+    if(query_changed || current_query != search_dialog.last_query || search_dialog.scope != search_dialog.last_scope)
+    {
+      search_dialog.scope_label = scope_label_for(search_dialog.scope);
+      refresh_search_results();
+      search_dialog.last_query = current_query;
+      search_dialog.last_scope = search_dialog.scope;
+    }
+
+    ImGui::TextDisabled("Scope: %s", search_dialog.scope_label.c_str());
+    ImGui::TextDisabled("Matches: %d across %d notes%s",
+                        search_dialog.total_matches,
+                        search_dialog.scanned_notes,
+                        search_dialog.truncated ? " (truncated)" : "");
+    ImGui::Separator();
+
+    ImGui::BeginChild("##search_results", ImVec2(620.0f, 360.0f), true);
+    if(NoteCore::trim(current_query).empty())
+    {
+      ImGui::TextDisabled("Type to search.");
+    }
+    else if(search_dialog.results.empty())
+    {
+      ImGui::TextDisabled("No matches found.");
+    }
+    else
+    {
+      for(size_t i = 0; i < search_dialog.results.size(); ++i)
+      {
+        const SearchResult &result = search_dialog.results[i];
+        const std::string header =
+            result.note_title +
+            "  [" + result.field_label + "]" +
+            (result.content_match ? "  " + std::to_string(result.line) + ":" + std::to_string(result.column) : "");
+        if(ImGui::Selectable((header + "##search_result_" + std::to_string(i)).c_str(), false))
+        {
+          navigate_to_search_result(result, search_dialog.scope == SearchScope::CurrentEditorNote);
+          search_dialog.visible = false;
+        }
+        ImGui::TextDisabled("%s", result.note_path.c_str());
+        if(!result.preview.empty()) ImGui::TextWrapped("%s", result.preview.c_str());
+        if(i + 1 < search_dialog.results.size()) ImGui::Separator();
+      }
+    }
+    ImGui::EndChild();
+
+    if(ImGui::Button("Close")) search_dialog.visible = false;
+    ImGui::End();
+    search_window_visible_ = search_dialog.visible;
   };
   auto queue_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -2145,6 +2533,10 @@ void App::frame_ui()
 
   if(ImGui::BeginPopupContextWindow("ExplorerContext", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight))
   {
+    if(ImGui::MenuItem("Find in project..."))
+    {
+      request_open_project_search_ = true;
+    }
     if(ImGui::MenuItem("New folder"))
     {
       open_new_folder_popup = true;
@@ -3320,6 +3712,7 @@ void App::frame_ui()
         const ImTextureID ic_task = get_toolbar_icon_texture("to-do-list.png");
         const ImTextureID ic_table = get_toolbar_icon_texture("table.png");
         const ImTextureID ic_widget = get_toolbar_icon_texture("widgets.png");
+        const ImTextureID ic_find = get_toolbar_icon_texture("find.png");
         auto tool_button = [&](const char *id, ImTextureID tex, const char *fallback, const char *tooltip) -> bool {
           bool pressed = false;
           if(tex)
@@ -3562,6 +3955,11 @@ __CURSOR__)MD");
           ImGui::SameLine();
           if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
           ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+        if(tool_button("##tb_find", ic_find, "Find", "Find (Ctrl+F)"))
+        {
+          request_open_search_ = true;
         }
         ImGui::SameLine();
       }
@@ -4085,6 +4483,7 @@ __CURSOR__)MD");
           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
       if(layout_locked_) note_flags |= ImGuiWindowFlags_NoMove;
+      if(search_request_window_focus_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
       const int folder_theme_count =
           push_folder_imgui_theme(make_note_theme(n.use_custom_color, n.color_r, n.color_g, n.color_b, ImGui::GetStyle()), ImGui::GetStyle());
@@ -4092,6 +4491,7 @@ __CURSOR__)MD");
           window_id.c_str(),
           &note_window_open,
           note_flags);
+      if(search_request_window_focus_ && ni == active_note_idx_) search_request_window_focus_ = false;
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
       const bool is_editing_this = editing_mode_ && ni == active_note_idx_;
 
@@ -4286,6 +4686,24 @@ __CURSOR__)MD");
             ImGuiInputTextFlags_CallbackAlways;
         static MdEditorUserData ud_folder{&markdown_text_, &fmt_folder};
         ud_folder.text = &markdown_text_;
+
+        if(search_jump_force_edit_ &&
+           !search_jump_note_path_.empty() &&
+           search_jump_note_path_ == state_file_path_ &&
+           search_jump_pos_ >= 0)
+        {
+          const int start = std::max(0, std::min(search_jump_pos_, static_cast<int>(markdown_text_.size())));
+          const int end = std::max(start, std::min(search_jump_pos_ + std::max(1, search_jump_len_), static_cast<int>(markdown_text_.size())));
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = start;
+          fmt_folder.pending_sel_end = end;
+          fmt_folder.selection_anchor = start;
+          refocus_folder_editor = true;
+          search_jump_note_path_.clear();
+          search_jump_pos_ = -1;
+          search_jump_len_ = 0;
+          search_jump_force_edit_ = false;
+        }
 
         if(refocus_folder_editor)
         {
@@ -4725,6 +5143,7 @@ __CURSOR__)MD");
       save_index();
       layout_dirty_ = false;
     }
+    render_search_dialog();
     render_debug_history_window();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
@@ -4758,6 +5177,7 @@ __CURSOR__)MD");
       record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
       deferred_sidebar_snapshot_before.clear();
     }
+    render_search_dialog();
     render_debug_history_window();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
@@ -4790,6 +5210,7 @@ __CURSOR__)MD");
   ImGui::SetNextWindowSizeConstraints(
       ImVec2(320.0f, 140.0f),
       ImVec2(FLT_MAX, FLT_MAX));
+  if(search_request_window_focus_) ImGui::SetNextWindowFocus();
 
   std::string note_window_label = note_title_ + "###NoteWindow";
   const int active_folder_theme_count = push_folder_imgui_theme(
@@ -4806,6 +5227,7 @@ __CURSOR__)MD");
       ImGuiWindowFlags_NoScrollbar |
           ImGuiWindowFlags_NoScrollWithMouse |
           (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
+  if(search_request_window_focus_) search_request_window_focus_ = false;
 
   // Right click on title bar for note window actions.
   static bool open_rename_popup = false;
@@ -4880,6 +5302,25 @@ __CURSOR__)MD");
   static MdFormatState fmt;
   static MdEditorUserData ud{&markdown_text_, &fmt};
   ud.text = &markdown_text_;
+
+  if(search_jump_force_edit_ &&
+     !search_jump_note_path_.empty() &&
+     search_jump_note_path_ == state_file_path_ &&
+     search_jump_pos_ >= 0)
+  {
+    editing_mode_ = true;
+    const int start = std::max(0, std::min(search_jump_pos_, static_cast<int>(markdown_text_.size())));
+    const int end = std::max(start, std::min(search_jump_pos_ + std::max(1, search_jump_len_), static_cast<int>(markdown_text_.size())));
+    fmt.pending_select_range = true;
+    fmt.pending_sel_start = start;
+    fmt.pending_sel_end = end;
+    fmt.selection_anchor = start;
+    refocus_editor = true;
+    search_jump_note_path_.clear();
+    search_jump_pos_ = -1;
+    search_jump_len_ = 0;
+    search_jump_force_edit_ = false;
+  }
 
   if(!editing_mode_)
   {
@@ -5194,6 +5635,7 @@ __CURSOR__)MD");
     save_index();
     layout_dirty_ = false;
   }
+  render_search_dialog();
   render_debug_history_window();
   if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
   if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();

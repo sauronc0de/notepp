@@ -85,9 +85,18 @@ private:
   bool request_redo_edit_ = false;
   bool request_copy_sidebar_ = false;
   bool request_paste_sidebar_ = false;
+  bool request_open_search_ = false;
+  bool request_open_project_search_ = false;
+  bool request_close_search_ = false;
+  bool search_window_visible_ = false;
+  bool search_request_window_focus_ = false;
   bool layout_locked_ = false;
   bool history_replay_in_progress_ = false;
   bool force_note_layout_restore_ = false;
+  std::string search_jump_note_path_;
+  int search_jump_pos_ = -1;
+  int search_jump_len_ = 0;
+  bool search_jump_force_edit_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta
