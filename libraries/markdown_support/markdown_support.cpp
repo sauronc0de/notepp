@@ -417,6 +417,25 @@ bool g_rendering_hover_preview = false;
 bool g_force_open_preview_headers = false;
 int g_hover_preview_drawn_frame = -1;
 
+void open_table_cell_editor(
+    const std::string &document_key,
+    int table_id,
+    bool header_cell,
+    int raw_row,
+    int column,
+    const std::string &value)
+{
+  g_cell_editor_state.active = true;
+  g_cell_editor_state.request_focus = true;
+  g_cell_editor_state.was_active_last_frame = false;
+  g_cell_editor_state.document_key = document_key;
+  g_cell_editor_state.table_id = table_id;
+  g_cell_editor_state.header = header_cell;
+  g_cell_editor_state.raw_row = raw_row;
+  g_cell_editor_state.column = column;
+  std::snprintf(g_cell_editor_state.buffer, sizeof(g_cell_editor_state.buffer), "%s", value.c_str());
+}
+
 void render_link_hover_preview_popup()
 {
   if(g_rendering_hover_preview) return;
@@ -1136,6 +1155,10 @@ TableRenderOutcome render_interactive_table(
   bool pending_header_cell = false;
   int pending_raw_row = -1;
   int pending_column = -1;
+  bool pending_edit_navigation = false;
+  bool pending_nav_header = false;
+  int pending_nav_raw_row = -1;
+  int pending_nav_column = -1;
 
   const ImGuiTableFlags flags =
       ImGuiTableFlags_Borders |
@@ -1155,6 +1178,49 @@ TableRenderOutcome render_interactive_table(
     if(column_has_contains_filter(column)) out += " [F]";
     if(column_has_not_contains_filter(column)) out += " [!F]";
     return out;
+  };
+  auto queue_horizontal_navigation = [&](bool header_cell, int raw_row, int column, int step) {
+    if(cols <= 0 || step == 0) return;
+    const int target_column = column + step;
+    if(target_column < 0 || target_column >= cols) return;
+
+    pending_nav_header = header_cell;
+    pending_nav_raw_row = header_cell ? -1 : raw_row;
+    pending_nav_column = target_column;
+    pending_edit_navigation = true;
+  };
+  auto queue_vertical_navigation = [&](bool header_cell, int raw_row, int column, int step) {
+    if(cols <= 0 || step == 0) return;
+    if(column < 0 || column >= cols) return;
+
+    if(header_cell)
+    {
+      if(step > 0)
+      {
+        if(rows.empty()) return;
+        pending_nav_header = false;
+        pending_nav_raw_row = 0;
+        pending_nav_column = column;
+        pending_edit_navigation = true;
+      }
+      return;
+    }
+
+    const int target_row = raw_row + step;
+    if(target_row < 0)
+    {
+      pending_nav_header = true;
+      pending_nav_raw_row = -1;
+      pending_nav_column = column;
+      pending_edit_navigation = true;
+      return;
+    }
+    if(static_cast<size_t>(target_row) >= rows.size()) return;
+
+    pending_nav_header = false;
+    pending_nav_raw_row = target_row;
+    pending_nav_column = column;
+    pending_edit_navigation = true;
   };
 
   ImGui::PushID(table_id);
@@ -1196,7 +1262,13 @@ TableRenderOutcome render_interactive_table(
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
 
         const bool item_active = ImGui::IsItemActive();
-        if(submit)
+        const bool tab_pressed = item_active && ImGui::IsKeyPressed(ImGuiKey_Tab, false);
+        const bool reverse_tab = tab_pressed && ImGui::GetIO().KeyShift;
+        const bool enter_pressed =
+            item_active &&
+            (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+        const bool reverse_enter = (enter_pressed || submit) && ImGui::GetIO().KeyShift;
+        if(submit || tab_pressed || enter_pressed)
         {
           const std::string value = normalize_table_cell_value(g_cell_editor_state.buffer);
           if(value != cell)
@@ -1206,6 +1278,10 @@ TableRenderOutcome render_interactive_table(
           }
           g_cell_editor_state.active = false;
           g_cell_editor_state.was_active_last_frame = false;
+          if(tab_pressed)
+            queue_horizontal_navigation(header_cell, raw_row, column, reverse_tab ? -1 : 1);
+          else if(enter_pressed || submit)
+            queue_vertical_navigation(header_cell, raw_row, column, reverse_enter ? -1 : 1);
         }
         else if(item_active && ImGui::IsKeyPressed(ImGuiKey_Escape))
         {
@@ -1246,15 +1322,7 @@ TableRenderOutcome render_interactive_table(
 
         if(cell_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
         {
-          g_cell_editor_state.active = true;
-          g_cell_editor_state.request_focus = true;
-          g_cell_editor_state.was_active_last_frame = false;
-          g_cell_editor_state.document_key = document_key;
-          g_cell_editor_state.table_id = table_id;
-          g_cell_editor_state.header = header_cell;
-          g_cell_editor_state.raw_row = raw_row;
-          g_cell_editor_state.column = column;
-          std::snprintf(g_cell_editor_state.buffer, sizeof(g_cell_editor_state.buffer), "%s", cell.c_str());
+          open_table_cell_editor(document_key, table_id, header_cell, raw_row, column, cell);
           outcome.consumed_double_click = true;
         }
       }
@@ -1456,6 +1524,24 @@ TableRenderOutcome render_interactive_table(
   }
 
   render_filter_dialog(document_key, table_id, state, outcome);
+
+  if(pending_edit_navigation &&
+     pending_nav_column >= 0 &&
+     pending_nav_column < cols)
+  {
+    const std::string *target_cell = nullptr;
+    if(pending_nav_header)
+    {
+      target_cell = &header[static_cast<size_t>(pending_nav_column)];
+    }
+    else if(pending_nav_raw_row >= 0 && static_cast<size_t>(pending_nav_raw_row) < rows.size())
+    {
+      target_cell = &rows[static_cast<size_t>(pending_nav_raw_row)][static_cast<size_t>(pending_nav_column)];
+    }
+
+    if(target_cell)
+      open_table_cell_editor(document_key, table_id, pending_nav_header, pending_nav_raw_row, pending_nav_column, *target_cell);
+  }
 
   ImGui::PopStyleColor(2);
   ImGui::PopID();
