@@ -1483,15 +1483,35 @@ void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt)
   fmt.sel_end = p;
 }
 
-void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt)
+void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt, int rows, int cols)
 {
   int p = std::max(0, std::min(fmt.cursor_pos, static_cast<int>(text.size())));
   std::string ins;
   if(p > 0 && text[static_cast<size_t>(p) - 1] != '\n') ins.push_back('\n');
+  const int safe_rows = std::max(1, rows);
+  const int safe_cols = std::max(1, cols);
   const int header_offset = static_cast<int>(ins.size()) + 2;
-  ins += "| Header 1 | Header 2 |\n";
-  ins += "| --- | --- |\n";
-  ins += "| Cell 1 | Cell 2 |\n";
+
+  ins += "|";
+  for(int col = 0; col < safe_cols; ++col)
+  {
+    ins += " Header " + std::to_string(col + 1) + " |";
+  }
+  ins += "\n|";
+  for(int col = 0; col < safe_cols; ++col)
+  {
+    ins += " --- |";
+  }
+  ins += "\n";
+  for(int row = 0; row < safe_rows; ++row)
+  {
+    ins += "|";
+    for(int col = 0; col < safe_cols; ++col)
+    {
+      ins += " Cell " + std::to_string(row + 1) + "," + std::to_string(col + 1) + " |";
+    }
+    ins += "\n";
+  }
   text.insert(static_cast<size_t>(p), ins);
 
   const int cursor = p + header_offset;

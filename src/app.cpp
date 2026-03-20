@@ -3231,6 +3231,8 @@ void App::frame_ui()
       static char inventory_builder_title[128] = "Inventory";
       static int inventory_builder_rows = 2;
       static int inventory_builder_cols = 2;
+      static int table_builder_rows = 2;
+      static int table_builder_cols = 2;
       auto trim_simple = [](std::string text) {
         const size_t first = text.find_first_not_of(" \t\n\r");
         if(first == std::string::npos) return std::string();
@@ -3380,10 +3382,7 @@ void App::frame_ui()
         ImGui::SameLine();
         if(tool_button("##tb_table", ic_table, "Table", "Insert markdown table"))
         {
-          push_undo_snapshot();
-          insert_markdown_table_at_cursor(markdown_text_, fmt_folder);
-          normalize_input_text_buffer(markdown_text_);
-          save_state();
+          ImGui::OpenPopup("##tb_table_builder_popup");
         }
         ImGui::SameLine();
         if(tool_button("##tb_ui_widgets", ic_widget, "Widgets", "Insert UI widget example"))
@@ -3519,6 +3518,28 @@ __CURSOR__)MD");
           ImGui::EndPopup();
         }
         if(request_open_inventory_builder) ImGui::OpenPopup("##tb_inventory_builder_popup");
+        if(ImGui::BeginPopupModal("##tb_table_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        {
+          ImGui::TextDisabled("Insert Markdown Table");
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputInt("Rows", &table_builder_rows);
+          ImGui::SetNextItemWidth(120.0f);
+          ImGui::InputInt("Cols", &table_builder_cols);
+          table_builder_rows = std::max(1, table_builder_rows);
+          table_builder_cols = std::max(1, table_builder_cols);
+          ImGui::TextDisabled("Cells: %d", table_builder_rows * table_builder_cols);
+          if(ImGui::Button("Insert"))
+          {
+            push_undo_snapshot();
+            insert_markdown_table_at_cursor(markdown_text_, fmt_folder, table_builder_rows, table_builder_cols);
+            normalize_input_text_buffer(markdown_text_);
+            save_state();
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
         if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
           ImGui::TextDisabled("Insert Inventory Widget");

@@ -50,7 +50,7 @@ struct MdEditorUserData
 };
 
 void insert_checklist_item_at_cursor(std::string &text, MdFormatState &fmt);
-void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt);
+void insert_markdown_table_at_cursor(std::string &text, MdFormatState &fmt, int rows = 1, int cols = 2);
 void apply_note_quote(std::string &s, int &sel_a, int &sel_b);
 void apply_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &left, const std::string &right);
 void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &hex_color);
