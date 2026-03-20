@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -25,6 +26,7 @@
 #include <SDL_image.h>
 #include <SDL_opengl.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
 namespace MarkdownUi
 {
@@ -106,6 +108,12 @@ struct ParsedBlock
   std::vector<Row> rows;
   std::vector<std::string> errors;
   std::map<std::string, VariableDecl> declarations;
+};
+
+struct TextInputState
+{
+  std::string draft;
+  bool editing = false;
 };
 
 bool is_widget_name(std::string_view name)
@@ -276,9 +284,29 @@ void render_styled_label(const StyledLabel &label)
   MarkdownView::render_inline(label.text);
 }
 
+std::string make_statement_token(const Statement &stmt)
+{
+  std::string key = std::to_string(static_cast<int>(stmt.kind));
+  key.push_back('|');
+  key += stmt.name;
+  key.push_back('|');
+  key += std::to_string(stmt.line_number);
+  for(const std::string &arg : stmt.args)
+  {
+    key.push_back('|');
+    key += arg;
+  }
+  if(!stmt.error.empty())
+  {
+    key.push_back('|');
+    key += stmt.error;
+  }
+  return std::to_string(std::hash<std::string>{}(key));
+}
+
 std::string make_hidden_widget_id(const char *prefix, const Statement &stmt)
 {
-  return std::string("##") + prefix + "_" + std::to_string(stmt.span.start);
+  return std::string("##") + prefix + "_" + make_statement_token(stmt);
 }
 
 std::string format_number(double v, bool prefer_integer)
@@ -1368,6 +1396,8 @@ void render_text_output(EvalContext &ctx, const Statement &stmt)
 
 void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
+  static std::unordered_map<std::string, TextInputState> input_states;
+
   if(stmt.args.size() < 3)
   {
     render_error_inline("text() input expects value, label, width[, tooltip]");
@@ -1394,9 +1424,13 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
   const bool readonly = decl_it->second.computed;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
+  const std::string widget_id = make_hidden_widget_id("text", stmt);
   std::string text_value = display_value(value_result.value);
+  TextInputState &state = input_states[widget_id];
+  if(!state.editing) state.draft = text_value;
+
   char buffer[512];
-  std::snprintf(buffer, sizeof(buffer), "%s", text_value.c_str());
+  std::snprintf(buffer, sizeof(buffer), "%s", state.draft.c_str());
   if(!label.text.empty())
   {
     render_styled_label(label);
@@ -1404,12 +1438,28 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
   }
   ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
-  if(ImGui::InputText(make_hidden_widget_id("text", stmt).c_str(), buffer, sizeof(buffer)))
+  const bool changed = ImGui::InputText(widget_id.c_str(), buffer, sizeof(buffer));
+  const bool item_active = ImGui::IsItemActive();
+  if(item_active) state.editing = true;
+  if(changed)
   {
+    state.draft = buffer;
+
     Value updated;
     updated.kind = ValueKind::String;
     updated.str = buffer;
     set_override(ctx, block, *var_name, updated, replacements, errors);
+  }
+  if(item_active && (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                     (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsItemHovered())))
+  {
+    ImGui::ClearActiveID();
+    state.editing = false;
+  }
+  else if(!item_active)
+  {
+    state.editing = false;
+    state.draft = text_value;
   }
   ImGui::EndDisabled();
   if(stmt.args.size() >= 4)
@@ -2274,7 +2324,7 @@ void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statem
   const float per_row_height = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
   const float height = std::min(420.0f, std::max(120.0f, 20.0f + static_cast<float>(row_count) * per_row_height));
   const std::string child_id = make_hidden_widget_id("list", stmt);
-  const std::string payload_type = "MDUI_LIST_" + std::to_string(stmt.span.start);
+  const std::string payload_type = "MDUI_LIST_" + make_statement_token(stmt);
 
   if(!label.text.empty()) render_styled_label(label);
 
@@ -2734,7 +2784,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const bool needs_scroll = grid_width > widget_width + 0.5f;
   const float height = rows * cell_size + (rows - 1) * spacing + style.WindowPadding.y * 2.0f;
   const std::string child_id = make_hidden_widget_id("inventory", stmt);
-  const std::string payload_type = "MDUI_INV_" + std::to_string(stmt.span.start);
+  const std::string payload_type = "MDUI_INV_" + make_statement_token(stmt);
   static std::unordered_map<std::string, int> selected_slot_by_widget;
   static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
 
@@ -2963,7 +3013,7 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
     return;
   }
   if(label.has_color) ImGui::PushStyleColor(ImGuiCol_Text, label.color);
-  if(ImGui::Button((label.text + "##button_" + std::to_string(stmt.span.start)).c_str(), ImVec2(width, 0.0f)))
+  if(ImGui::Button((label.text + "##button_" + make_statement_token(stmt)).c_str(), ImVec2(width, 0.0f)))
   {
     ExprResult value_result = ctx.evaluate(assignment->second);
     if(!value_result.error.empty())
