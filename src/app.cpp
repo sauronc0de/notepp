@@ -42,7 +42,6 @@ using MarkdownSupport::capture_preview_state_snapshot;
 using MarkdownSupport::insert_checklist_item_at_cursor;
 using MarkdownSupport::insert_markdown_table_at_cursor;
 using MarkdownSupport::line_bounds_from_cursor;
-using MarkdownSupport::word_bounds_from_double_click;
 using MarkdownSupport::md_editor_cb;
 using MarkdownSupport::MdEditorUserData;
 using MarkdownSupport::MdFormatState;
@@ -55,6 +54,7 @@ using MarkdownSupport::set_preview_document_path;
 using MarkdownSupport::set_preview_state_root;
 using MarkdownSupport::should_push_word_granular_undo;
 using MarkdownSupport::summarize_preview_header_states;
+using MarkdownSupport::word_bounds_from_double_click;
 
 using NoteCore::clamp01f;
 using NoteCore::sanitize_note_filename;
@@ -1867,18 +1867,18 @@ void App::frame_begin()
         request_exit_edit_mode_ = true;
         continue;
       }
-    if(edit_find_project_shortcut)
-    {
-      request_open_project_search_ = true;
-      request_open_search_ = false;
-      continue;
-    }
-    if(edit_find_shortcut)
-    {
-      request_open_search_ = true;
-      request_open_project_search_ = false;
-      continue;
-    }
+      if(edit_find_project_shortcut)
+      {
+        request_open_project_search_ = true;
+        request_open_search_ = false;
+        continue;
+      }
+      if(edit_find_shortcut)
+      {
+        request_open_search_ = true;
+        request_open_project_search_ = false;
+        continue;
+      }
       if(edit_undo_shortcut)
       {
         request_undo_edit_ = true;
@@ -2560,13 +2560,13 @@ void App::frame_ui()
     ImGui::TextDisabled("Notes repository: %s", data_root_text.c_str());
     if(!git_status_.git_available)
     {
-      ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "Git is not available on this system.");
+      ImGui::TextWrapped("Git is not available on this system.");
     }
     else
     {
-      ImGui::TextDisabled("Mode: %s", git_is_connected() ? "Remote sync enabled" : "Local only");
-      ImGui::TextDisabled("Current branch: %s", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str());
-      ImGui::TextDisabled("Workspace: %s", git_status_.clean ? "Clean" : "Local changes pending");
+      ImGui::TextWrapped("Mode: %s", git_is_connected() ? "Remote sync enabled" : "Local only");
+      ImGui::TextWrapped("Current branch: %s", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str());
+      ImGui::TextWrapped("Workspace: %s", git_status_.clean ? "Clean" : "Local changes pending");
     }
 
     if(!git_last_message_.empty())
@@ -2580,20 +2580,20 @@ void App::frame_ui()
     }
 
     if(ImGui::Checkbox("Remote sync enabled", &git_config_.enabled)) save_index();
-    ImGui::SameLine();
     if(ImGui::Checkbox("Auto pull on start", &git_config_.auto_pull_on_start)) save_index();
-    ImGui::SameLine();
     if(ImGui::Checkbox("Auto push on close", &git_config_.auto_push_on_close)) save_index();
 
+    ImGui::TextUnformatted("Repository URL");
     ImGui::SetNextItemWidth(-1.0f);
-    if(ImGui::InputText("Repository URL", git_remote_url_buf_.data(), git_remote_url_buf_.size()))
+    if(ImGui::InputText("##git_repository_url", git_remote_url_buf_.data(), git_remote_url_buf_.size()))
     {
       git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
       save_index();
     }
 
-    ImGui::SetNextItemWidth(220.0f);
-    if(ImGui::InputText("Branch", git_branch_buf_.data(), git_branch_buf_.size()))
+    ImGui::TextUnformatted("Branch");
+    ImGui::SetNextItemWidth(-1.0f);
+    if(ImGui::InputText("##git_branch", git_branch_buf_.data(), git_branch_buf_.size()))
     {
       git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
       if(git_config_.branch.empty()) git_config_.branch = "main";
@@ -2601,7 +2601,7 @@ void App::frame_ui()
       save_index();
     }
 
-    if(ImGui::Button("Connect Remote"))
+    if(ImGui::Button("Connect Remote", ImVec2(button_width, 0.0f)))
     {
       git_config_.remote_url = std::string(NoteCore::trim(std::string_view(git_remote_url_buf_.data())));
       git_config_.branch = std::string(NoteCore::trim(std::string_view(git_branch_buf_.data())));
@@ -2654,8 +2654,7 @@ void App::frame_ui()
         }
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Disconnect"))
+    if(ImGui::Button("Disconnect", ImVec2(button_width, 0.0f)))
     {
       std::string message;
       if(git.clear_remote_origin(&message))
@@ -2673,8 +2672,7 @@ void App::frame_ui()
         set_git_message(message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Refresh"))
+    if(ImGui::Button("Refresh", ImVec2(button_width, 0.0f)))
     {
       refresh_git_status(true);
       set_git_message("Git status refreshed.", false);
@@ -2682,7 +2680,9 @@ void App::frame_ui()
 
     if(!git_status_.branches.empty())
     {
-      if(ImGui::BeginCombo("Known branches", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str()))
+      ImGui::TextUnformatted("Known branches");
+      ImGui::SetNextItemWidth(-1.0f);
+      if(ImGui::BeginCombo("##git_known_branches", git_status_.current_branch.empty() ? "(none)" : git_status_.current_branch.c_str()))
       {
         for(const std::string &branch_name : git_status_.branches)
         {
@@ -2699,7 +2699,7 @@ void App::frame_ui()
       }
     }
 
-    if(ImGui::Button("Switch Branch"))
+    if(ImGui::Button("Switch Branch", ImVec2(button_width, 0.0f)))
     {
       save_state();
       finalize_pending_file_deletions();
@@ -2719,8 +2719,7 @@ void App::frame_ui()
         set_git_message(checkout_result.message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Fetch/Pull Latest"))
+    if(ImGui::Button("Fetch/Pull Latest", ImVec2(button_width, 0.0f)))
     {
       save_state();
       GitSync::SyncResult sync_result = git.pull_latest(git_config_.branch);
@@ -2748,8 +2747,7 @@ void App::frame_ui()
         set_git_message(sync_result.message, true);
       }
     }
-    ImGui::SameLine();
-    if(ImGui::Button("Commit/Push Now"))
+    if(ImGui::Button("Commit/Push Now", ImVec2(button_width, 0.0f)))
     {
       save_state();
       finalize_pending_file_deletions();
@@ -2782,9 +2780,10 @@ void App::frame_ui()
       }
     }
 
+    ImGui::TextUnformatted("New tag");
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("New tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
-    if(ImGui::Button("Create Local Tag"))
+    ImGui::InputText("##git_new_tag", git_new_tag_buf_.data(), git_new_tag_buf_.size());
+    if(ImGui::Button("Create Local Tag", ImVec2(button_width, 0.0f)))
     {
       const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
       GitSync::SyncResult tag_result = git.create_tag(tag_name, false);
@@ -2795,9 +2794,8 @@ void App::frame_ui()
       }
       set_git_message(tag_result.message, !tag_result.ok);
     }
-    ImGui::SameLine();
     ImGui::BeginDisabled(!git_is_connected());
-    if(ImGui::Button("Create And Push Tag"))
+    if(ImGui::Button("Create And Push Tag", ImVec2(button_width, 0.0f)))
     {
       const std::string tag_name = std::string(NoteCore::trim(std::string_view(git_new_tag_buf_.data())));
       GitSync::SyncResult tag_result = git.create_tag(tag_name, true);
@@ -2815,11 +2813,11 @@ void App::frame_ui()
       ImGui::Separator();
       ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.25f, 1.0f), "Remote conflict detected");
       if(!git_conflict_.message.empty()) ImGui::TextWrapped("%s", git_conflict_.message.c_str());
-      if(!git_conflict_.branch.empty()) ImGui::TextDisabled("Tracked branch: %s", git_conflict_.branch.c_str());
-      if(!git_conflict_.local_commit.empty()) ImGui::TextDisabled("Local: %.12s", git_conflict_.local_commit.c_str());
-      if(!git_conflict_.remote_commit.empty()) ImGui::TextDisabled("Remote: %.12s", git_conflict_.remote_commit.c_str());
+      if(!git_conflict_.branch.empty()) ImGui::TextWrapped("Tracked branch: %s", git_conflict_.branch.c_str());
+      if(!git_conflict_.local_commit.empty()) ImGui::TextWrapped("Local: %.12s", git_conflict_.local_commit.c_str());
+      if(!git_conflict_.remote_commit.empty()) ImGui::TextWrapped("Remote: %.12s", git_conflict_.remote_commit.c_str());
 
-      if(ImGui::Button("Keep Local And Force Push"))
+      if(ImGui::Button("Keep Local And Force Push", ImVec2(button_width, 0.0f)))
       {
         GitSync::SyncResult push_result = git.push_branch(git_conflict_.branch.empty() ? git_config_.branch : git_conflict_.branch, true);
         if(push_result.ok)
@@ -2831,10 +2829,10 @@ void App::frame_ui()
         set_git_message(push_result.message, !push_result.ok);
       }
 
-      ImGui::SetNextItemWidth(220.0f);
-      ImGui::InputText("Conflict branch", git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size());
-      ImGui::SameLine();
-      if(ImGui::Button("Push To New Branch"))
+      ImGui::TextUnformatted("Conflict branch");
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputText("##git_conflict_branch", git_conflict_branch_buf_.data(), git_conflict_branch_buf_.size());
+      if(ImGui::Button("Push To New Branch", ImVec2(button_width, 0.0f)))
       {
         const std::string new_branch = std::string(NoteCore::trim(std::string_view(git_conflict_branch_buf_.data())));
         if(new_branch.empty())
@@ -3294,358 +3292,358 @@ void App::frame_ui()
     std::vector<std::vector<SidebarRect>> folder_note_row_rects(folders_.size());
     for(size_t i = 0; i < folders_.size(); ++i) folder_note_row_rects[i].reserve(folders_[i].notes.size());
     auto render_folder_node = [&](auto &&self, int fi) -> void {
-    FolderMeta &f = folders_[(size_t)fi];
-    if(fi == force_open_folder_idx) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-    ImGuiTreeNodeFlags ff =
-        ImGuiTreeNodeFlags_DefaultOpen |
-        ImGuiTreeNodeFlags_SpanAvailWidth |
-        ImGuiTreeNodeFlags_OpenOnArrow |
-        ImGuiTreeNodeFlags_OpenOnDoubleClick;
-    if(fi == active_folder_idx_ && folder_overview_mode_) ff |= ImGuiTreeNodeFlags_Selected;
-    const std::string base_name = folder_base_name(f.name);
-    const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
-    ImVec4 tree_text_col = ImVec4(0.93f, 0.94f, 0.96f, 1.0f);
-    if(flash_col.w > 0.0f) tree_text_col = mix_color(tree_text_col, flash_col, 0.75f);
-    tree_text_col.w = 1.0f;
-    ImGui::PushStyleColor(ImGuiCol_Text, tree_text_col);
-    bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", base_name.c_str());
-    ImGui::PopStyleColor();
-    folder_row_rects[(size_t)fi] = SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true};
-    if(drag_hover_folder_idx == fi)
-    {
-      ImDrawList *dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(
-          ImGui::GetItemRectMin(),
-          ImGui::GetItemRectMax(),
-          ImGui::GetColorU32(sidebar_hover_fill),
-          3.0f);
-      dl->AddRect(
-          ImGui::GetItemRectMin(),
-          ImGui::GetItemRectMax(),
-          ImGui::GetColorU32(sidebar_hover_stroke),
-          3.0f,
-          0,
-          1.2f);
-    }
-    if(ImGui::BeginDragDropTarget())
-    {
-      if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
+      FolderMeta &f = folders_[(size_t)fi];
+      if(fi == force_open_folder_idx) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      ImGuiTreeNodeFlags ff =
+          ImGuiTreeNodeFlags_DefaultOpen |
+          ImGuiTreeNodeFlags_SpanAvailWidth |
+          ImGuiTreeNodeFlags_OpenOnArrow |
+          ImGuiTreeNodeFlags_OpenOnDoubleClick;
+      if(fi == active_folder_idx_ && folder_overview_mode_) ff |= ImGuiTreeNodeFlags_Selected;
+      const std::string base_name = folder_base_name(f.name);
+      const ImVec4 flash_col = flash_current_color(flash_key_folder(f.name), now_time);
+      ImVec4 tree_text_col = ImVec4(0.93f, 0.94f, 0.96f, 1.0f);
+      if(flash_col.w > 0.0f) tree_text_col = mix_color(tree_text_col, flash_col, 0.75f);
+      tree_text_col.w = 1.0f;
+      ImGui::PushStyleColor(ImGuiCol_Text, tree_text_col);
+      bool open = ImGui::TreeNodeEx((void *)(intptr_t)(fi + 1), ff, "%s", base_name.c_str());
+      ImGui::PopStyleColor();
+      folder_row_rects[(size_t)fi] = SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true};
+      if(drag_hover_folder_idx == fi)
       {
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(
+            ImGui::GetItemRectMin(),
+            ImGui::GetItemRectMax(),
+            ImGui::GetColorU32(sidebar_hover_fill),
+            3.0f);
+        dl->AddRect(
+            ImGui::GetItemRectMin(),
+            ImGui::GetItemRectMax(),
+            ImGui::GetColorU32(sidebar_hover_stroke),
+            3.0f,
+            0,
+            1.2f);
+      }
+      if(ImGui::BeginDragDropTarget())
+      {
+        if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
         {
-          drag_hover_folder_idx = fi;
-        }
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
-        {
-          const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
-          pending_move_source_folder_idx = (int)p.x;
-          pending_move_target_folder_idx = fi;
-          pending_move_note_indices.clear();
-
-          const int dragged_note_idx = (int)p.y;
-          if(pending_move_source_folder_idx >= 0 && pending_move_source_folder_idx < (int)folders_.size())
+          if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
           {
-            if(pending_move_source_folder_idx == active_folder_idx_ &&
-               selected_note_indices.count(dragged_note_idx) != 0 &&
-               selected_note_indices.size() > 1)
+            drag_hover_folder_idx = fi;
+          }
+          if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+          {
+            const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+            pending_move_source_folder_idx = (int)p.x;
+            pending_move_target_folder_idx = fi;
+            pending_move_note_indices.clear();
+
+            const int dragged_note_idx = (int)p.y;
+            if(pending_move_source_folder_idx >= 0 && pending_move_source_folder_idx < (int)folders_.size())
             {
-              for(int idx : selected_note_indices)
+              if(pending_move_source_folder_idx == active_folder_idx_ &&
+                 selected_note_indices.count(dragged_note_idx) != 0 &&
+                 selected_note_indices.size() > 1)
               {
-                if(idx >= 0 && idx < (int)folders_[(size_t)pending_move_source_folder_idx].notes.size())
-                  pending_move_note_indices.push_back(idx);
+                for(int idx : selected_note_indices)
+                {
+                  if(idx >= 0 && idx < (int)folders_[(size_t)pending_move_source_folder_idx].notes.size())
+                    pending_move_note_indices.push_back(idx);
+                }
               }
-            }
-            else
-            {
-              pending_move_note_indices.push_back(dragged_note_idx);
+              else
+              {
+                pending_move_note_indices.push_back(dragged_note_idx);
+              }
             }
           }
         }
-      }
-      if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_FOLDER_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
-      {
-        if(payload->DataSize == (int)sizeof(int) && payload->IsPreview()) drag_hover_folder_idx = fi;
-        if(payload->DataSize == (int)sizeof(int) && payload->IsDelivery())
+        if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_FOLDER_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
         {
-          pending_move_folder_source_idx = *static_cast<const int *>(payload->Data);
-          pending_move_folder_target_idx = fi;
-        }
-      }
-      ImGui::EndDragDropTarget();
-    }
-    if(ImGui::BeginDragDropSource())
-    {
-      int payload = fi;
-      ImGui::SetDragDropPayload("NOTEPP_FOLDER_MOVE", &payload, sizeof(payload));
-      ImGui::Text("Move folder: %s", folder_base_name(f.name).c_str());
-      ImGui::EndDragDropSource();
-    }
-    if(ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
-    {
-      save_state();
-      active_folder_idx_ = fi;
-      selected_note_indices.clear();
-      selected_stroke_indices.clear();
-      folder_overview_mode_ = true;
-      editing_mode_ = false;
-      request_exit_edit_mode_ = false;
-      request_cancel_draw_tools_ = true;
-      save_index();
-    }
-
-    const std::string folder_popup_id = "FolderCtx##" + std::to_string(fi);
-    if(ImGui::BeginPopupContextItem(folder_popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
-    {
-      if(ImGui::MenuItem("New note"))
-      {
-        new_note_target_folder_idx = fi;
-        open_new_note_popup = true;
-      }
-      if(ImGui::MenuItem("New folder"))
-      {
-        open_new_folder_popup = true;
-        new_folder_parent_idx = fi;
-      }
-      if(ImGui::MenuItem("Rename folder"))
-      {
-        rename_folder_idx = fi;
-        std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
-        open_rename_folder_popup = true;
-      }
-      if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
-      {
-        paste_target_folder_idx = fi;
-        std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
-        open_paste_note_popup = true;
-      }
-      if(ImGui::MenuItem("Remove folder"))
-      {
-        pending_delete_folder_idx = fi;
-      }
-      ImGui::EndPopup();
-    }
-
-    if(open)
-    {
-      for(int ni = 0; ni < (int)f.notes.size(); ++ni)
-      {
-        NoteMeta &n = f.notes[(size_t)ni];
-        const bool note_selected =
-            (fi == active_folder_idx_) && (selected_note_indices.count(ni) != 0);
-        const std::string note_item_label = n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
-        const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
-        ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
-        if(note_flash_col.w > 0.0f) note_text_col = mix_color(note_text_col, note_flash_col, 0.78f);
-        note_text_col.w = 1.0f;
-        ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);
-        if(ImGui::Selectable(note_item_label.c_str(), note_selected))
-        {
-          const bool ctrl = ImGui::GetIO().KeyCtrl;
-          const bool shift = ImGui::GetIO().KeyShift;
-          save_state();
-          active_folder_idx_ = fi;
-          active_note_idx_ = ni;
-          n.hidden = false;
-          if(shift && last_sidebar_anchor_folder_idx == fi && last_sidebar_anchor_note_idx >= 0)
+          if(payload->DataSize == (int)sizeof(int) && payload->IsPreview()) drag_hover_folder_idx = fi;
+          if(payload->DataSize == (int)sizeof(int) && payload->IsDelivery())
           {
-            int a = std::min(last_sidebar_anchor_note_idx, ni);
-            int b = std::max(last_sidebar_anchor_note_idx, ni);
-            if(!ctrl)
+            pending_move_folder_source_idx = *static_cast<const int *>(payload->Data);
+            pending_move_folder_target_idx = fi;
+          }
+        }
+        ImGui::EndDragDropTarget();
+      }
+      if(ImGui::BeginDragDropSource())
+      {
+        int payload = fi;
+        ImGui::SetDragDropPayload("NOTEPP_FOLDER_MOVE", &payload, sizeof(payload));
+        ImGui::Text("Move folder: %s", folder_base_name(f.name).c_str());
+        ImGui::EndDragDropSource();
+      }
+      if(ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
+      {
+        save_state();
+        active_folder_idx_ = fi;
+        selected_note_indices.clear();
+        selected_stroke_indices.clear();
+        folder_overview_mode_ = true;
+        editing_mode_ = false;
+        request_exit_edit_mode_ = false;
+        request_cancel_draw_tools_ = true;
+        save_index();
+      }
+
+      const std::string folder_popup_id = "FolderCtx##" + std::to_string(fi);
+      if(ImGui::BeginPopupContextItem(folder_popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
+      {
+        if(ImGui::MenuItem("New note"))
+        {
+          new_note_target_folder_idx = fi;
+          open_new_note_popup = true;
+        }
+        if(ImGui::MenuItem("New folder"))
+        {
+          open_new_folder_popup = true;
+          new_folder_parent_idx = fi;
+        }
+        if(ImGui::MenuItem("Rename folder"))
+        {
+          rename_folder_idx = fi;
+          std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
+          open_rename_folder_popup = true;
+        }
+        if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+        {
+          paste_target_folder_idx = fi;
+          std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
+          open_paste_note_popup = true;
+        }
+        if(ImGui::MenuItem("Remove folder"))
+        {
+          pending_delete_folder_idx = fi;
+        }
+        ImGui::EndPopup();
+      }
+
+      if(open)
+      {
+        for(int ni = 0; ni < (int)f.notes.size(); ++ni)
+        {
+          NoteMeta &n = f.notes[(size_t)ni];
+          const bool note_selected =
+              (fi == active_folder_idx_) && (selected_note_indices.count(ni) != 0);
+          const std::string note_item_label = n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
+          const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
+          ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
+          if(note_flash_col.w > 0.0f) note_text_col = mix_color(note_text_col, note_flash_col, 0.78f);
+          note_text_col.w = 1.0f;
+          ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);
+          if(ImGui::Selectable(note_item_label.c_str(), note_selected))
+          {
+            const bool ctrl = ImGui::GetIO().KeyCtrl;
+            const bool shift = ImGui::GetIO().KeyShift;
+            save_state();
+            active_folder_idx_ = fi;
+            active_note_idx_ = ni;
+            n.hidden = false;
+            if(shift && last_sidebar_anchor_folder_idx == fi && last_sidebar_anchor_note_idx >= 0)
+            {
+              int a = std::min(last_sidebar_anchor_note_idx, ni);
+              int b = std::max(last_sidebar_anchor_note_idx, ni);
+              if(!ctrl)
+              {
+                selected_note_indices.clear();
+                selected_stroke_indices.clear();
+              }
+              for(int i = a; i <= b; ++i) selected_note_indices.insert(i);
+            }
+            else if(ctrl)
+            {
+              if(selected_note_indices.count(ni) != 0)
+                selected_note_indices.erase(ni);
+              else
+                selected_note_indices.insert(ni);
+            }
+            else
             {
               selected_note_indices.clear();
+              selected_note_indices.insert(ni);
               selected_stroke_indices.clear();
             }
-            for(int i = a; i <= b; ++i) selected_note_indices.insert(i);
+            pending_focus_note_idx = ni;
+            last_sidebar_anchor_folder_idx = fi;
+            last_sidebar_anchor_note_idx = ni;
+            force_open_folder_idx = fi;
+            editing_mode_ = false;
+            request_exit_edit_mode_ = false;
+            request_cancel_draw_tools_ = true;
+            load_note_content_for_active();
+            save_index();
           }
-          else if(ctrl)
+          ImGui::PopStyleColor();
+          folder_note_row_rects[(size_t)fi].push_back(SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
+          if(drag_hover_folder_idx == fi)
           {
-            if(selected_note_indices.count(ni) != 0)
-              selected_note_indices.erase(ni);
-            else
-              selected_note_indices.insert(ni);
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(
+                ImGui::GetItemRectMin(),
+                ImGui::GetItemRectMax(),
+                ImGui::GetColorU32(sidebar_note_hover_fill),
+                2.0f);
           }
-          else
+          if(ImGui::BeginDragDropTarget())
           {
-            selected_note_indices.clear();
-            selected_note_indices.insert(ni);
-            selected_stroke_indices.clear();
-          }
-          pending_focus_note_idx = ni;
-          last_sidebar_anchor_folder_idx = fi;
-          last_sidebar_anchor_note_idx = ni;
-          force_open_folder_idx = fi;
-          editing_mode_ = false;
-          request_exit_edit_mode_ = false;
-          request_cancel_draw_tools_ = true;
-          load_note_content_for_active();
-          save_index();
-        }
-        ImGui::PopStyleColor();
-        folder_note_row_rects[(size_t)fi].push_back(SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
-        if(drag_hover_folder_idx == fi)
-        {
-          ImDrawList *dl = ImGui::GetWindowDrawList();
-          dl->AddRectFilled(
-              ImGui::GetItemRectMin(),
-              ImGui::GetItemRectMax(),
-              ImGui::GetColorU32(sidebar_note_hover_fill),
-              2.0f);
-        }
-        if(ImGui::BeginDragDropTarget())
-        {
-          if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
-          {
-            if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+            if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
             {
-              drag_hover_folder_idx = fi;
-            }
-            if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
-            {
-              const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
-              pending_move_source_folder_idx = (int)p.x;
-              pending_move_target_folder_idx = fi; // Drop on child note => same destination folder
-              pending_move_note_indices.clear();
-
-              const int dragged_note_idx = (int)p.y;
-              if(pending_move_source_folder_idx >= 0 && pending_move_source_folder_idx < (int)folders_.size())
+              if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
               {
-                if(pending_move_source_folder_idx == active_folder_idx_ &&
-                   selected_note_indices.count(dragged_note_idx) != 0 &&
-                   selected_note_indices.size() > 1)
+                drag_hover_folder_idx = fi;
+              }
+              if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+              {
+                const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+                pending_move_source_folder_idx = (int)p.x;
+                pending_move_target_folder_idx = fi; // Drop on child note => same destination folder
+                pending_move_note_indices.clear();
+
+                const int dragged_note_idx = (int)p.y;
+                if(pending_move_source_folder_idx >= 0 && pending_move_source_folder_idx < (int)folders_.size())
                 {
-                  for(int idx : selected_note_indices)
+                  if(pending_move_source_folder_idx == active_folder_idx_ &&
+                     selected_note_indices.count(dragged_note_idx) != 0 &&
+                     selected_note_indices.size() > 1)
                   {
-                    if(idx >= 0 && idx < (int)folders_[(size_t)pending_move_source_folder_idx].notes.size())
-                      pending_move_note_indices.push_back(idx);
+                    for(int idx : selected_note_indices)
+                    {
+                      if(idx >= 0 && idx < (int)folders_[(size_t)pending_move_source_folder_idx].notes.size())
+                        pending_move_note_indices.push_back(idx);
+                    }
                   }
-                }
-                else
-                {
-                  pending_move_note_indices.push_back(dragged_note_idx);
+                  else
+                  {
+                    pending_move_note_indices.push_back(dragged_note_idx);
+                  }
                 }
               }
             }
-          }
-          if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_FOLDER_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
-          {
-            if(payload->DataSize == (int)sizeof(int) && payload->IsPreview()) drag_hover_folder_idx = fi;
-            if(payload->DataSize == (int)sizeof(int) && payload->IsDelivery())
+            if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_FOLDER_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
             {
-              pending_move_folder_source_idx = *static_cast<const int *>(payload->Data);
-              pending_move_folder_target_idx = fi;
+              if(payload->DataSize == (int)sizeof(int) && payload->IsPreview()) drag_hover_folder_idx = fi;
+              if(payload->DataSize == (int)sizeof(int) && payload->IsDelivery())
+              {
+                pending_move_folder_source_idx = *static_cast<const int *>(payload->Data);
+                pending_move_folder_target_idx = fi;
+              }
             }
+            ImGui::EndDragDropTarget();
           }
-          ImGui::EndDragDropTarget();
-        }
-        if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-        {
-          rename_note_folder_idx = fi;
-          rename_note_idx = ni;
-          std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
-          open_rename_note_popup = true;
-        }
-        if(ImGui::BeginDragDropSource())
-        {
-          ImVec2 payload((float)fi, (float)ni);
-          ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &payload, sizeof(payload));
-          if(selected_note_indices.count(ni) != 0 && fi == active_folder_idx_ && selected_note_indices.size() > 1)
-            ImGui::Text("%zu notes", selected_note_indices.size());
-          else
-            ImGui::TextUnformatted(n.title.c_str());
-          ImGui::EndDragDropSource();
-        }
-
-        const std::string note_popup_id = "NoteCtx##" + std::to_string(fi) + "_" + std::to_string(ni);
-        if(ImGui::BeginPopupContextItem(note_popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
-        {
-          const bool multi_selected_here =
-              (fi == active_folder_idx_) &&
-              selected_note_indices.count(ni) != 0 &&
-              selected_note_indices.size() > 1;
-          if(ImGui::MenuItem("Canvia nom"))
+          if(ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
           {
             rename_note_folder_idx = fi;
             rename_note_idx = ni;
             std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
             open_rename_note_popup = true;
           }
-          if(ImGui::MenuItem("Edita aquesta nota"))
+          if(ImGui::BeginDragDropSource())
           {
-            save_state();
-            active_folder_idx_ = fi;
-            active_note_idx_ = ni;
-            load_note_content_for_active();
-            editing_mode_ = true;
-            request_exit_edit_mode_ = false;
-            force_open_folder_idx = fi;
-            save_index();
-          }
-          if(ImGui::MenuItem("Set note color..."))
-          {
-            color_note_folder_idx = fi;
-            color_note_idx = ni;
-            note_color_use_default = !n.use_custom_color;
-            note_color_buf[0] = n.color_r;
-            note_color_buf[1] = n.color_g;
-            note_color_buf[2] = n.color_b;
-            open_note_color_popup = true;
-          }
-          if(ImGui::MenuItem("Reset note color", nullptr, false, n.use_custom_color))
-          {
-            push_sidebar_snapshot();
-            n.use_custom_color = false;
-            flash_mark_note(n.path, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
-            save_index();
-          }
-          if(ImGui::MenuItem(multi_selected_here ? "Copy selected notes" : "Copy note"))
-          {
-            std::vector<int> to_copy;
-            if(multi_selected_here)
-            {
-              for(int idx : selected_note_indices) to_copy.push_back(idx);
-              std::sort(to_copy.begin(), to_copy.end());
-            }
+            ImVec2 payload((float)fi, (float)ni);
+            ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &payload, sizeof(payload));
+            if(selected_note_indices.count(ni) != 0 && fi == active_folder_idx_ && selected_note_indices.size() > 1)
+              ImGui::Text("%zu notes", selected_note_indices.size());
             else
-            {
-              to_copy.push_back(ni);
-            }
-            copy_notes_to_internal_clipboard(fi, to_copy);
+              ImGui::TextUnformatted(n.title.c_str());
+            ImGui::EndDragDropSource();
           }
-          if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+
+          const std::string note_popup_id = "NoteCtx##" + std::to_string(fi) + "_" + std::to_string(ni);
+          if(ImGui::BeginPopupContextItem(note_popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
           {
-            paste_target_folder_idx = fi;
-            std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
-            open_paste_note_popup = true;
-          }
-          if(ImGui::MenuItem("New note"))
-          {
-            new_note_target_folder_idx = fi;
-            open_new_note_popup = true;
-          }
-          if(ImGui::MenuItem(multi_selected_here ? "Remove selected notes" : "Elimina nota"))
-          {
-            pending_delete_note_folder_idx = fi;
-            pending_delete_note_indices.clear();
-            if(multi_selected_here)
+            const bool multi_selected_here =
+                (fi == active_folder_idx_) &&
+                selected_note_indices.count(ni) != 0 &&
+                selected_note_indices.size() > 1;
+            if(ImGui::MenuItem("Canvia nom"))
             {
-              for(int idx : selected_note_indices) pending_delete_note_indices.push_back(idx);
+              rename_note_folder_idx = fi;
+              rename_note_idx = ni;
+              std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
+              open_rename_note_popup = true;
             }
-            else
+            if(ImGui::MenuItem("Edita aquesta nota"))
             {
-              pending_delete_note_indices.push_back(ni);
+              save_state();
+              active_folder_idx_ = fi;
+              active_note_idx_ = ni;
+              load_note_content_for_active();
+              editing_mode_ = true;
+              request_exit_edit_mode_ = false;
+              force_open_folder_idx = fi;
+              save_index();
             }
-            pending_delete_note_idx = pending_delete_note_indices.empty() ? -1 : pending_delete_note_indices.front();
+            if(ImGui::MenuItem("Set note color..."))
+            {
+              color_note_folder_idx = fi;
+              color_note_idx = ni;
+              note_color_use_default = !n.use_custom_color;
+              note_color_buf[0] = n.color_r;
+              note_color_buf[1] = n.color_g;
+              note_color_buf[2] = n.color_b;
+              open_note_color_popup = true;
+            }
+            if(ImGui::MenuItem("Reset note color", nullptr, false, n.use_custom_color))
+            {
+              push_sidebar_snapshot();
+              n.use_custom_color = false;
+              flash_mark_note(n.path, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
+              save_index();
+            }
+            if(ImGui::MenuItem(multi_selected_here ? "Copy selected notes" : "Copy note"))
+            {
+              std::vector<int> to_copy;
+              if(multi_selected_here)
+              {
+                for(int idx : selected_note_indices) to_copy.push_back(idx);
+                std::sort(to_copy.begin(), to_copy.end());
+              }
+              else
+              {
+                to_copy.push_back(ni);
+              }
+              copy_notes_to_internal_clipboard(fi, to_copy);
+            }
+            if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+            {
+              paste_target_folder_idx = fi;
+              std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
+              open_paste_note_popup = true;
+            }
+            if(ImGui::MenuItem("New note"))
+            {
+              new_note_target_folder_idx = fi;
+              open_new_note_popup = true;
+            }
+            if(ImGui::MenuItem(multi_selected_here ? "Remove selected notes" : "Elimina nota"))
+            {
+              pending_delete_note_folder_idx = fi;
+              pending_delete_note_indices.clear();
+              if(multi_selected_here)
+              {
+                for(int idx : selected_note_indices) pending_delete_note_indices.push_back(idx);
+              }
+              else
+              {
+                pending_delete_note_indices.push_back(ni);
+              }
+              pending_delete_note_idx = pending_delete_note_indices.empty() ? -1 : pending_delete_note_indices.front();
+            }
+            ImGui::EndPopup();
           }
-          ImGui::EndPopup();
         }
+        auto itc = folder_children.find(f.name);
+        if(itc != folder_children.end())
+        {
+          for(int cfi : itc->second) self(self, cfi);
+        }
+        ImGui::TreePop();
       }
-      auto itc = folder_children.find(f.name);
-      if(itc != folder_children.end())
-      {
-        for(int cfi : itc->second) self(self, cfi);
-      }
-      ImGui::TreePop();
-    }
     };
     auto roots_it = folder_children.find(std::string{});
     if(roots_it != folder_children.end())
@@ -5246,7 +5244,6 @@ __CURSOR__)MD");
           fmt_folder.last_edit_cursor = -1;
           refocus_folder_editor = true;
         }
-
 
         ImGuiInputTextFlags flags =
             ImGuiInputTextFlags_AllowTabInput |
