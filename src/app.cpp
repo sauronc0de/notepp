@@ -52,6 +52,7 @@ using MarkdownSupport::render_preview_with_task_checkboxes_ex;
 using MarkdownSupport::rgba_to_hex;
 using MarkdownSupport::set_all_preview_headers_open;
 using MarkdownSupport::set_preview_document_path;
+using MarkdownSupport::set_preview_state_root;
 using MarkdownSupport::should_push_word_granular_undo;
 using MarkdownSupport::summarize_preview_header_states;
 
@@ -79,12 +80,12 @@ using Json = nlohmann::json;
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
-constexpr const char *kDefaultStateFile = DATA_PATH "/note.md";
-constexpr const char *kLegacyStateMetaFile = DATA_PATH "/current_note_path.txt";
-constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
-constexpr const char *kImGuiIniFile = DATA_PATH "/imgui_layout.ini";
-constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
-constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
+std::string g_runtime_data_root;
+
+std::string data_file_path(std::string_view file_name)
+{
+  return (std::filesystem::path(g_runtime_data_root) / file_name).string();
+}
 
 std::string make_git_commit_message()
 {
@@ -224,7 +225,7 @@ void load_drawings_state()
   g_draw_redo.clear();
   g_drawings_legacy_checked.clear();
 
-  std::ifstream in(kDrawingsFile, std::ios::binary);
+  std::ifstream in(data_file_path("drawings_state.txt"), std::ios::binary);
   if(!in) return;
 
   std::string line;
@@ -294,7 +295,7 @@ void load_drawings_state()
 
 void save_drawings_state()
 {
-  std::ofstream out(kDrawingsFile, std::ios::trunc);
+  std::ofstream out(data_file_path("drawings_state.txt"), std::ios::trunc);
   if(!out) return;
 
   for(const auto &[folder, strokes] : g_folder_drawings)
@@ -328,7 +329,7 @@ void load_note_clipboard()
   g_copied_note_content.clear();
   g_copied_notes_batch.clear();
 
-  std::ifstream in(kClipboardFile, std::ios::binary);
+  std::ifstream in(data_file_path("note_clipboard.json"), std::ios::binary);
   if(!in) return;
 
   const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -345,7 +346,7 @@ void load_note_clipboard()
 
 void save_note_clipboard()
 {
-  std::ofstream out(kClipboardFile, std::ios::trunc);
+  std::ofstream out(data_file_path("note_clipboard.json"), std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -356,6 +357,38 @@ void save_note_clipboard()
   g_clipboard_dirty = false;
 }
 } // namespace
+
+App::App(std::filesystem::path data_root)
+{
+#ifdef NOTEPP_RUNTIME_DATA_PATH
+  if(data_root.empty())
+  {
+    data_root_ = std::filesystem::current_path() / "data";
+  }
+  else
+  {
+    data_root_ = std::move(data_root);
+  }
+#else
+  (void)data_root;
+  data_root_ = DATA_PATH;
+#endif
+
+  data_root_ = data_root_.lexically_normal();
+  g_runtime_data_root = data_root_.string();
+
+  default_state_file_ = (data_root_ / "note.md").string();
+  legacy_state_meta_file_ = (data_root_ / "current_note_path.txt").string();
+  index_file_ = (data_root_ / "notes_index.json").string();
+  imgui_ini_file_ = (data_root_ / "imgui_layout.ini").string();
+  drawings_file_ = (data_root_ / "drawings_state.txt").string();
+  clipboard_file_ = (data_root_ / "note_clipboard.json").string();
+  state_file_path_ = default_state_file_;
+
+  std::filesystem::create_directories(notes_root_path());
+  MarkdownView::set_data_root(data_root_.string());
+  set_preview_state_root(data_root_.string());
+}
 
 void App::load_git_settings_from_json(std::string_view doc)
 {
@@ -408,7 +441,7 @@ void App::refresh_git_status(bool force)
   const double now = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
   if(!force && git_status_.valid && now < git_status_refresh_at_) return;
 
-  GitSync::Client git(DATA_PATH);
+  GitSync::Client git(data_root_.string());
   const GitSync::RepoStatus status = git.query_status(git_config_.branch);
 
   git_status_.valid = true;
@@ -448,7 +481,7 @@ void App::perform_startup_git_sync()
 {
   if(!git_is_connected() || !git_config_.auto_pull_on_start) return;
 
-  GitSync::Client git(DATA_PATH);
+  GitSync::Client git(data_root_.string());
   std::string message;
   if(!git.set_remote_origin(git_config_.remote_url, &message))
   {
@@ -497,7 +530,7 @@ void App::perform_shutdown_git_sync()
 {
   if(!git_config_.enabled) return;
 
-  GitSync::Client git(DATA_PATH);
+  GitSync::Client git(data_root_.string());
   std::string message;
   if(!git.ensure_repo(&message))
   {
@@ -682,7 +715,7 @@ void App::init_imgui()
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-  io.IniFilename = kImGuiIniFile;
+  io.IniFilename = imgui_ini_file_.c_str();
 
   ImGui::StyleColorsDark();
   if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -699,6 +732,8 @@ void App::init_imgui()
     throw std::runtime_error("ImGui_ImplOpenGL3_Init failed");
 
   MarkdownView::set_fonts(font_regular, font_italic, font_bold);
+  MarkdownView::set_data_root(data_root_.string());
+  set_preview_state_root(data_root_.string());
 }
 
 void App::shutdown()
@@ -709,7 +744,7 @@ void App::shutdown()
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
   {
-    ImGui::SaveIniSettingsToDisk(kImGuiIniFile);
+    ImGui::SaveIniSettingsToDisk(imgui_ini_file_.c_str());
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -742,7 +777,7 @@ void App::load_state()
   layout_locked_ = false;
   git_status_ = GitStatusView{};
 
-  std::ifstream in_index(kIndexFile);
+  std::ifstream in_index(index_file_);
   if(in_index)
   {
     const std::string doc((std::istreambuf_iterator<char>(in_index)), std::istreambuf_iterator<char>());
@@ -813,7 +848,7 @@ void App::load_state()
   {
     // Migration from legacy current_note_path.txt
     std::string migrated_path;
-    std::ifstream legacy(kLegacyStateMetaFile);
+    std::ifstream legacy(legacy_state_meta_file_);
     if(legacy)
     {
       std::string p;
@@ -868,7 +903,7 @@ void App::save_state()
 
 void App::save_index() const
 {
-  std::ofstream out(kIndexFile, std::ios::trunc);
+  std::ofstream out(index_file_, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -938,8 +973,13 @@ std::string App::make_note_path(const std::string &folder_name, const std::strin
     if(f.empty()) f = "General";
   }
   const std::string n = sanitize_note_filename(note_title);
-  std::filesystem::path dir = std::filesystem::path(DATA_PATH) / "notes" / f;
+  std::filesystem::path dir = notes_root_path() / f;
   return (dir / (n + ".md")).string();
+}
+
+std::filesystem::path App::notes_root_path() const
+{
+  return data_root_ / "notes";
 }
 
 std::string App::make_unique_note_title(int folder_idx, const std::string &base_title, int ignore_note_idx) const
@@ -2515,8 +2555,9 @@ void App::frame_ui()
   refresh_git_status();
   if(ImGui::CollapsingHeader("Git", ImGuiTreeNodeFlags_DefaultOpen))
   {
-    GitSync::Client git(DATA_PATH);
-    ImGui::TextDisabled("Notes repository: %s", DATA_PATH);
+    GitSync::Client git(data_root_.string());
+    const std::string data_root_text = data_root_.string();
+    ImGui::TextDisabled("Notes repository: %s", data_root_text.c_str());
     if(!git_status_.git_available)
     {
       ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.35f, 1.0f), "Git is not available on this system.");

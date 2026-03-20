@@ -20,6 +20,7 @@ struct MarkdownView
   static void set_fonts(ImFont *regular, ImFont *italic, ImFont *bold);
   static void set_render_width(float width);
   static void set_document_path(std::string_view path);
+  static void set_data_root(std::string_view path);
   static void set_hover_preview_enabled(bool enabled);
   static bool take_hover_preview(MarkdownHoverPreviewData &out);
   static void clear_hover_preview();

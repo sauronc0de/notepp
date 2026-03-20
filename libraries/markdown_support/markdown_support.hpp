@@ -69,6 +69,7 @@ int md_editor_cb(ImGuiInputTextCallbackData *data);
 void normalize_input_text_buffer(std::string &s);
 bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out);
 void set_preview_document_path(std::string_view path);
+void set_preview_state_root(std::string_view path);
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
 bool render_preview_with_task_checkboxes(std::string &markdown);
 PreviewHeaderStateSummary summarize_preview_header_states(std::string_view document_path, std::string_view markdown);

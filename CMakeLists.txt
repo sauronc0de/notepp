@@ -34,12 +34,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(ENABLE_LOG "Enable logging" OFF)
 option(ENABLE_RENDER "Enable rendering" ON)
 option(ENABLE_TEST "Enable tests" OFF)
+option(NOTEPP_RUNTIME_DATA_PATH "Use runtime-selected data directory instead of compile-time DATA_PATH" OFF)
 
 # Project-wide compile definitions (directory scope)
 add_compile_definitions(
   ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
-  DATA_PATH="${CMAKE_SOURCE_DIR}/data"
+  $<$<NOT:$<BOOL:${NOTEPP_RUNTIME_DATA_PATH}>>:DATA_PATH="${CMAKE_SOURCE_DIR}/data">
   IMGUI_USE_WCHAR32
+  $<$<BOOL:${NOTEPP_RUNTIME_DATA_PATH}>:NOTEPP_RUNTIME_DATA_PATH>
   $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
   $<$<BOOL:${ENABLE_RENDER}>:ENABLE_RENDER=true>

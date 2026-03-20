@@ -3,6 +3,7 @@
 #include "undo_redo.hpp"
 
 #include <array>
+#include <filesystem>
 #include <iosfwd>
 #include <imgui.h>
 
@@ -16,6 +17,7 @@ struct SDL_Window;
 class App
 {
 public:
+  explicit App(std::filesystem::path data_root = {});
   int run();
 
 private:
@@ -70,6 +72,7 @@ private:
   void refresh_git_status(bool force = false);
   void set_git_message(std::string message, bool is_error);
   bool git_is_connected() const;
+  std::filesystem::path notes_root_path() const;
   void finalize_pending_file_deletions();
   void perform_startup_git_sync();
   void perform_shutdown_git_sync();
@@ -108,7 +111,14 @@ private:
   int search_jump_len_ = 0;
   bool search_jump_force_edit_ = false;
   std::string note_title_ = "Note";
-  std::string state_file_path_ = DATA_PATH "/note.md";
+  std::filesystem::path data_root_;
+  std::string default_state_file_;
+  std::string legacy_state_meta_file_;
+  std::string index_file_;
+  std::string imgui_ini_file_;
+  std::string drawings_file_;
+  std::string clipboard_file_;
+  std::string state_file_path_;
   struct NoteMeta
   {
     std::string title;

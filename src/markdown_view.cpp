@@ -52,6 +52,7 @@ struct TextureRecord
 static std::unordered_map<std::string, TextureRecord> g_image_cache{};
 static float g_render_width = 0.0f;
 static std::string g_document_path;
+static std::string g_data_root;
 static bool g_hover_preview_enabled = true;
 
 struct HoverPreviewState
@@ -192,7 +193,11 @@ static InternalLinkTarget resolve_internal_link(std::string_view href)
     std::vector<std::filesystem::path> candidates;
     if(!g_document_path.empty())
       candidates.push_back(std::filesystem::path(g_document_path).parent_path() / rel);
+    if(!g_data_root.empty())
+      candidates.push_back(std::filesystem::path(g_data_root) / "notes" / rel);
+#ifndef NOTEPP_RUNTIME_DATA_PATH
     candidates.push_back(std::filesystem::path(DATA_PATH) / "notes" / rel);
+#endif
 
     for(const auto &candidate : candidates)
     {
@@ -718,6 +723,11 @@ void MarkdownView::set_render_width(float width)
 void MarkdownView::set_document_path(std::string_view path)
 {
   g_document_path.assign(path.data(), path.size());
+}
+
+void MarkdownView::set_data_root(std::string_view path)
+{
+  g_data_root.assign(path.data(), path.size());
 }
 
 void MarkdownView::set_hover_preview_enabled(bool enabled)
