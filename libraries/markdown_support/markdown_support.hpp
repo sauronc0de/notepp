@@ -16,6 +16,13 @@ struct PreviewRenderResult
   bool consumed_double_click = false;
 };
 
+struct PreviewHeaderStateSummary
+{
+  bool has_headers = false;
+  bool any_expanded = false;
+  bool any_collapsed = false;
+};
+
 struct MdFormatState
 {
   int sel_start = 0;
@@ -64,6 +71,8 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
 void set_preview_document_path(std::string_view path);
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
 bool render_preview_with_task_checkboxes(std::string &markdown);
+PreviewHeaderStateSummary summarize_preview_header_states(std::string_view document_path, std::string_view markdown);
+bool set_all_preview_headers_open(std::string_view document_path, std::string_view markdown, bool open);
 std::string capture_preview_state_snapshot();
 void apply_preview_state_snapshot(std::string_view snapshot);
 } // namespace MarkdownSupport

@@ -635,6 +635,75 @@ void save_preview_state_if_dirty()
   g_preview_state_dirty = false;
 }
 
+bool set_all_preview_headers_open_impl(std::string_view document_path, std::string_view markdown, bool open)
+{
+  const std::string doc_key(document_path);
+  if(doc_key.empty()) return false;
+
+  bool changed = false;
+  size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const size_t line_start = pos;
+    size_t line_end = markdown.find('\n', pos);
+    const bool has_newline = (line_end != std::string::npos);
+    if(!has_newline) line_end = markdown.size();
+
+    const std::string_view line(markdown.data() + line_start, line_end - line_start);
+    int heading_level = 0;
+    std::string_view heading_title;
+    if(parse_heading_line(line, heading_level, heading_title))
+    {
+      bool current_open = false;
+      const bool has_saved_open = try_get_header_open_state(doc_key, static_cast<int>(line_start), current_open);
+      if(!has_saved_open || current_open != open)
+      {
+        sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
+        changed = true;
+      }
+    }
+
+    pos = has_newline ? line_end + 1 : line_end;
+  }
+
+  if(changed) save_preview_state_if_dirty();
+  return changed;
+}
+
+PreviewHeaderStateSummary summarize_preview_header_states_impl(std::string_view document_path, std::string_view markdown)
+{
+  PreviewHeaderStateSummary summary;
+  const std::string doc_key(document_path);
+  if(doc_key.empty()) return summary;
+
+  size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const size_t line_start = pos;
+    size_t line_end = markdown.find('\n', pos);
+    const bool has_newline = (line_end != std::string::npos);
+    if(!has_newline) line_end = markdown.size();
+
+    const std::string_view line(markdown.data() + line_start, line_end - line_start);
+    int heading_level = 0;
+    std::string_view heading_title;
+    if(parse_heading_line(line, heading_level, heading_title))
+    {
+      summary.has_headers = true;
+      bool current_open = false;
+      const bool has_saved_open = try_get_header_open_state(doc_key, static_cast<int>(line_start), current_open);
+      if(has_saved_open && current_open)
+        summary.any_expanded = true;
+      else
+        summary.any_collapsed = true;
+    }
+
+    pos = has_newline ? line_end + 1 : line_end;
+  }
+
+  return summary;
+}
+
 std::string capture_preview_state_snapshot_impl()
 {
   ensure_preview_state_loaded();
@@ -2194,5 +2263,15 @@ void apply_preview_state_snapshot(std::string_view snapshot)
 bool render_preview_with_task_checkboxes(std::string &markdown)
 {
   return render_preview_with_task_checkboxes_ex(markdown).markdown_changed;
+}
+
+PreviewHeaderStateSummary summarize_preview_header_states(std::string_view document_path, std::string_view markdown)
+{
+  return summarize_preview_header_states_impl(document_path, markdown);
+}
+
+bool set_all_preview_headers_open(std::string_view document_path, std::string_view markdown, bool open)
+{
+  return set_all_preview_headers_open_impl(document_path, markdown, open);
 }
 } // namespace MarkdownSupport

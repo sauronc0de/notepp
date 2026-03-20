@@ -48,8 +48,10 @@ using MarkdownSupport::normalize_input_text_buffer;
 using MarkdownSupport::render_preview_with_task_checkboxes;
 using MarkdownSupport::render_preview_with_task_checkboxes_ex;
 using MarkdownSupport::rgba_to_hex;
+using MarkdownSupport::set_all_preview_headers_open;
 using MarkdownSupport::set_preview_document_path;
 using MarkdownSupport::should_push_word_granular_undo;
+using MarkdownSupport::summarize_preview_header_states;
 
 using NoteCore::clamp01f;
 using NoteCore::sanitize_note_filename;
@@ -4100,6 +4102,7 @@ __CURSOR__)MD");
       ImGuiViewport *note_viewport = ImGui::GetWindowViewport();
       const bool note_is_detached = viewport_is_detached_from_main(note_viewport, window_);
       const bool note_is_collapsed = ImGui::IsWindowCollapsed();
+      const bool is_current_note_document = (!state_file_path_.empty() && n.path == state_file_path_);
       const bool mouse_on_title =
           mouse_pos.x >= win_pos.x &&
           mouse_pos.x <= (win_pos.x + ImGui::GetWindowWidth()) &&
@@ -4177,6 +4180,40 @@ __CURSOR__)MD");
         {
           ImGui::SetWindowCollapsed(window_id.c_str(), !note_is_collapsed, ImGuiCond_Always);
         }
+        if(!is_editing_this)
+        {
+          const std::string preview_text_for_headers = is_current_note_document ? markdown_text_ : read_file_text(n.path);
+          const MarkdownSupport::PreviewHeaderStateSummary header_summary =
+              summarize_preview_header_states(n.path, preview_text_for_headers);
+          auto apply_header_toggle = [&](bool target_open) {
+            const std::string preview_state_before = capture_preview_state_snapshot();
+            if(set_all_preview_headers_open(n.path, preview_text_for_headers, target_open))
+            {
+              const std::string preview_state_after = capture_preview_state_snapshot();
+              record_preview_history_action(
+                  target_open ? "Expand all headers" : "Collapse all headers",
+                  n.path,
+                  preview_text_for_headers,
+                  preview_text_for_headers,
+                  preview_state_before,
+                  preview_state_after);
+            }
+          };
+
+          if(header_summary.has_headers && !header_summary.any_expanded)
+          {
+            if(ImGui::MenuItem("Expand all")) apply_header_toggle(true);
+          }
+          else if(header_summary.has_headers && !header_summary.any_collapsed)
+          {
+            if(ImGui::MenuItem("Collapse all")) apply_header_toggle(false);
+          }
+          else if(header_summary.has_headers)
+          {
+            if(ImGui::MenuItem("Expand all")) apply_header_toggle(true);
+            if(ImGui::MenuItem("Collapse all")) apply_header_toggle(false);
+          }
+        }
         if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
         {
           push_sidebar_snapshot();
@@ -4214,7 +4251,6 @@ __CURSOR__)MD");
 
       bool changed = false;
       std::string preview_text;
-      const bool is_current_note_document = (!state_file_path_.empty() && n.path == state_file_path_);
       bool table_ctx_right_click_consumed = false;
       bool table_ctx_double_click_consumed = false;
 
