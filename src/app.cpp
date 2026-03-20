@@ -40,6 +40,7 @@ using MarkdownSupport::capture_preview_state_snapshot;
 using MarkdownSupport::insert_checklist_item_at_cursor;
 using MarkdownSupport::insert_markdown_table_at_cursor;
 using MarkdownSupport::line_bounds_from_cursor;
+using MarkdownSupport::word_bounds_from_double_click;
 using MarkdownSupport::md_editor_cb;
 using MarkdownSupport::MdEditorUserData;
 using MarkdownSupport::MdFormatState;
@@ -4269,6 +4270,14 @@ __CURSOR__)MD");
         }
         const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         const ImGuiIO &io = ImGui::GetIO();
+        if(editor_hovered && io.MouseClickedCount[ImGuiMouseButton_Left] == 2)
+        {
+          const auto [ws, we] = word_bounds_from_double_click(markdown_text_, fmt_folder.cursor_pos, fmt_folder.sel_start, fmt_folder.sel_end);
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = ws;
+          fmt_folder.pending_sel_end = we;
+          fmt_folder.selection_anchor = ws;
+        }
         if(editor_hovered && io.MouseClickedCount[ImGuiMouseButton_Left] >= 3)
         {
           const auto [ls, le] = line_bounds_from_cursor(markdown_text_, fmt_folder.cursor_pos);
@@ -4938,6 +4947,14 @@ __CURSOR__)MD");
     // After the widget: show popup if selection is non-empty and editor is focused/active
     const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const ImGuiIO &io = ImGui::GetIO();
+    if(editor_hovered && io.MouseClickedCount[ImGuiMouseButton_Left] == 2)
+    {
+      const auto [ws, we] = word_bounds_from_double_click(markdown_text_, fmt.cursor_pos, fmt.sel_start, fmt.sel_end);
+      fmt.pending_select_range = true;
+      fmt.pending_sel_start = ws;
+      fmt.pending_sel_end = we;
+      fmt.selection_anchor = ws;
+    }
     if(editor_hovered && io.MouseClickedCount[ImGuiMouseButton_Left] >= 3)
     {
       const auto [ls, le] = line_bounds_from_cursor(markdown_text_, fmt.cursor_pos);

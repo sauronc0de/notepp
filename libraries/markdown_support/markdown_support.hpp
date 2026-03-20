@@ -56,6 +56,7 @@ void apply_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string
 void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::string &hex_color);
 std::string rgba_to_hex(ImVec4 c);
 std::pair<int, int> line_bounds_from_cursor(const std::string &text, int cursor_pos);
+std::pair<int, int> word_bounds_from_double_click(const std::string &text, int cursor_pos, int sel_start, int sel_end);
 bool should_push_word_granular_undo(const std::string &before, const std::string &after, MdFormatState &st);
 int md_editor_cb(ImGuiInputTextCallbackData *data);
 void normalize_input_text_buffer(std::string &s);

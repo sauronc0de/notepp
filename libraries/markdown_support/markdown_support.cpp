@@ -100,7 +100,22 @@ bool is_empty_quote_line(std::string_view line)
 bool is_word_char(char c)
 {
   const unsigned char uc = static_cast<unsigned char>(c);
-  return std::isalnum(uc) || c == '_';
+  return std::isalnum(uc) != 0;
+}
+
+std::pair<int, int> expand_word_bounds(const std::string &text, int pos)
+{
+  const int n = static_cast<int>(text.size());
+  if(pos < 0 || pos >= n) return {std::max(0, std::min(pos, n)), std::max(0, std::min(pos, n))};
+  if(!is_word_char(text[static_cast<size_t>(pos)])) return {pos, pos};
+
+  int start = pos;
+  while(start > 0 && is_word_char(text[static_cast<size_t>(start - 1)])) --start;
+
+  int end = pos + 1;
+  while(end < n && is_word_char(text[static_cast<size_t>(end)])) ++end;
+
+  return {start, end};
 }
 
 struct MermaidPieSlice
@@ -1572,6 +1587,34 @@ std::pair<int, int> line_bounds_from_cursor(const std::string &text, int cursor_
   int line_end = c;
   while(line_end < static_cast<int>(text.size()) && text[static_cast<size_t>(line_end)] != '\n') ++line_end;
   return {line_start, line_end};
+}
+
+std::pair<int, int> word_bounds_from_double_click(const std::string &text, int cursor_pos, int sel_start, int sel_end)
+{
+  const int n = static_cast<int>(text.size());
+  const int cursor = std::max(0, std::min(cursor_pos, n));
+  const int sel_lo = std::max(0, std::min(std::min(sel_start, sel_end), n));
+  const int sel_hi = std::max(0, std::min(std::max(sel_start, sel_end), n));
+
+  auto try_pos = [&](int pos, std::pair<int, int> &bounds_out) -> bool {
+    if(pos < sel_lo || pos >= sel_hi) return false;
+    if(pos < 0 || pos >= n) return false;
+    if(!is_word_char(text[static_cast<size_t>(pos)])) return false;
+    bounds_out = expand_word_bounds(text, pos);
+    return true;
+  };
+
+  std::pair<int, int> bounds(cursor, cursor);
+  if(try_pos(cursor, bounds)) return bounds;
+  if(try_pos(cursor - 1, bounds)) return bounds;
+
+  for(int dist = 1; sel_lo + dist <= sel_hi || cursor - dist >= sel_lo; ++dist)
+  {
+    if(try_pos(cursor - 1 - dist, bounds)) return bounds;
+    if(try_pos(cursor + dist, bounds)) return bounds;
+  }
+
+  return {cursor, cursor};
 }
 
 bool should_push_word_granular_undo(const std::string &before, const std::string &after, MdFormatState &st)
