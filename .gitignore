@@ -3,7 +3,7 @@ build/
 .ccache/
 
 # Ignore saves folder
-data/match/saves/
+data/
 
 # Ignore imgui Views config
 imgui.ini
