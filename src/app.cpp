@@ -4148,7 +4148,6 @@ __CURSOR__)MD");
                                      ? ImGui::GetColorU32(ImVec4(0.30f, 0.83f, 0.56f, 1.0f))
                                      : ImGui::GetColorU32(ImVec4(0.15f, 0.18f, 0.22f, 1.0f));
           dl->AddCircleFilled(dot_center, 3.0f, fill_col, 16);
-          dl->AddCircle(dot_center, 3.0f, ring_col, 16, 1.0f);
           ImGui::Dummy(ImVec2(10.0f, 16.0f));
         }
         ImGui::SameLine();
