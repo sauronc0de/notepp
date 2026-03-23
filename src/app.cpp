@@ -40,7 +40,6 @@ using MarkdownSupport::capture_preview_state_snapshot;
 using MarkdownSupport::insert_checklist_item_at_cursor;
 using MarkdownSupport::insert_markdown_table_at_cursor;
 using MarkdownSupport::line_bounds_from_cursor;
-using MarkdownSupport::word_bounds_from_double_click;
 using MarkdownSupport::md_editor_cb;
 using MarkdownSupport::MdEditorUserData;
 using MarkdownSupport::MdFormatState;
@@ -52,6 +51,7 @@ using MarkdownSupport::set_all_preview_headers_open;
 using MarkdownSupport::set_preview_document_path;
 using MarkdownSupport::should_push_word_granular_undo;
 using MarkdownSupport::summarize_preview_header_states;
+using MarkdownSupport::word_bounds_from_double_click;
 
 using NoteCore::clamp01f;
 using NoteCore::sanitize_note_filename;
@@ -199,6 +199,15 @@ bool viewport_inherits_topmost(
     current = find_platform_viewport_by_id(platform_io, current->ParentViewportId);
   }
   return false;
+}
+
+void set_detached_note_windows_enabled(bool enabled)
+{
+  ImGuiIO &io = ImGui::GetIO();
+  if(enabled)
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  else
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 }
 
 void load_drawings_state()
@@ -464,7 +473,7 @@ void App::init_imgui()
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  set_detached_note_windows_enabled(detached_note_windows_enabled_);
   io.IniFilename = kImGuiIniFile;
 
   ImGui::StyleColorsDark();
@@ -540,6 +549,7 @@ void App::load_state()
   active_note_idx_ = 0;
   folder_overview_mode_ = false;
   layout_locked_ = false;
+  detached_note_windows_enabled_ = true;
 
   std::ifstream in_index(kIndexFile);
   if(in_index)
@@ -549,6 +559,7 @@ void App::load_state()
     active_note_idx_ = json_find_int(doc, "active_note", 0);
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
     layout_locked_ = json_find_bool(doc, "layout_locked", false);
+    detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", true);
 
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
@@ -633,6 +644,7 @@ void App::load_state()
 
   ensure_default_index();
   normalize_active_indices();
+  set_detached_note_windows_enabled(detached_note_windows_enabled_);
   load_drawings_state();
   load_note_clipboard();
   load_note_content_for_active();
@@ -673,6 +685,7 @@ void App::save_index() const
   out << "  \"active_note\": " << active_note_idx_ << ",\n";
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
   out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
+  out << "  \"detached_note_windows\": " << (detached_note_windows_enabled_ ? "true" : "false") << ",\n";
   out << "  \"folders\": [\n";
   for(size_t fi = 0; fi < folders_.size(); ++fi)
   {
@@ -952,6 +965,7 @@ std::string App::capture_workspace_snapshot() const
   root["folder_overview"] = folder_overview_mode_;
   root["editing_mode"] = editing_mode_;
   root["layout_locked"] = layout_locked_;
+  root["detached_note_windows"] = detached_note_windows_enabled_;
   root["preview_state"] = capture_preview_state_snapshot();
 
   std::vector<std::string> pending_paths = pending_fs_delete_paths_;
@@ -1176,6 +1190,8 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   folder_overview_mode_ = root.value("folder_overview", false);
   editing_mode_ = root.value("editing_mode", false);
   layout_locked_ = root.value("layout_locked", false);
+  detached_note_windows_enabled_ = root.value("detached_note_windows", true);
+  set_detached_note_windows_enabled(detached_note_windows_enabled_);
   request_exit_edit_mode_ = false;
 
   ensure_default_index();
@@ -1583,6 +1599,7 @@ void App::render_debug_history_window() const
 
 void App::frame_begin()
 {
+  set_detached_note_windows_enabled(detached_note_windows_enabled_);
   pinned_topmost_viewports_.clear();
 
   SDL_Event event;
@@ -1622,18 +1639,18 @@ void App::frame_begin()
         request_exit_edit_mode_ = true;
         continue;
       }
-    if(edit_find_project_shortcut)
-    {
-      request_open_project_search_ = true;
-      request_open_search_ = false;
-      continue;
-    }
-    if(edit_find_shortcut)
-    {
-      request_open_search_ = true;
-      request_open_project_search_ = false;
-      continue;
-    }
+      if(edit_find_project_shortcut)
+      {
+        request_open_project_search_ = true;
+        request_open_search_ = false;
+        continue;
+      }
+      if(edit_find_shortcut)
+      {
+        request_open_search_ = true;
+        request_open_project_search_ = false;
+        continue;
+      }
       if(edit_undo_shortcut)
       {
         request_undo_edit_ = true;
@@ -3972,6 +3989,7 @@ __CURSOR__)MD");
         const ImTextureID clear_icon = get_toolbar_icon_texture("delete-bin.png");
         const ImTextureID reset_icon = get_toolbar_icon_texture("focus.png");
         const ImTextureID lock_icon = get_toolbar_icon_texture(layout_locked_ ? "unlock.png" : "lock.png");
+        const ImTextureID detach_icon = get_toolbar_icon_texture("detach.png");
         const ImTextureID show_icon = get_toolbar_icon_texture(drawings_visible ? "hide.png" : "show.png");
         auto mode_button = [&](const char *id, ImTextureID icon, const char *fallback, const char *tooltip, bool active) -> bool {
           if(active)
@@ -4000,12 +4018,48 @@ __CURSOR__)MD");
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!drawings_visible);
-        if(mode_button("##mode_draw_icon", draw_icon, "Draw", "Draw", draw_mode))
+        const bool draw_button_pressed = mode_button(
+            "##mode_draw_icon",
+            draw_icon,
+            "Draw",
+            "Draw (right click for color)",
+            draw_mode);
+        const bool draw_button_right_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+        if(draw_button_pressed)
         {
+          const bool was_draw_mode = draw_mode;
           draw_mode = true;
           erase_mode = false;
           stroke_in_progress = false;
+          if(was_draw_mode) ImGui::OpenPopup("##draw_color_popup");
         }
+        if(draw_button_right_clicked) ImGui::OpenPopup("##draw_color_popup");
+
+        if(ImGui::BeginPopup("##draw_color_popup"))
+        {
+          ImGui::TextDisabled("Draw color");
+          ImGui::Separator();
+          ImGui::ColorEdit3("##draw_color_popup_value", (float *)&draw_color, ImGuiColorEditFlags_NoInputs);
+          const ImVec4 presets[] = {
+              ImVec4(1.00f, 0.30f, 0.10f, 1.0f),
+              ImVec4(0.96f, 0.72f, 0.15f, 1.0f),
+              ImVec4(0.30f, 0.83f, 0.56f, 1.0f),
+              ImVec4(0.22f, 0.62f, 0.95f, 1.0f),
+              ImVec4(0.74f, 0.46f, 0.96f, 1.0f),
+              ImVec4(0.98f, 0.98f, 0.98f, 1.0f)};
+          for(int ci = 0; ci < (int)(sizeof(presets) / sizeof(presets[0])); ++ci)
+          {
+            if(ci != 0) ImGui::SameLine();
+            ImGui::PushID(ci);
+            if(ImGui::ColorButton("##draw_color_preset", presets[ci], ImGuiColorEditFlags_NoTooltip, ImVec2(16.0f, 16.0f)))
+            {
+              draw_color = presets[ci];
+            }
+            ImGui::PopID();
+          }
+          ImGui::EndPopup();
+        }
+
         ImGui::SameLine();
         if(mode_button("##mode_erase_icon", erase_icon, "Erase", "Erase", erase_mode))
         {
@@ -4026,27 +4080,6 @@ __CURSOR__)MD");
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Clear drawing";
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if((reset_icon
-                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                : ImGui::Button("Reset pos")) &&
-           !f.notes.empty())
-        {
-          push_selection_snapshot();
-          reset_note_positions();
-        }
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Reset positions";
-        ImGui::SameLine();
-        if(lock_icon
-               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(layout_locked_ ? "Unlock" : "Lock"))
-        {
-          push_sidebar_snapshot();
-          layout_locked_ = !layout_locked_;
-          save_index();
-        }
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          topbar_tooltip_text = layout_locked_ ? "Unlock note moving" : "Lock note moving";
-        ImGui::SameLine();
         if(show_icon
                ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                : ImGui::Button(drawings_visible ? "Hide draw" : "Show draw"))
@@ -4063,9 +4096,63 @@ __CURSOR__)MD");
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           topbar_tooltip_text = drawings_visible ? "Hide drawings" : "Show drawings";
         ImGui::SameLine();
+        {
+          const float icon_slot_w = 16.0f + ImGui::GetStyle().ItemSpacing.x;
+          ImGui::Dummy(ImVec2(icon_slot_w * 1.0f, 16.0f));
+        }
+        ImGui::SameLine();
+        if(lock_icon
+               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               : ImGui::Button(layout_locked_ ? "Unlock" : "Lock"))
+        {
+          push_sidebar_snapshot();
+          layout_locked_ = !layout_locked_;
+          save_index();
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          topbar_tooltip_text = layout_locked_ ? "Unlock note moving" : "Lock note moving";
+        ImGui::SameLine();
+        if((reset_icon
+                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                : ImGui::Button("Reset pos")) &&
+           !f.notes.empty())
+        {
+          push_selection_snapshot();
+          reset_note_positions();
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Reset positions";
+        ImGui::SameLine();
+
+        if(mode_button(
+               "##toggle_detach_note_windows_icon",
+               detach_icon,
+               "Detach",
+               detached_note_windows_enabled_
+                   ? "Detach notes outside app window (enabled)"
+                   : "Detach notes outside app window (disabled)",
+               detached_note_windows_enabled_))
+        {
+          push_sidebar_snapshot();
+          detached_note_windows_enabled_ = !detached_note_windows_enabled_;
+          set_detached_note_windows_enabled(detached_note_windows_enabled_);
+          save_index();
+        }
+
+        ImGui::SameLine(0.0f, 4.0f);
+        {
+          const ImVec2 dot_pos = ImGui::GetCursorScreenPos();
+          const ImVec2 dot_center(dot_pos.x - 9.0f, dot_pos.y + 6.0f);
+          ImDrawList *dl = ImGui::GetWindowDrawList();
+          const ImU32 ring_col = ImGui::GetColorU32(ImVec4(0.82f, 0.86f, 0.94f, 0.95f));
+          const ImU32 fill_col = detached_note_windows_enabled_
+                                     ? ImGui::GetColorU32(ImVec4(0.30f, 0.83f, 0.56f, 1.0f))
+                                     : ImGui::GetColorU32(ImVec4(0.15f, 0.18f, 0.22f, 1.0f));
+          dl->AddCircleFilled(dot_center, 3.0f, fill_col, 16);
+          dl->AddCircle(dot_center, 3.0f, ring_col, 16, 1.0f);
+          ImGui::Dummy(ImVec2(10.0f, 16.0f));
+        }
+        ImGui::SameLine();
       }
-      if(!editing_mode_) ImGui::ColorEdit3("##draw_color", (float *)&draw_color, ImGuiColorEditFlags_NoInputs);
-      if(!editing_mode_) ImGui::SameLine();
       ImGui::PopStyleColor(8);
       ImGui::End();
       ImGui::PopStyleVar(2);
@@ -4677,7 +4764,6 @@ __CURSOR__)MD");
           fmt_folder.last_edit_cursor = -1;
           refocus_folder_editor = true;
         }
-
 
         ImGuiInputTextFlags flags =
             ImGuiInputTextFlags_AllowTabInput |
