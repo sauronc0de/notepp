@@ -20,6 +20,22 @@ std::string trim_copy(std::string_view text)
 
 std::string shell_escape(std::string_view value)
 {
+#if defined(_WIN32)
+  std::string out;
+  out.reserve(value.size() + 8);
+  out.push_back('"');
+  for(char c : value)
+  {
+    if(c == '"')
+      out += "\\\"";
+    else if(c == '%')
+      out += "%%";
+    else
+      out.push_back(c);
+  }
+  out.push_back('"');
+  return out;
+#else
   std::string out;
   out.reserve(value.size() + 2);
   out.push_back('\'');
@@ -32,6 +48,7 @@ std::string shell_escape(std::string_view value)
   }
   out.push_back('\'');
   return out;
+#endif
 }
 
 CommandResult run_command(const std::string &command)
