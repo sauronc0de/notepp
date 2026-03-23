@@ -37,8 +37,8 @@ option(ENABLE_TEST "Enable tests" OFF)
 
 # Project-wide compile definitions (directory scope)
 add_compile_definitions(
-  ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
-  DATA_PATH="${CMAKE_SOURCE_DIR}/data"
+  NOTEPP_DEFAULT_ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
+  NOTEPP_DEFAULT_DATA_PATH="${CMAKE_SOURCE_DIR}/data"
   IMGUI_USE_WCHAR32
   $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
@@ -65,3 +65,36 @@ add_subdirectory(src)
 add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp src/undo_redo.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui markdown_code_highlight note_ui)
+
+add_custom_command(
+  TARGET ${PROJECT_NAME}
+  POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:${PROJECT_NAME}>/data"
+  COMMENT "Copying writable app data next to the executable"
+)
+
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/data DESTINATION .)
+
+install(CODE [[
+  file(GET_RUNTIME_DEPENDENCIES
+    RESOLVED_DEPENDENCIES_VAR notepp_resolved_deps
+    UNRESOLVED_DEPENDENCIES_VAR notepp_unresolved_deps
+    EXECUTABLES "$<TARGET_FILE:Notepp>"
+    PRE_EXCLUDE_REGEXES
+      "api-ms-.*"
+      "ext-ms-.*"
+    POST_EXCLUDE_REGEXES
+      ".*/system32/.*"
+      ".*/System32/.*"
+      ".*/Windows/WinSxS/.*"
+  )
+
+  foreach(dep IN LISTS notepp_resolved_deps)
+    file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}" TYPE SHARED_LIBRARY FILES "${dep}")
+  endforeach()
+
+  if(notepp_unresolved_deps)
+    message(WARNING "Unresolved runtime dependencies: ${notepp_unresolved_deps}")
+  endif()
+]])

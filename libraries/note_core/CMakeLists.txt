@@ -1,3 +1,23 @@
-add_library(note_core STATIC string_utils.cpp)
-target_include_directories(note_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+file(GLOB_RECURSE NOTEPP_ASSET_FILES CONFIGURE_DEPENDS LIST_DIRECTORIES false RELATIVE "${PROJECT_SOURCE_DIR}/assets" "${PROJECT_SOURCE_DIR}/assets/*")
+set(NOTEPP_ASSET_DEPENDS ${NOTEPP_ASSET_FILES})
+list(TRANSFORM NOTEPP_ASSET_DEPENDS PREPEND "${PROJECT_SOURCE_DIR}/assets/")
 
+set(NOTEPP_GENERATED_ASSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(NOTEPP_GENERATED_ASSET_CPP "${NOTEPP_GENERATED_ASSET_DIR}/embedded_assets_generated.cpp")
+set(NOTEPP_GENERATED_ASSET_HPP "${NOTEPP_GENERATED_ASSET_DIR}/embedded_assets.hpp")
+
+add_custom_command(
+  OUTPUT "${NOTEPP_GENERATED_ASSET_CPP}" "${NOTEPP_GENERATED_ASSET_HPP}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${NOTEPP_GENERATED_ASSET_DIR}"
+  COMMAND
+    ${CMAKE_COMMAND}
+    -DASSET_ROOT=${PROJECT_SOURCE_DIR}/assets
+    -DOUTPUT_CPP=${NOTEPP_GENERATED_ASSET_CPP}
+    -DOUTPUT_HPP=${NOTEPP_GENERATED_ASSET_HPP}
+    -P "${PROJECT_SOURCE_DIR}/cmake/generate_embedded_assets.cmake"
+  DEPENDS "${PROJECT_SOURCE_DIR}/cmake/generate_embedded_assets.cmake" ${NOTEPP_ASSET_DEPENDS}
+  VERBATIM
+)
+
+add_library(note_core STATIC string_utils.cpp runtime_paths.cpp embedded_assets.cpp "${NOTEPP_GENERATED_ASSET_CPP}")
+target_include_directories(note_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} "${NOTEPP_GENERATED_ASSET_DIR}")

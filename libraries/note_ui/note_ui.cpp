@@ -1,5 +1,7 @@
 #include "note_ui.hpp"
 
+#include "embedded_assets.hpp"
+#include "runtime_paths.hpp"
 #include "string_utils.hpp"
 
 #include <filesystem>
@@ -23,6 +25,17 @@ ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, 
 namespace
 {
 std::unordered_map<std::string, GLuint> g_toolbar_icon_cache;
+
+SDL_Surface *load_surface_from_asset(std::string_view asset_path)
+{
+  const NoteppEmbeddedAssets::AssetSpan asset = NoteppEmbeddedAssets::find_asset(asset_path);
+  if(!asset) return nullptr;
+
+  SDL_RWops *rw = SDL_RWFromConstMem(asset.data, static_cast<int>(asset.size));
+  if(!rw) return nullptr;
+
+  return IMG_Load_RW(rw, 1);
+}
 } // namespace
 
 ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
@@ -111,8 +124,7 @@ ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
   }();
   (void)img_ready;
 
-  const std::filesystem::path p = std::filesystem::path(ASSETS_PATH) / "icons" / key;
-  SDL_Surface *loaded = IMG_Load(p.string().c_str());
+  SDL_Surface *loaded = load_surface_from_asset(std::string("icons/") + key);
   if(!loaded) return static_cast<ImTextureID>(0);
 
   SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);

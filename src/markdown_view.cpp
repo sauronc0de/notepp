@@ -1,7 +1,9 @@
 #include "markdown_view.hpp"
+#include "embedded_assets.hpp"
 #include "helpers.hpp"
 #include "markdown_code_highlight.hpp"
 #include "markdown_sections.hpp"
+#include "runtime_paths.hpp"
 #include "string_utils.hpp"
 
 #include <cmath>
@@ -81,7 +83,7 @@ static std::filesystem::path resolve_image_path(std::string_view href)
   const std::filesystem::path p(href);
   if(p.is_absolute() && std::filesystem::exists(p)) return p;
 
-  const std::filesystem::path asset_root(ASSETS_PATH);
+  const std::filesystem::path asset_root = NoteppPaths::assets_dir();
   const std::filesystem::path repo_root = asset_root.parent_path();
 
   std::vector<std::filesystem::path> candidates;
@@ -101,6 +103,24 @@ static std::filesystem::path resolve_image_path(std::string_view href)
     if(std::filesystem::exists(c, ec) && std::filesystem::is_regular_file(c, ec))
       return c;
   }
+  return {};
+}
+
+static std::string resolve_embedded_image_path(std::string_view href)
+{
+  auto try_asset = [](std::string_view candidate) -> std::string {
+    if(NoteppEmbeddedAssets::has_asset(candidate)) return std::string(candidate);
+    return {};
+  };
+
+  if(std::string key = try_asset(href); !key.empty()) return key;
+
+  if(starts_with(href, "assets/"))
+  {
+    std::string_view rel = href.substr(7);
+    if(std::string key = try_asset(rel); !key.empty()) return key;
+  }
+
   return {};
 }
 
@@ -192,7 +212,7 @@ static InternalLinkTarget resolve_internal_link(std::string_view href)
     std::vector<std::filesystem::path> candidates;
     if(!g_document_path.empty())
       candidates.push_back(std::filesystem::path(g_document_path).parent_path() / rel);
-    candidates.push_back(std::filesystem::path(DATA_PATH) / "notes" / rel);
+    candidates.push_back(NoteppPaths::data("notes") / rel);
 
     for(const auto &candidate : candidates)
     {
@@ -307,6 +327,52 @@ static TextureRecord load_texture_from_file(const std::filesystem::path &file)
   (void)img_ready;
 
   SDL_Surface *loaded = IMG_Load(file.string().c_str());
+  if(!loaded) return rec;
+
+  SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
+  SDL_FreeSurface(loaded);
+  if(!rgba) return rec;
+
+  GLuint tex = 0;
+  glGenTextures(1, &tex);
+  if(tex == 0)
+  {
+    SDL_FreeSurface(rgba);
+    return rec;
+  }
+
+  glBindTexture(GL_TEXTURE_2D, tex);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  rec.texture_id = tex;
+  rec.size = ImVec2((float)rgba->w, (float)rgba->h);
+  rec.loaded = true;
+  SDL_FreeSurface(rgba);
+  return rec;
+}
+
+static TextureRecord load_texture_from_asset(std::string_view asset_path)
+{
+  TextureRecord rec{};
+  const NoteppEmbeddedAssets::AssetSpan asset = NoteppEmbeddedAssets::find_asset(asset_path);
+  if(!asset) return rec;
+
+  static bool img_ready = []() {
+    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+    return true;
+  }();
+  (void)img_ready;
+
+  SDL_RWops *rw = SDL_RWFromConstMem(asset.data, static_cast<int>(asset.size));
+  if(!rw) return rec;
+
+  SDL_Surface *loaded = IMG_Load_RW(rw, 1);
   if(!loaded) return rec;
 
   SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
@@ -583,7 +649,11 @@ struct MyMarkdown : public imgui_md
     auto it = g_image_cache.find(m_href);
     if(it == g_image_cache.end())
     {
-      TextureRecord rec = load_texture_from_file(resolve_image_path(m_href));
+      TextureRecord rec{};
+      if(const std::string asset_key = resolve_embedded_image_path(m_href); !asset_key.empty())
+        rec = load_texture_from_asset(asset_key);
+      else
+        rec = load_texture_from_file(resolve_image_path(m_href));
       it = g_image_cache.emplace(m_href, rec).first;
     }
 

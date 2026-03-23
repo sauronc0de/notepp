@@ -1,8 +1,10 @@
 #include "markdown_ui.hpp"
 
+#include "embedded_assets.hpp"
 #include "helpers.hpp"
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
+#include "runtime_paths.hpp"
 #include "string_utils.hpp"
 
 #include <algorithm>
@@ -503,7 +505,7 @@ std::filesystem::path resolve_widget_image_path(std::string_view raw_path)
   if(path.is_absolute() && std::filesystem::exists(path)) return path;
   if(std::filesystem::exists(path)) return std::filesystem::absolute(path);
 
-  const std::filesystem::path assets_root = std::filesystem::path(ASSETS_PATH);
+  const std::filesystem::path assets_root = NoteppPaths::assets_dir();
   const std::filesystem::path asset_candidate = assets_root / path;
   if(std::filesystem::exists(asset_candidate)) return asset_candidate;
 
@@ -513,14 +515,42 @@ std::filesystem::path resolve_widget_image_path(std::string_view raw_path)
   return {};
 }
 
+std::string resolve_widget_embedded_asset(std::string_view raw_path)
+{
+  if(raw_path.empty()) return {};
+
+  auto try_asset = [](std::string_view candidate) -> std::string {
+    if(NoteppEmbeddedAssets::has_asset(candidate)) return std::string(candidate);
+    return {};
+  };
+
+  if(std::string key = try_asset(raw_path); !key.empty()) return key;
+
+  if(std::string key = try_asset(std::string("icons/") + std::string(raw_path)); !key.empty()) return key;
+
+  return {};
+}
+
+SDL_Surface *load_surface_from_asset(std::string_view asset_path)
+{
+  const NoteppEmbeddedAssets::AssetSpan asset = NoteppEmbeddedAssets::find_asset(asset_path);
+  if(!asset) return nullptr;
+
+  SDL_RWops *rw = SDL_RWFromConstMem(asset.data, static_cast<int>(asset.size));
+  if(!rw) return nullptr;
+
+  return IMG_Load_RW(rw, 1);
+}
+
 ImTextureID get_widget_image_texture(std::string_view raw_path)
 {
   static std::unordered_map<std::string, GLuint> texture_cache;
 
-  const std::filesystem::path resolved = resolve_widget_image_path(raw_path);
-  if(resolved.empty()) return static_cast<ImTextureID>(0);
+  const std::string embedded_key = resolve_widget_embedded_asset(raw_path);
+  const std::filesystem::path resolved = embedded_key.empty() ? resolve_widget_image_path(raw_path) : std::filesystem::path{};
+  if(embedded_key.empty() && resolved.empty()) return static_cast<ImTextureID>(0);
 
-  const std::string key = resolved.string();
+  const std::string key = embedded_key.empty() ? resolved.string() : std::string("asset:") + embedded_key;
   if(const auto it = texture_cache.find(key); it != texture_cache.end())
   {
     return (ImTextureID)(uintptr_t)it->second;
@@ -532,7 +562,7 @@ ImTextureID get_widget_image_texture(std::string_view raw_path)
   }();
   (void)img_ready;
 
-  SDL_Surface *loaded = IMG_Load(key.c_str());
+  SDL_Surface *loaded = embedded_key.empty() ? IMG_Load(resolved.string().c_str()) : load_surface_from_asset(embedded_key);
   if(!loaded)
   {
     texture_cache.emplace(key, 0);
