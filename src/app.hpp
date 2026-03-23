@@ -14,7 +14,6 @@ struct SDL_Window;
 class App
 {
 public:
-  App();
   int run();
 
 private:
@@ -100,7 +99,7 @@ private:
   int search_jump_len_ = 0;
   bool search_jump_force_edit_ = false;
   std::string note_title_ = "Note";
-  std::string state_file_path_;
+  std::string state_file_path_ = DATA_PATH "/note.md";
   struct NoteMeta
   {
     std::string title;

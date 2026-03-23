@@ -4,8 +4,6 @@
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
 #include "note_ui.hpp"
-#include "embedded_assets.hpp"
-#include "runtime_paths.hpp"
 #include "string_utils.hpp"
 #include "tiny_json.hpp"
 
@@ -79,36 +77,12 @@ using Json = nlohmann::json;
 namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
-
-std::string default_state_file()
-{
-  return NoteppPaths::data("note.md").string();
-}
-
-std::string legacy_state_meta_file()
-{
-  return NoteppPaths::data("current_note_path.txt").string();
-}
-
-std::string index_file()
-{
-  return NoteppPaths::data("notes_index.json").string();
-}
-
-std::string imgui_ini_file()
-{
-  return NoteppPaths::data("imgui_layout.ini").string();
-}
-
-std::string drawings_file()
-{
-  return NoteppPaths::data("drawings_state.txt").string();
-}
-
-std::string clipboard_file()
-{
-  return NoteppPaths::data("note_clipboard.json").string();
-}
+constexpr const char *kDefaultStateFile = DATA_PATH "/note.md";
+constexpr const char *kLegacyStateMetaFile = DATA_PATH "/current_note_path.txt";
+constexpr const char *kIndexFile = DATA_PATH "/notes_index.json";
+constexpr const char *kImGuiIniFile = DATA_PATH "/imgui_layout.ini";
+constexpr const char *kDrawingsFile = DATA_PATH "/drawings_state.txt";
+constexpr const char *kClipboardFile = DATA_PATH "/note_clipboard.json";
 
 struct FreeStroke
 {
@@ -243,7 +217,7 @@ void load_drawings_state()
   g_draw_redo.clear();
   g_drawings_legacy_checked.clear();
 
-  std::ifstream in(drawings_file(), std::ios::binary);
+  std::ifstream in(kDrawingsFile, std::ios::binary);
   if(!in) return;
 
   std::string line;
@@ -313,7 +287,7 @@ void load_drawings_state()
 
 void save_drawings_state()
 {
-  std::ofstream out(drawings_file(), std::ios::trunc);
+  std::ofstream out(kDrawingsFile, std::ios::trunc);
   if(!out) return;
 
   for(const auto &[folder, strokes] : g_folder_drawings)
@@ -347,7 +321,7 @@ void load_note_clipboard()
   g_copied_note_content.clear();
   g_copied_notes_batch.clear();
 
-  std::ifstream in(clipboard_file(), std::ios::binary);
+  std::ifstream in(kClipboardFile, std::ios::binary);
   if(!in) return;
 
   const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -364,7 +338,7 @@ void load_note_clipboard()
 
 void save_note_clipboard()
 {
-  std::ofstream out(clipboard_file(), std::ios::trunc);
+  std::ofstream out(kClipboardFile, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -375,11 +349,6 @@ void save_note_clipboard()
   g_clipboard_dirty = false;
 }
 } // namespace
-
-App::App()
-    : state_file_path_(default_state_file())
-{
-}
 
 int App::run()
 {
@@ -457,26 +426,7 @@ void App::init_imgui()
   // - Roboto-BoldItalic.ttf
 
   constexpr float kUiFontSize = 14.0f;
-  auto add_font_from_asset = [&](const char *asset_path, float size_pixels, const ImFontConfig *config = nullptr, const ImWchar *glyph_ranges = nullptr) -> ImFont * {
-    const NoteppEmbeddedAssets::AssetSpan asset = NoteppEmbeddedAssets::find_asset(asset_path);
-    if(!asset) return nullptr;
-
-    ImFontConfig owned_config;
-    if(config != nullptr)
-      owned_config = *config;
-    else
-      owned_config = ImFontConfig{};
-    owned_config.FontDataOwnedByAtlas = false;
-
-    return io.Fonts->AddFontFromMemoryTTF(
-        const_cast<unsigned char *>(asset.data),
-        static_cast<int>(asset.size),
-        size_pixels,
-        &owned_config,
-        glyph_ranges);
-  };
-
-  auto merge_emoji_fallback = [&](const char *emoji_asset_path) {
+  auto merge_emoji_fallback = [&](const char *emoji_font_path) {
     ImFontConfig emoji_cfg;
     emoji_cfg.MergeMode = true;
     emoji_cfg.PixelSnapH = true;
@@ -487,29 +437,29 @@ void App::init_imgui()
         0xFE0E, 0xFE0F,   // variation selectors
         0x1F300, 0x1FAFF, // emoji blocks
         0};
-    add_font_from_asset(emoji_asset_path, kUiFontSize, &emoji_cfg, emoji_ranges);
+    io.Fonts->AddFontFromFileTTF(emoji_font_path, kUiFontSize, &emoji_cfg, emoji_ranges);
   };
 
-  ImFont *font_regular = add_font_from_asset("fonts/Roboto-Medium.ttf", kUiFontSize);
-  if(!font_regular) font_regular = add_font_from_asset("fonts/opensans.ttf", kUiFontSize);
+  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Medium.ttf", kUiFontSize);
+  if(!font_regular) font_regular = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/opensans.ttf", kUiFontSize);
   if(font_regular)
   {
-    merge_emoji_fallback("fonts/openmojiblack.ttf");
-    merge_emoji_fallback("fonts/twemoji.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
   }
 
-  ImFont *font_italic = add_font_from_asset("fonts/Roboto-Italic.ttf", kUiFontSize);
+  ImFont *font_italic = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Italic.ttf", kUiFontSize);
   if(font_italic)
   {
-    merge_emoji_fallback("fonts/openmojiblack.ttf");
-    merge_emoji_fallback("fonts/twemoji.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
   }
 
-  ImFont *font_bold = add_font_from_asset("fonts/Roboto-Bold.ttf", kUiFontSize);
+  ImFont *font_bold = io.Fonts->AddFontFromFileTTF(ASSETS_PATH "/fonts/Roboto-Bold.ttf", kUiFontSize);
   if(font_bold)
   {
-    merge_emoji_fallback("fonts/openmojiblack.ttf");
-    merge_emoji_fallback("fonts/twemoji.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/openmojiblack.ttf");
+    merge_emoji_fallback(ASSETS_PATH "/fonts/twemoji.ttf");
   }
 
   // Fallback if you don’t have files yet:
@@ -524,8 +474,7 @@ void App::init_imgui()
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
-  static const std::string ini_file = imgui_ini_file();
-  io.IniFilename = ini_file.c_str();
+  io.IniFilename = kImGuiIniFile;
 
   ImGui::StyleColorsDark();
   if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
@@ -569,7 +518,7 @@ void App::shutdown()
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
   {
-    ImGui::SaveIniSettingsToDisk(imgui_ini_file().c_str());
+    ImGui::SaveIniSettingsToDisk(kImGuiIniFile);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -602,7 +551,7 @@ void App::load_state()
   layout_locked_ = false;
   detached_note_windows_enabled_ = true;
 
-  std::ifstream in_index(index_file());
+  std::ifstream in_index(kIndexFile);
   if(in_index)
   {
     const std::string doc((std::istreambuf_iterator<char>(in_index)), std::istreambuf_iterator<char>());
@@ -673,7 +622,7 @@ void App::load_state()
   {
     // Migration from legacy current_note_path.txt
     std::string migrated_path;
-    std::ifstream legacy(legacy_state_meta_file());
+    std::ifstream legacy(kLegacyStateMetaFile);
     if(legacy)
     {
       std::string p;
@@ -728,7 +677,7 @@ void App::save_state()
 
 void App::save_index() const
 {
-  std::ofstream out(index_file(), std::ios::trunc);
+  std::ofstream out(kIndexFile, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -797,7 +746,7 @@ std::string App::make_note_path(const std::string &folder_name, const std::strin
     if(f.empty()) f = "General";
   }
   const std::string n = sanitize_note_filename(note_title);
-  std::filesystem::path dir = NoteppPaths::data("notes") / f;
+  std::filesystem::path dir = std::filesystem::path(DATA_PATH) / "notes" / f;
   return (dir / (n + ".md")).string();
 }
 
