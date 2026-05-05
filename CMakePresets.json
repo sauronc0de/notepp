@@ -27,6 +27,17 @@
       }
     },
     {
+      "name": "config-msvc",
+      "displayName": "Base (Ninja, MSVC)",
+      "description": "Windows build using Visual Studio Build Tools 2026 MSVC",
+      "hidden": true,
+      "inherits": "config-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
       "name": "config-mingw",
       "displayName": "Base (Ninja, MinGW-UCRT)",
       "description": "Windows build using MSYS2 UCRT64 GCC toolchain",
@@ -88,6 +99,17 @@
       }
     },
     {
+      "name": "Release_msvc",
+      "displayName": "✅ Release (MSVC)",
+      "inherits": "config-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_LOG": "OFF",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_UNITY_BUILD": "OFF"
+      }
+    },
+    {
       "name": "Release_mingw",
       "displayName": "✅ Release (MinGW)",
       "inherits": "config-mingw",
@@ -137,6 +159,11 @@
       "jobs": 0
     },
     {
+      "name": "Release_msvc",
+      "configurePreset": "Release_msvc",
+      "jobs": 0
+    },
+    {
       "name": "Release_mingw",
       "configurePreset": "Release_mingw",
       "jobs": 0
@@ -167,6 +194,14 @@
     {
       "name": "Release",
       "configurePreset": "Release",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "Release_msvc",
+      "configurePreset": "Release_msvc",
       "output": {
         "shortProgress": true,
         "outputOnFailure": true
