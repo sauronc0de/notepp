@@ -35,16 +35,26 @@ option(ENABLE_LOG "Enable logging" OFF)
 option(ENABLE_RENDER "Enable rendering" ON)
 option(ENABLE_TEST "Enable tests" OFF)
 
+# Use paths relative to executable/install folder instead of absolute development paths
+if(USE_PORTABLE_PATHS)
+  message(STATUS "Use paths relative to executable/install folder")
+  set(NOTEPP_ASSETS_PATH "assets")
+  set(NOTEPP_DATA_PATH "data")
+else()
+  message(STATUS "Use absolute development paths")
+  set(NOTEPP_ASSETS_PATH "${CMAKE_SOURCE_DIR}/assets")
+  set(NOTEPP_DATA_PATH "${CMAKE_SOURCE_DIR}/data")
+endif()
+
 # Project-wide compile definitions (directory scope)
 add_compile_definitions(
-  ASSETS_PATH="${CMAKE_SOURCE_DIR}/assets"
-  DATA_PATH="${CMAKE_SOURCE_DIR}/data"
+  ASSETS_PATH="${NOTEPP_ASSETS_PATH}"
+  DATA_PATH="${NOTEPP_DATA_PATH}"
   IMGUI_USE_WCHAR32
   $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
   $<$<BOOL:${ENABLE_RENDER}>:ENABLE_RENDER=true>
 )
-
 # ------------------------------------------------------------
 # Dependencies
 find_package(SDL2 REQUIRED)

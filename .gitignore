@@ -1,6 +1,7 @@
 build/
 .cache/
 .ccache/
+dist/
 
 # Ignore saves folder
 data/
