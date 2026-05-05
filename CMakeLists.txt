@@ -7,7 +7,7 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
 endif()
 
 set(ProjectName "Notepp")
-project(${ProjectName} LANGUAGES C CXX)
+project(${ProjectName} VERSION 0.0.1 LANGUAGES C CXX)
 
 # C++ standard (target-level "features" would also work, but this is fine)
 set(CMAKE_CXX_STANDARD 20)
@@ -75,3 +75,10 @@ add_subdirectory(src)
 add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp src/undo_redo.cpp)
 target_include_directories(${PROJECT_NAME} PUBLIC src)
 target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui markdown_code_highlight note_ui)
+
+# Installer
+configure_file(
+  ${CMAKE_SOURCE_DIR}/tools/installer/notepp.iss.in
+  ${CMAKE_BINARY_DIR}/notepp.iss
+  @ONLY
+)

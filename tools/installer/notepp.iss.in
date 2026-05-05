@@ -1,0 +1,59 @@
+#define MyAppName "Notepp"
+#define MyAppVersion "@PROJECT_VERSION@"
+#define MyAppPublisher "sauroncode"
+#define MyAppExeName "Notepp.exe"
+
+[Setup]
+AppId={{9D9F6F60-4B3B-4C4D-9F4D-NOTEPP000001}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+OutputDir=@CMAKE_SOURCE_DIR@\dist
+OutputBaseFilename=NoteppSetup-{#MyAppVersion}
+SetupIconFile=@CMAKE_SOURCE_DIR@\assets\icon\notepp.png
+Compression=lzma
+SolidCompression=yes
+WizardStyle=modern
+ArchitecturesAllowed=x64
+ArchitecturesInstallIn64BitMode=x64
+DisableProgramGroupPage=yes
+UninstallDisplayIcon={app}\{#MyAppExeName}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Installer
+
+[Languages]
+Name: "Català"; MessagesFile: "compiler:Languages\Catalan.isl"
+Name: "English"; MessagesFile: "compiler:Default.isl"
+Name: "Castellano"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "associate_notepp"; Description: "Associate .notepp files with Notepp"; GroupDescription: "File associations:"; Flags: unchecked
+
+[Files]
+Source: "@CMAKE_SOURCE_DIR@\dist\Notepp\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\.notepp"; ValueType: string; ValueName: ""; ValueData: "Notepp.Document"; Flags: uninsdeletevalue; Tasks: associate_notepp
+Root: HKCU; Subkey: "Software\Classes\Notepp.Document"; ValueType: string; ValueName: ""; ValueData: "Notepp Document"; Flags: uninsdeletekey; Tasks: associate_notepp
+Root: HKCU; Subkey: "Software\Classes\Notepp.Document\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: associate_notepp
+Root: HKCU; Subkey: "Software\Classes\Notepp.Document\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: associate_notepp
+
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\old_cache"
+Type: files; Name: "{app}\*.old"
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\cache"
+Type: filesandordirs; Name: "{app}\logs"
+Type: filesandordirs; Name: "{app}\temp"
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
