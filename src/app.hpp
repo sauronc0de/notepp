@@ -4,6 +4,7 @@
 
 #include <imgui.h>
 
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -11,12 +12,20 @@
 
 struct SDL_Window;
 
+struct AppConfig
+{
+  std::filesystem::path assetsPath;
+  std::filesystem::path dataPath;
+};
+
 class App
 {
 public:
+  explicit App(AppConfig config);
   int run();
 
 private:
+  AppConfig config_;
   void init_sdl_gl();
   void init_imgui();
   void load_state();
@@ -68,6 +77,14 @@ private:
   void frame_begin();
   void frame_ui();
   void frame_end();
+  void save_note_clipboard();
+
+  std::filesystem::path default_state_file_;
+  std::filesystem::path legacy_state_meta_file_;
+  std::filesystem::path index_file_;
+  std::filesystem::path imgui_ini_file_;
+  std::filesystem::path drawings_file_;
+  std::filesystem::path g_clipboard_file;
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;
@@ -99,7 +116,7 @@ private:
   int search_jump_len_ = 0;
   bool search_jump_force_edit_ = false;
   std::string note_title_ = "Note";
-  std::string state_file_path_ = DATA_PATH "/note.md";
+  std::string state_file_path_;
   struct NoteMeta
   {
     std::string title;

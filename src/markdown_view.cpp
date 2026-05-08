@@ -41,6 +41,7 @@ struct MdFonts
 };
 
 static MdFonts g_fonts{};
+std::filesystem::path g_assets_path;
 
 struct TextureRecord
 {
@@ -51,7 +52,7 @@ struct TextureRecord
 
 static std::unordered_map<std::string, TextureRecord> g_image_cache{};
 static float g_render_width = 0.0f;
-static std::string g_document_path;
+static std::filesystem::path g_document_path;
 static bool g_hover_preview_enabled = true;
 
 struct HoverPreviewState
@@ -81,7 +82,7 @@ static std::filesystem::path resolve_image_path(std::string_view href)
   const std::filesystem::path p(href);
   if(p.is_absolute() && std::filesystem::exists(p)) return p;
 
-  const std::filesystem::path asset_root(ASSETS_PATH);
+  const std::filesystem::path asset_root = g_assets_path;
   const std::filesystem::path repo_root = asset_root.parent_path();
 
   std::vector<std::filesystem::path> candidates;
@@ -715,9 +716,14 @@ void MarkdownView::set_render_width(float width)
   g_render_width = width > 0.0f ? width : 0.0f;
 }
 
-void MarkdownView::set_document_path(std::string_view path)
+void MarkdownView::set_document_path(std::filesystem::path path)
 {
-  g_document_path.assign(path.data(), path.size());
+  g_document_path = std::move(path);
+}
+
+void MarkdownView::set_assets_path(std::filesystem::path path)
+{
+  g_assets_path = std::move(path);
 }
 
 void MarkdownView::set_hover_preview_enabled(bool enabled)
@@ -835,75 +841,75 @@ static void render_inline_md_with_color_spans(std::string_view text)
   for(size_t i = 0; i < tokens.size(); ++i)
   {
     const auto &t = tokens[i];
-      if(t.newline)
+    if(t.newline)
+    {
+      MyMarkdown::compact_newline(4.0f);
+      continue;
+    }
+
+    std::string_view token_text(t.text);
+    size_t token_trimmed_start = 0;
+    while(token_trimmed_start < token_text.size() && token_text[token_trimmed_start] == ' ') ++token_trimmed_start;
+    size_t token_trimmed_end = token_text.size();
+    while(token_trimmed_end > token_trimmed_start && token_text[token_trimmed_end - 1] == ' ') --token_trimmed_end;
+    const int leading_spaces = (int)token_trimmed_start;
+    const int trailing_spaces = (int)(token_text.size() - token_trimmed_end);
+    token_text = token_text.substr(token_trimmed_start, token_trimmed_end - token_trimmed_start);
+
+    size_t p = 0;
+    bool emitted_inline = false;
+    if(leading_spaces > 0)
+    {
+      const float sw = ImGui::CalcTextSize(" ").x;
+      if(sw > 0.0f)
       {
-        MyMarkdown::compact_newline(4.0f);
-        continue;
+        ImGui::Dummy(ImVec2(sw * (float)leading_spaces, 0.0f));
+        emitted_inline = true;
+        if(!token_text.empty()) ImGui::SameLine(0.0f, 0.0f);
+      }
+    }
+    while(p < token_text.size())
+    {
+      size_t bq0 = token_text.find('`', p);
+      if(bq0 == std::string::npos)
+      {
+        render_md_fragment(token_text.substr(p), t.colored, t.color);
+        emitted_inline = true;
+        break;
       }
 
-      std::string_view token_text(t.text);
-      size_t token_trimmed_start = 0;
-      while(token_trimmed_start < token_text.size() && token_text[token_trimmed_start] == ' ') ++token_trimmed_start;
-      size_t token_trimmed_end = token_text.size();
-      while(token_trimmed_end > token_trimmed_start && token_text[token_trimmed_end - 1] == ' ') --token_trimmed_end;
-      const int leading_spaces = (int)token_trimmed_start;
-      const int trailing_spaces = (int)(token_text.size() - token_trimmed_end);
-      token_text = token_text.substr(token_trimmed_start, token_trimmed_end - token_trimmed_start);
+      render_md_fragment(token_text.substr(p, bq0 - p), t.colored, t.color);
+      emitted_inline = true;
 
-      size_t p = 0;
-      bool emitted_inline = false;
-      if(leading_spaces > 0)
+      size_t bq1 = token_text.find('`', bq0 + 1);
+      if(bq1 == std::string::npos)
+      {
+        render_md_fragment(token_text.substr(bq0), t.colored, t.color);
+        emitted_inline = true;
+        break;
+      }
+
+      ImGui::SameLine(0.0f, 0.0f);
+      render_code_chip(token_text.substr(bq0 + 1, bq1 - bq0 - 1), t.colored, t.color);
+      p = bq1 + 1;
+      if(p < token_text.size()) ImGui::SameLine(0.0f, 0.0f);
+    }
+
+    const bool has_next = (i + 1 < tokens.size());
+    if(has_next && !tokens[i + 1].newline)
+    {
+      if(emitted_inline) ImGui::SameLine(0.0f, 0.0f);
+      if(trailing_spaces > 0)
       {
         const float sw = ImGui::CalcTextSize(" ").x;
         if(sw > 0.0f)
         {
-          ImGui::Dummy(ImVec2(sw * (float)leading_spaces, 0.0f));
-          emitted_inline = true;
-          if(!token_text.empty()) ImGui::SameLine(0.0f, 0.0f);
-        }
-      }
-      while(p < token_text.size())
-      {
-        size_t bq0 = token_text.find('`', p);
-        if(bq0 == std::string::npos)
-        {
-          render_md_fragment(token_text.substr(p), t.colored, t.color);
-          emitted_inline = true;
-          break;
-        }
-
-        render_md_fragment(token_text.substr(p, bq0 - p), t.colored, t.color);
-        emitted_inline = true;
-
-        size_t bq1 = token_text.find('`', bq0 + 1);
-        if(bq1 == std::string::npos)
-        {
-          render_md_fragment(token_text.substr(bq0), t.colored, t.color);
-          emitted_inline = true;
-          break;
-        }
-
-        ImGui::SameLine(0.0f, 0.0f);
-        render_code_chip(token_text.substr(bq0 + 1, bq1 - bq0 - 1), t.colored, t.color);
-        p = bq1 + 1;
-        if(p < token_text.size()) ImGui::SameLine(0.0f, 0.0f);
-      }
-
-      const bool has_next = (i + 1 < tokens.size());
-      if(has_next && !tokens[i + 1].newline)
-      {
-        if(emitted_inline) ImGui::SameLine(0.0f, 0.0f);
-        if(trailing_spaces > 0)
-        {
-          const float sw = ImGui::CalcTextSize(" ").x;
-          if(sw > 0.0f)
-          {
-            ImGui::Dummy(ImVec2(sw * (float)trailing_spaces, 0.0f));
-            ImGui::SameLine(0.0f, 0.0f);
-          }
+          ImGui::Dummy(ImVec2(sw * (float)trailing_spaces, 0.0f));
+          ImGui::SameLine(0.0f, 0.0f);
         }
       }
     }
+  }
 }
 
 static std::vector<std::string> split_md_table_cells(std::string_view line)

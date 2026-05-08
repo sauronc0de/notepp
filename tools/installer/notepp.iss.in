@@ -12,7 +12,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=@CMAKE_SOURCE_DIR@\dist
 OutputBaseFilename=NoteppSetup-{#MyAppVersion}
-SetupIconFile=@CMAKE_SOURCE_DIR@\assets\icon\notepp.png
+SetupIconFile=@CMAKE_SOURCE_DIR@\assets\icon\notepp.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -25,7 +25,7 @@ VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Installer
 
 [Languages]
-Name: "Català"; MessagesFile: "compiler:Languages\Catalan.isl"
+Name: "Catala"; MessagesFile: "compiler:Languages\Catalan.isl"
 Name: "English"; MessagesFile: "compiler:Default.isl"
 Name: "Castellano"; MessagesFile: "compiler:Languages\Spanish.isl"
 

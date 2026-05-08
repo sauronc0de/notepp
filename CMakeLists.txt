@@ -1,43 +1,30 @@
 cmake_minimum_required(VERSION 3.16)
 
-# CMake 4 removed compatibility with policy versions older than 3.5.
-# Some fetched third-party dependencies still declare older minimums.
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
   set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 endif()
 
 set(ProjectName "Notepp")
-project(${ProjectName} VERSION 0.0.1 LANGUAGES C CXX)
+project(${ProjectName} VERSION 0.0.0 LANGUAGES C CXX)
 
-# C++ standard (target-level "features" would also work, but this is fine)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Colorize diagnostics under Ninja (or any generator)
 add_compile_options(
   $<$<COMPILE_LANG_AND_ID:C,GNU>:-fdiagnostics-color=always>
   $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fdiagnostics-color=always>
   $<$<COMPILE_LANG_AND_ID:C,Clang>:-fcolor-diagnostics>
   $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fcolor-diagnostics>
-)
-
-# Warnings (per language)
-add_compile_options(
   $<$<COMPILE_LANGUAGE:C>:-Wall>
   $<$<COMPILE_LANGUAGE:CXX>:-Wall>
 )
 
-# Export compile commands (also enabled in presets; harmless to keep)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Feature toggles coming from presets; provide defaults for non-preset runs
 option(ENABLE_LOG "Enable logging" OFF)
 option(ENABLE_RENDER "Enable rendering" ON)
 option(ENABLE_TEST "Enable tests" OFF)
 
-# Use paths relative to executable/install folder instead of absolute development paths
 if(USE_PORTABLE_PATHS)
-  message(STATUS "Use paths relative to executable/install folder")
   set(NOTEPP_ASSETS_PATH "assets")
   set(NOTEPP_DATA_PATH "data")
 else()
@@ -46,7 +33,6 @@ else()
   set(NOTEPP_DATA_PATH "${CMAKE_SOURCE_DIR}/data")
 endif()
 
-# Project-wide compile definitions (directory scope)
 add_compile_definitions(
   ASSETS_PATH="${NOTEPP_ASSETS_PATH}"
   DATA_PATH="${NOTEPP_DATA_PATH}"
@@ -54,9 +40,9 @@ add_compile_definitions(
   $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
   $<$<BOOL:${ENABLE_RENDER}>:ENABLE_RENDER=true>
+  USE_PORTABLE_PATHS=$<BOOL:${USE_PORTABLE_PATHS}>
 )
-# ------------------------------------------------------------
-# Dependencies
+
 find_package(SDL2 REQUIRED)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/externals/modules")
 find_package(SDL2_image REQUIRED)
@@ -65,20 +51,89 @@ find_package(GLEW REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUA REQUIRED lua5.4)
 
-# ------------------------------------------------------------
-# Subdirs
 add_subdirectory(externals)
 add_subdirectory(libraries)
 add_subdirectory(examples)
 add_subdirectory(src)
 
-add_executable(${PROJECT_NAME} src/main.cpp src/app.cpp src/markdown_sections.cpp src/markdown_view.cpp src/undo_redo.cpp)
-target_include_directories(${PROJECT_NAME} PUBLIC src)
-target_link_libraries(${PROJECT_NAME} PRIVATE log imgui imgui_md note_core tiny_json markdown_support markdown_ui markdown_code_highlight note_ui)
+set(NOTEPP_SOURCES
+  src/main.cpp
+  src/app.cpp
+  src/markdown_sections.cpp
+  src/markdown_view.cpp
+  src/undo_redo.cpp
+  src/project_manager.cpp
+)
 
-# Installer
+if(WIN32)
+  enable_language(RC)
+
+  list(APPEND NOTEPP_SOURCES
+    ${CMAKE_SOURCE_DIR}/assets/icon/app.rc
+  )
+
+  add_executable(${PROJECT_NAME} WIN32 ${NOTEPP_SOURCES})
+  target_link_options(${PROJECT_NAME} PRIVATE -mwindows)
+else()
+  add_executable(${PROJECT_NAME} ${NOTEPP_SOURCES})
+endif()
+
+target_include_directories(${PROJECT_NAME} PUBLIC src)
+
+target_link_libraries(${PROJECT_NAME}
+  PRIVATE
+    log
+    imgui
+    imgui_md
+    note_core
+    tiny_json
+    markdown_support
+    markdown_ui
+    markdown_code_highlight
+    note_ui
+    nfd
+)
+
 configure_file(
   ${CMAKE_SOURCE_DIR}/tools/installer/notepp.iss.in
   ${CMAKE_BINARY_DIR}/notepp.iss
   @ONLY
 )
+
+if(WIN32)
+  find_program(ISCC_EXE
+    NAMES ISCC.exe
+    PATHS "C:/Program Files (x86)/Inno Setup 6"
+    REQUIRED
+  )
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    "${CMAKE_SOURCE_DIR}/dist/Notepp"
+
+  COMMAND ${CMAKE_COMMAND} -E copy
+    "$<TARGET_FILE:${PROJECT_NAME}>"
+    "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/assets"
+    "${CMAKE_SOURCE_DIR}/dist/Notepp/assets"
+
+  COMMAND C:/msys64/usr/bin/bash.exe --login
+    "${CMAKE_SOURCE_DIR}/tools/tasks/copy_mingw_dlls.sh"
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  COMMENT "Copying Notepp executable, assets and MinGW DLLs"
+  VERBATIM
+)
+
+  add_custom_target(installer ALL
+    COMMAND "${ISCC_EXE}" "${CMAKE_BINARY_DIR}/notepp.iss"
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Building Inno Setup installer"
+    VERBATIM
+  )
+endif()

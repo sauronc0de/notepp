@@ -248,3 +248,24 @@ configure_file(
 add_library(tree_sitter_queries INTERFACE)
 target_include_directories(tree_sitter_queries INTERFACE ${CMAKE_BINARY_DIR}/generated)
 # ------------------------------------------------------------#
+
+# 🌐 Native File Dialog Extended ---------------------------
+FetchContent_Declare(
+  nativefiledialog
+  GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended.git
+  GIT_TAG master
+)
+
+FetchContent_MakeAvailable(nativefiledialog)
+FetchContent_GetProperties(nativefiledialog)
+
+set(NFD_INCLUDE_DIR "${nativefiledialog_SOURCE_DIR}/src/include")
+
+if(TARGET nfd)
+  message(STATUS "Patching nfd include dir: ${NFD_INCLUDE_DIR}")
+
+  target_include_directories(nfd
+    PUBLIC
+      "${NFD_INCLUDE_DIR}"
+  )
+endif()
