@@ -3476,6 +3476,7 @@ void App::frame_ui()
     static bool draw_mode = false;
     static bool erase_mode = false;
     static bool drawings_visible = true;
+    static bool grid_visible = false;
     static bool stroke_in_progress = false;
     static bool erase_snapshot_taken = false;
     static ImVec4 draw_color = ImVec4(1.0f, 0.3f, 0.1f, 1.0f);
@@ -4019,6 +4020,7 @@ __CURSOR__)MD");
         const ImTextureID lock_icon = get_toolbar_icon_texture(layout_locked_ ? "unlock.png" : "lock.png");
         const ImTextureID detach_icon = get_toolbar_icon_texture("detach.png");
         const ImTextureID show_icon = get_toolbar_icon_texture(drawings_visible ? "hide.png" : "show.png");
+        const ImTextureID grid_icon = get_toolbar_icon_texture(grid_visible ? "hide-grid.png" : "show-grid.png");
         auto mode_button = [&](const char *id, ImTextureID icon, const char *fallback, const char *tooltip, bool active) -> bool {
           if(active)
           {
@@ -4123,6 +4125,15 @@ __CURSOR__)MD");
         }
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           topbar_tooltip_text = drawings_visible ? "Hide drawings" : "Show drawings";
+        ImGui::SameLine();
+        if(grid_icon
+               ? ImGui::ImageButton("##toggle_grid_visibility_icon", grid_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               : ImGui::Button(grid_visible ? "Hide grid" : "Show grid"))
+        {
+          grid_visible = !grid_visible;
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          topbar_tooltip_text = grid_visible ? "Hide grid" : "Show grid";
         ImGui::SameLine();
         {
           const float icon_slot_w = 16.0f + ImGui::GetStyle().ItemSpacing.x;
@@ -4469,6 +4480,19 @@ __CURSOR__)MD");
         ++it;
     }
 
+    if(grid_visible)
+    {
+      ImDrawList *dl = ImGui::GetForegroundDrawList();
+      dl->PushClipRect(bg_p0, bg_p1, true);
+      constexpr float grid_step = 40.0f;
+      const ImU32 grid_col = ImGui::GetColorU32(ImVec4(0.55f, 0.57f, 0.62f, 0.25f));
+      for(float x = bg_p0.x + std::fmod(bg_p0.x, grid_step); x < bg_p1.x; x += grid_step)
+        dl->AddLine(ImVec2(x, bg_p0.y), ImVec2(x, bg_p1.y), grid_col);
+      for(float y = bg_p0.y + std::fmod(bg_p0.y, grid_step); y < bg_p1.y; y += grid_step)
+        dl->AddLine(ImVec2(bg_p0.x, y), ImVec2(bg_p1.x, y), grid_col);
+      dl->PopClipRect();
+    }
+
     if(drawings_visible)
     {
       ImDrawList *dl = ImGui::GetForegroundDrawList();
@@ -4601,7 +4625,7 @@ __CURSOR__)MD");
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
       const int folder_theme_count =
           push_folder_imgui_theme(make_note_theme(n.use_custom_color, n.color_r, n.color_g, n.color_b, ImGui::GetStyle()), ImGui::GetStyle());
-      ImGui::Begin(
+      const bool note_window_visible = ImGui::Begin(
           window_id.c_str(),
           &note_window_open,
           note_flags);
@@ -4768,7 +4792,7 @@ __CURSOR__)MD");
       bool table_ctx_right_click_consumed = false;
       bool table_ctx_double_click_consumed = false;
 
-      if(is_editing_this)
+      if(note_window_visible && is_editing_this)
       {
         if(request_undo_edit_ && history_.can_undo())
         {
@@ -4892,7 +4916,7 @@ __CURSOR__)MD");
         }
         (void)editor_hovered;
       }
-      else
+      else if(note_window_visible)
       {
         preview_text = read_file_text(n.path);
         const std::string preview_before = preview_text;
