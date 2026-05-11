@@ -190,6 +190,88 @@ static void invalidate_folder_image_cache(const std::string &folder_name)
   if(it != g_explorer_image_cache.end()) it->second.valid = false;
 }
 
+// --- Font file helpers ---
+
+struct ExplorerFontEntry
+{
+  std::string name;
+  std::string path;
+};
+
+struct FolderFontCache
+{
+  std::vector<ExplorerFontEntry> fonts;
+  bool valid = false;
+};
+
+static std::unordered_map<std::string, FolderFontCache> g_explorer_font_cache;
+static std::unordered_map<std::string, ImFont *> g_note_font_cache;
+
+static bool is_font_file_ext(const std::filesystem::path &p)
+{
+  auto ext = p.extension().string();
+  for(auto &c : ext) c = (char)std::tolower((unsigned char)c);
+  return ext == ".ttf" || ext == ".otf";
+}
+
+static const std::vector<ExplorerFontEntry> &get_folder_fonts(
+    const std::string &folder_name, const std::filesystem::path &folder_dir)
+{
+  auto &cache = g_explorer_font_cache[folder_name];
+  if(cache.valid) return cache.fonts;
+  cache.fonts.clear();
+  std::error_code ec;
+  for(const auto &entry : std::filesystem::directory_iterator(folder_dir, ec))
+  {
+    if(!entry.is_regular_file(ec)) continue;
+    if(!is_font_file_ext(entry.path())) continue;
+    cache.fonts.push_back({entry.path().filename().string(), entry.path().string()});
+  }
+  std::sort(cache.fonts.begin(), cache.fonts.end(),
+            [](const ExplorerFontEntry &a, const ExplorerFontEntry &b) {
+              return a.name < b.name;
+            });
+  cache.valid = true;
+  return cache.fonts;
+}
+
+static void invalidate_folder_font_cache(const std::string &folder_name)
+{
+  auto it = g_explorer_font_cache.find(folder_name);
+  if(it != g_explorer_font_cache.end()) it->second.valid = false;
+}
+
+static ImFont *get_or_load_note_font(const std::string &abs_path, float size)
+{
+  auto it = g_note_font_cache.find(abs_path);
+  if(it != g_note_font_cache.end()) return it->second;
+
+  ImGuiIO &io = ImGui::GetIO();
+  ImFont *font = io.Fonts->AddFontFromFileTTF(abs_path.c_str(), size);
+  if(font)
+  {
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    io.Fonts->Build();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+  }
+  g_note_font_cache[abs_path] = font;
+  return font;
+}
+
+static std::string copy_font_to_folder(const std::string &src_path,
+                                       const std::filesystem::path &folder_dir)
+{
+  std::filesystem::path src(src_path);
+  std::error_code ec;
+  if(!std::filesystem::exists(src, ec)) return {};
+  std::filesystem::create_directories(folder_dir, ec);
+  std::filesystem::path dest = folder_dir / src.filename();
+  if(!std::filesystem::exists(dest, ec))
+    std::filesystem::copy_file(src, dest, ec);
+  if(ec) return {};
+  return dest.string();
+}
+
 static void reveal_in_file_explorer(const std::string &file_path)
 {
 #if defined(_WIN32)
@@ -621,6 +703,9 @@ void App::init_imgui()
   if(!ImGui_ImplOpenGL3_Init(kGlslVersion))
     throw std::runtime_error("ImGui_ImplOpenGL3_Init failed");
 
+  font_regular_ = font_regular;
+  font_italic_ = font_italic;
+  font_bold_ = font_bold;
   MarkdownView::set_fonts(font_regular, font_italic, font_bold);
 }
 
@@ -737,6 +822,7 @@ void App::load_state()
                     n.color_r = (float)json_find_int(nobj, "color_r", 0) / 255.0f;
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
                     n.color_b = (float)json_find_int(nobj, "color_b", 0) / 255.0f;
+                    n.font_path = json_find_string(nobj, "font_path");
                     if(n.title.empty()) n.title = "Note";
                     if(n.path.empty()) n.path = make_note_path(f.name, n.title);
                     f.notes.push_back(std::move(n));
@@ -840,8 +926,10 @@ void App::save_index() const
           << ", \"use_custom_color\": " << (n.use_custom_color ? "true" : "false")
           << ", \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_r)) * 255.0f)
           << ", \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_g)) * 255.0f)
-          << ", \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_b)) * 255.0f)
-          << "}";
+          << ", \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_b)) * 255.0f);
+      if(!n.font_path.empty())
+        out << ", \"font_path\": \"" << json_escape(n.font_path) << "\"";
+      out << "}";
       if(ni + 1 < f.notes.size()) out << ",";
       out << "\n";
     }
@@ -3332,6 +3420,78 @@ void App::frame_ui()
         }
       }
 
+      // --- Font files in folder ---
+      {
+        const std::filesystem::path folder_dir = config_.dataPath / f.name;
+        const auto &font_entries = get_folder_fonts(f.name, folder_dir);
+        for(int font_idx = 0; font_idx < (int)font_entries.size(); ++font_idx)
+        {
+          const ExplorerFontEntry &fnt = font_entries[(size_t)font_idx];
+          ImGui::PushID(font_idx + 0x80000);
+
+          const float row_h = ImGui::GetTextLineHeightWithSpacing();
+          const float badge_w = ImGui::GetTextLineHeight();
+
+          ImGui::Selectable("##fontrow", false, 0, ImVec2(0.0f, row_h));
+          const ImVec2 item_min = ImGui::GetItemRectMin();
+          const ImVec2 item_max = ImGui::GetItemRectMax();
+
+          // "Aa" badge
+          ImDrawList *fdl = ImGui::GetWindowDrawList();
+          fdl->AddRectFilled(
+              ImVec2(item_min.x + 2.0f, item_min.y + (row_h - badge_w) * 0.5f),
+              ImVec2(item_min.x + 2.0f + badge_w, item_min.y + (row_h + badge_w) * 0.5f),
+              ImGui::GetColorU32(ImVec4(0.35f, 0.55f, 0.85f, 0.7f)), 2.0f);
+          const float badge_font_sz = badge_w * 0.6f;
+          fdl->AddText(
+              nullptr, badge_font_sz,
+              ImVec2(item_min.x + 2.0f + badge_w * 0.12f,
+                     item_min.y + (row_h - badge_font_sz) * 0.5f),
+              ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.95f)), "Aa");
+
+          // Filename text
+          const float text_x = item_min.x + badge_w + 6.0f;
+          const float text_y = item_min.y + (row_h - ImGui::GetFontSize()) * 0.5f;
+          fdl->PushClipRect(ImVec2(text_x, item_min.y), item_max, true);
+          fdl->AddText(ImVec2(text_x, text_y),
+                       ImGui::GetColorU32(ImVec4(0.78f, 0.82f, 0.88f, 1.0f)),
+                       fnt.name.c_str());
+          fdl->PopClipRect();
+
+          // Tooltip
+          if(ImGui::IsItemHovered())
+          {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(fnt.name.c_str());
+            ImGui::TextDisabled("Drag onto a note to set its font");
+            ImGui::EndTooltip();
+          }
+
+          // Drag source
+          if(ImGui::BeginDragDropSource())
+          {
+            ImGui::SetDragDropPayload("NOTEPP_FONT_SET",
+                                      fnt.path.c_str(), fnt.path.size() + 1);
+            ImGui::TextUnformatted(fnt.name.c_str());
+            ImGui::TextDisabled("Drop on note to set font");
+            ImGui::EndDragDropSource();
+          }
+
+          // Context menu
+          const std::string fnt_ctx_id =
+              "FntCtx##" + std::to_string(fi) + "_" + std::to_string(font_idx);
+          if(ImGui::BeginPopupContextItem(fnt_ctx_id.c_str(),
+                                          ImGuiPopupFlags_MouseButtonRight))
+          {
+            if(ImGui::MenuItem("Reveal in File Explorer"))
+              reveal_in_file_explorer(fnt.path);
+            ImGui::EndPopup();
+          }
+
+          ImGui::PopID();
+        }
+      }
+
       auto itc = folder_children.find(f.name);
       if(itc != folder_children.end())
       {
@@ -3351,7 +3511,7 @@ void App::frame_ui()
   {
     for(const auto &drop : pending_dropped_files_)
     {
-      if(drop.mouse_x < (int)explorer_w && is_image_file_ext(drop.path))
+      if(drop.mouse_x < (int)explorer_w && (is_image_file_ext(drop.path) || is_font_file_ext(drop.path)))
       {
         // Find the folder row the cursor was over
         int target_fi = active_folder_idx_;
@@ -3368,11 +3528,23 @@ void App::frame_ui()
         {
           const FolderMeta &tf = folders_[(size_t)target_fi];
           const std::filesystem::path folder_dir = config_.dataPath / tf.name;
-          const std::string dest = copy_image_to_folder(drop.path, folder_dir);
-          if(!dest.empty())
+          if(is_image_file_ext(drop.path))
           {
-            invalidate_folder_image_cache(tf.name);
-            flash_mark_folder(tf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+            const std::string dest = copy_image_to_folder(drop.path, folder_dir);
+            if(!dest.empty())
+            {
+              invalidate_folder_image_cache(tf.name);
+              flash_mark_folder(tf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+            }
+          }
+          else
+          {
+            const std::string dest = copy_font_to_folder(drop.path, folder_dir);
+            if(!dest.empty())
+            {
+              invalidate_folder_font_cache(tf.name);
+              flash_mark_folder(tf.name, ImVec4(0.35f, 0.55f, 0.85f, 1.0f));
+            }
           }
         }
       }
@@ -4927,6 +5099,23 @@ __CURSOR__)MD");
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
       const bool is_editing_this = editing_mode_ && ni == active_note_idx_;
 
+      // Per-note custom font
+      ImFont *note_font = nullptr;
+      if(!n.font_path.empty())
+      {
+        std::filesystem::path abs_font = std::filesystem::path(n.font_path);
+        if(abs_font.is_relative())
+          abs_font = config_.dataPath / f.name / abs_font;
+        constexpr float kUiFontSize = 14.0f;
+        note_font = get_or_load_note_font(abs_font.string(), kUiFontSize);
+        if(note_font)
+        {
+          ImGui::PushFont(note_font);
+          MarkdownView::set_fonts(note_font, font_italic_, font_bold_);
+        }
+        else note_font = nullptr;
+      }
+
       const ImVec2 win_pos = ImGui::GetWindowPos();
       const float title_bar_h = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
       const ImVec2 mouse_pos = ImGui::GetMousePos();
@@ -5045,6 +5234,11 @@ __CURSOR__)MD");
             if(ImGui::MenuItem("Expand all")) apply_header_toggle(true);
             if(ImGui::MenuItem("Collapse all")) apply_header_toggle(false);
           }
+        }
+        if(!n.font_path.empty() && ImGui::MenuItem("Remove custom font"))
+        {
+          n.font_path.clear();
+          save_index();
         }
         if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
         {
@@ -5428,7 +5622,28 @@ __CURSOR__)MD");
           }
           flash_mark_note(n.path, ImVec4(0.25f, 0.70f, 0.96f, 1.0f));
         }
+        if(const ImGuiPayload *payload =
+               ImGui::AcceptDragDropPayload("NOTEPP_FONT_SET"))
+        {
+          const char *font_abs = static_cast<const char *>(payload->Data);
+          if(font_abs)
+          {
+            std::error_code ec;
+            std::filesystem::path rel = std::filesystem::relative(
+                std::filesystem::path(font_abs),
+                config_.dataPath / f.name, ec);
+            n.font_path = (!ec && !rel.empty()) ? rel.generic_string() : std::string(font_abs);
+            save_index();
+            flash_mark_note(n.path, ImVec4(0.35f, 0.55f, 0.85f, 1.0f));
+          }
+        }
         ImGui::EndDragDropTarget();
+      }
+
+      if(note_font)
+      {
+        ImGui::PopFont();
+        MarkdownView::set_fonts(font_regular_, font_italic_, font_bold_);
       }
 
       ImGui::End();

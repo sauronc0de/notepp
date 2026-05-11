@@ -88,6 +88,9 @@ private:
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;
+  ImFont *font_regular_ = nullptr;
+  ImFont *font_italic_ = nullptr;
+  ImFont *font_bold_ = nullptr;
 
   bool running_ = true;
   bool editing_mode_ = false;
@@ -121,6 +124,7 @@ private:
   {
     std::string title;
     std::string path;
+    std::string font_path;
     bool use_custom_color = false;
     float color_r = 0.0f;
     float color_g = 0.0f;
