@@ -206,6 +206,21 @@ static void reveal_in_file_explorer(const std::string &file_path)
 #endif
 }
 
+static void open_directory(const std::filesystem::path &dir)
+{
+#if defined(_WIN32)
+  std::string d = dir.string();
+  for(auto &c : d)
+    if(c == '/') c = '\\';
+  std::string cmd = "explorer.exe \"" + d + "\"";
+  (void)system(cmd.c_str());
+#elif defined(__APPLE__)
+  (void)system(("open \"" + dir.string() + "\"").c_str());
+#else
+  SDL_OpenURL(("file://" + dir.string()).c_str());
+#endif
+}
+
 static std::string copy_image_to_folder(const std::string &src_path,
                                         const std::filesystem::path &folder_dir)
 {
@@ -2676,6 +2691,9 @@ void App::frame_ui()
 
   if(ImGui::BeginPopupContextWindow("ExplorerContext", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight))
   {
+    if(ImGui::MenuItem("Reveal in File Explorer"))
+      open_directory(config_.dataPath);
+    ImGui::Separator();
     if(ImGui::MenuItem("Find in project..."))
     {
       request_open_project_search_ = true;

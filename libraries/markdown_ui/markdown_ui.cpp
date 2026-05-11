@@ -2905,6 +2905,30 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
               }
             }
           }
+          if(const ImGuiPayload *img_payload = ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
+          {
+            const char *img_path = static_cast<const char *>(img_payload->Data);
+            if(img_path)
+            {
+              if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
+              {
+                InventorySlotInfo existing;
+                std::string existing_error;
+                extract_inventory_slot(items->array[static_cast<size_t>(item_index)], existing, existing_error);
+                Value new_slot = make_inventory_slot_value(existing.title, std::string(img_path), existing.tooltip, existing.quantity, existing.color_text, existing.enabled);
+                set_inventory_slot_position(new_slot, index);
+                items->array[static_cast<size_t>(item_index)] = std::move(new_slot);
+              }
+              else
+              {
+                Value new_slot = make_inventory_slot_value({}, std::string(img_path), {});
+                set_inventory_slot_position(new_slot, index);
+                items->array.push_back(std::move(new_slot));
+              }
+              trim_inventory_slots(*items);
+              changed = true;
+            }
+          }
           ImGui::EndDragDropTarget();
         }
 
