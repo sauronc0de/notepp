@@ -138,7 +138,15 @@ private:
     std::string name;
     std::vector<NoteMeta> notes;
   };
+  struct PendingDroppedFile
+  {
+    std::string path;
+    int mouse_x = 0;
+    int mouse_y = 0;
+  };
+
   std::vector<FolderMeta> folders_;
+  std::vector<PendingDroppedFile> pending_dropped_files_;
   std::vector<std::string> pending_fs_delete_paths_;
   int active_folder_idx_ = 0;
   int active_note_idx_ = 0;

@@ -2393,6 +2393,11 @@ struct InventoryPopupEditorState
   std::string error;
 };
 
+struct InventoryGridEditorState
+{
+  int cell_size = 48;
+};
+
 bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
 {
   if(slot_value.kind != ValueKind::Object)
@@ -2774,7 +2779,16 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const ImGuiStyle &style = ImGui::GetStyle();
   const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
-  const float cell_size = 48.0f;
+
+  Value updated = value_result.value;
+
+  constexpr float kDefaultCellSize = 48.0f;
+  float cell_size = kDefaultCellSize;
+  {
+    const Value *cs = find_object_field(updated, "cell_size");
+    if(cs && cs->kind == ValueKind::Number)
+      cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
+  }
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
   if(available_width > 1.0f)
@@ -2790,7 +2804,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
   if(!label.text.empty()) render_styled_label(label);
 
-  Value updated = value_result.value;
   Value *items = find_object_field(updated, "items");
   if(!items || items->kind != ValueKind::Array)
   {
@@ -2989,6 +3002,29 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         ImGui::PopID();
       }
+    }
+
+    static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
+    if(!readonly && ImGui::BeginPopupContextWindow("##grid_settings", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+    {
+      InventoryGridEditorState &gs = grid_editor_states[child_id];
+      if(ImGui::IsWindowAppearing())
+        gs.cell_size = static_cast<int>(cell_size);
+      ImGui::TextDisabled("Grid settings");
+      ImGui::SetNextItemWidth(120.0f);
+      ImGui::InputInt("Cell size (px)", &gs.cell_size);
+      gs.cell_size = std::clamp(gs.cell_size, 8, 256);
+      if(ImGui::Button("Apply"))
+      {
+        Value cs_val;
+        cs_val.kind = ValueKind::Number;
+        cs_val.number = static_cast<double>(gs.cell_size);
+        cs_val.is_integer = true;
+        upsert_object_field(updated, "cell_size", std::move(cs_val));
+        changed = true;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
     }
   }
   ImGui::EndChild();

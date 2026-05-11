@@ -18,6 +18,14 @@ struct MarkdownHoverPreviewData
 
 struct MarkdownView
 {
+  struct TextureHandle
+  {
+    ImTextureID id = (ImTextureID)0;
+    float width = 0.0f;
+    float height = 0.0f;
+    bool valid = false;
+  };
+
   static void set_fonts(ImFont *regular, ImFont *italic, ImFont *bold);
   static void set_render_width(float width);
   static void set_document_path(std::filesystem::path path);
@@ -27,4 +35,5 @@ struct MarkdownView
   static void render(std::string_view markdown);
   static void render_inline(std::string_view markdown_inline);
   static void set_assets_path(std::filesystem::path path);
+  static TextureHandle get_or_load_texture(const std::filesystem::path &path);
 };

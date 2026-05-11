@@ -731,6 +731,25 @@ void MarkdownView::set_hover_preview_enabled(bool enabled)
   g_hover_preview_enabled = enabled;
 }
 
+MarkdownView::TextureHandle MarkdownView::get_or_load_texture(const std::filesystem::path &path)
+{
+  if(path.empty()) return TextureHandle{};
+  const std::string key = path.string();
+  auto it = g_image_cache.find(key);
+  if(it == g_image_cache.end())
+  {
+    TextureRecord rec = load_texture_from_file(path);
+    it = g_image_cache.emplace(key, rec).first;
+  }
+  if(!it->second.loaded || it->second.texture_id == 0) return TextureHandle{};
+  TextureHandle h;
+  h.id = (ImTextureID)(uintptr_t)it->second.texture_id;
+  h.width = it->second.size.x;
+  h.height = it->second.size.y;
+  h.valid = true;
+  return h;
+}
+
 bool MarkdownView::take_hover_preview(MarkdownHoverPreviewData &out)
 {
   if(!g_hover_preview.active) return false;

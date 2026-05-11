@@ -120,6 +120,20 @@ std::string g_copied_folder_root_name;
 std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
 
+struct ExplorerImageEntry
+{
+  std::string name;
+  std::string path;
+};
+
+struct FolderImageCache
+{
+  std::vector<ExplorerImageEntry> images;
+  bool valid = false;
+};
+
+static std::unordered_map<std::string, FolderImageCache> g_explorer_image_cache;
+
 std::string read_text_file(const std::string &path)
 {
   std::ifstream in(path, std::ios::binary);
@@ -133,6 +147,81 @@ void write_text_file(const std::string &path, std::string_view content)
   std::filesystem::create_directories(std::filesystem::path(path).parent_path());
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if(out) out.write(content.data(), static_cast<std::streamsize>(content.size()));
+}
+
+static bool is_image_file_ext(const std::filesystem::path &p)
+{
+  std::string ext = p.extension().string();
+  for(auto &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+         ext == ".gif" || ext == ".bmp" || ext == ".webp";
+}
+
+static const std::vector<ExplorerImageEntry> &get_folder_images(
+    const std::string &folder_name, const std::filesystem::path &folder_dir,
+    bool force_refresh = false)
+{
+  auto &cache = g_explorer_image_cache[folder_name];
+  if(!cache.valid || force_refresh)
+  {
+    cache.images.clear();
+    std::error_code ec;
+    if(std::filesystem::exists(folder_dir, ec))
+    {
+      for(const auto &entry : std::filesystem::directory_iterator(folder_dir, ec))
+      {
+        if(!entry.is_regular_file(ec)) continue;
+        if(!is_image_file_ext(entry.path())) continue;
+        cache.images.push_back({entry.path().filename().string(), entry.path().string()});
+      }
+      std::sort(cache.images.begin(), cache.images.end(),
+                [](const ExplorerImageEntry &a, const ExplorerImageEntry &b) {
+                  return a.name < b.name;
+                });
+    }
+    cache.valid = true;
+  }
+  return cache.images;
+}
+
+static void invalidate_folder_image_cache(const std::string &folder_name)
+{
+  auto it = g_explorer_image_cache.find(folder_name);
+  if(it != g_explorer_image_cache.end()) it->second.valid = false;
+}
+
+static void reveal_in_file_explorer(const std::string &file_path)
+{
+#if defined(_WIN32)
+  std::string escaped = file_path;
+  for(auto &c : escaped)
+    if(c == '/') c = '\\';
+  std::string cmd = "explorer.exe /select,\"" + escaped + "\"";
+  (void)system(cmd.c_str());
+#elif defined(__APPLE__)
+  (void)system(("open -R \"" + file_path + "\"").c_str());
+#else
+  const std::string dir = std::filesystem::path(file_path).parent_path().string();
+  SDL_OpenURL(("file://" + dir).c_str());
+#endif
+}
+
+static std::string copy_image_to_folder(const std::string &src_path,
+                                        const std::filesystem::path &folder_dir)
+{
+  std::filesystem::path src(src_path);
+  std::error_code ec;
+  if(!std::filesystem::exists(src, ec)) return {};
+  std::filesystem::create_directories(folder_dir, ec);
+  const std::string base_name = src.stem().string();
+  const std::string ext = src.extension().string();
+  std::filesystem::path dest = folder_dir / src.filename();
+  int suffix = 2;
+  while(std::filesystem::exists(dest, ec))
+    dest = folder_dir / (base_name + "_" + std::to_string(suffix++) + ext);
+  std::filesystem::copy_file(src, dest, ec);
+  if(ec) return {};
+  return dest.string();
 }
 
 float dist2(ImVec2 a, ImVec2 b)
@@ -1633,6 +1722,15 @@ void App::frame_begin()
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
+    if(event.type == SDL_DROPFILE && event.drop.file)
+    {
+      int mx = 0, my = 0;
+      SDL_GetMouseState(&mx, &my);
+      pending_dropped_files_.push_back({std::string(event.drop.file), mx, my});
+      SDL_free(event.drop.file);
+      continue;
+    }
+
     if(event.type == SDL_QUIT) running_ = false;
     if(event.type == SDL_WINDOWEVENT &&
        event.window.event == SDL_WINDOWEVENT_CLOSE &&
@@ -3120,6 +3218,102 @@ void App::frame_ui()
           ImGui::EndPopup();
         }
       }
+
+      // --- Image files in folder ---
+      {
+        const std::filesystem::path folder_dir = config_.dataPath / f.name;
+        const auto &img_entries = get_folder_images(f.name, folder_dir);
+        for(int img_idx = 0; img_idx < (int)img_entries.size(); ++img_idx)
+        {
+          const ExplorerImageEntry &img = img_entries[(size_t)img_idx];
+          ImGui::PushID(img_idx + 0x40000);
+
+          const auto tex = MarkdownView::get_or_load_texture(img.path);
+          const float row_h = ImGui::GetTextLineHeightWithSpacing();
+          const float thumb_h = ImGui::GetTextLineHeight();
+          const float thumb_w = (tex.valid && tex.height > 0.0f)
+                                    ? thumb_h * tex.width / tex.height
+                                    : thumb_h;
+
+          // Full-row Selectable (blank label — content drawn via drawlist)
+          ImGui::Selectable("##imgrow", false, 0, ImVec2(0.0f, row_h));
+          const ImVec2 item_min = ImGui::GetItemRectMin();
+          const ImVec2 item_max = ImGui::GetItemRectMax();
+
+          // Draw thumbnail
+          if(tex.valid)
+          {
+            const float y_off = (row_h - thumb_h) * 0.5f;
+            ImGui::GetWindowDrawList()->AddImage(
+                tex.id,
+                ImVec2(item_min.x + 2.0f, item_min.y + y_off),
+                ImVec2(item_min.x + 2.0f + thumb_w, item_min.y + y_off + thumb_h));
+          }
+          else
+          {
+            // Placeholder box when image not loaded yet
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                ImVec2(item_min.x + 2.0f, item_min.y + (row_h - thumb_h) * 0.5f),
+                ImVec2(item_min.x + 2.0f + thumb_h, item_min.y + (row_h + thumb_h) * 0.5f),
+                ImGui::GetColorU32(ImVec4(0.4f, 0.4f, 0.4f, 0.5f)), 2.0f);
+          }
+
+          // Draw filename text (clipped)
+          const float text_x = item_min.x + thumb_w + 6.0f;
+          const float text_y = item_min.y + (row_h - ImGui::GetFontSize()) * 0.5f;
+          ImDrawList *dl = ImGui::GetWindowDrawList();
+          dl->PushClipRect(ImVec2(text_x, item_min.y), item_max, true);
+          dl->AddText(ImVec2(text_x, text_y),
+                      ImGui::GetColorU32(ImVec4(0.78f, 0.82f, 0.88f, 1.0f)),
+                      img.name.c_str());
+          dl->PopClipRect();
+
+          // Hover: large thumbnail tooltip
+          if(ImGui::IsItemHovered() && tex.valid)
+          {
+            ImGui::BeginTooltip();
+            const float max_sz = 220.0f;
+            float tw = tex.width, th = tex.height;
+            if(tw > max_sz) { th = th * max_sz / tw; tw = max_sz; }
+            if(th > max_sz) { tw = tw * max_sz / th; th = max_sz; }
+            ImGui::Image(tex.id, ImVec2(tw, th));
+            ImGui::TextUnformatted(img.name.c_str());
+            ImGui::EndTooltip();
+          }
+
+          // Drag source: payload = absolute image path (null-terminated)
+          if(ImGui::BeginDragDropSource())
+          {
+            ImGui::SetDragDropPayload("NOTEPP_IMAGE_INSERT",
+                                      img.path.c_str(), img.path.size() + 1);
+            if(tex.valid)
+            {
+              const float drag_h = 40.0f;
+              const float drag_w = tex.height > 0.0f
+                                       ? drag_h * tex.width / tex.height
+                                       : drag_h;
+              ImGui::Image(tex.id, ImVec2(drag_w, drag_h));
+              ImGui::SameLine();
+            }
+            ImGui::TextUnformatted(img.name.c_str());
+            ImGui::EndDragDropSource();
+          }
+
+          // Context menu
+          const std::string img_ctx_id =
+              "ImgCtx##" + std::to_string(fi) + "_" + std::to_string(img_idx);
+          if(ImGui::BeginPopupContextItem(img_ctx_id.c_str(),
+                                          ImGuiPopupFlags_MouseButtonRight))
+          {
+            if(ImGui::MenuItem("Reveal in File Explorer"))
+              reveal_in_file_explorer(img.path);
+            ImGui::EndPopup();
+          }
+
+          ImGui::PopID();
+        }
+      }
+
       auto itc = folder_children.find(f.name);
       if(itc != folder_children.end())
       {
@@ -3133,6 +3327,41 @@ void App::frame_ui()
   {
     for(int rfi : roots_it->second) render_folder_node(render_folder_node, rfi);
   }
+
+  // Process OS-level file drops (SDL_DROPFILE) onto the Explorer panel
+  if(!pending_dropped_files_.empty())
+  {
+    for(const auto &drop : pending_dropped_files_)
+    {
+      if(drop.mouse_x < (int)explorer_w && is_image_file_ext(drop.path))
+      {
+        // Find the folder row the cursor was over
+        int target_fi = active_folder_idx_;
+        for(int i = 0; i < (int)folder_row_rects.size(); ++i)
+        {
+          const SidebarRect &r = folder_row_rects[(size_t)i];
+          if(r.valid && drop.mouse_y >= (int)r.min.y && drop.mouse_y <= (int)r.max.y)
+          {
+            target_fi = i;
+            break;
+          }
+        }
+        if(target_fi >= 0 && target_fi < (int)folders_.size())
+        {
+          const FolderMeta &tf = folders_[(size_t)target_fi];
+          const std::filesystem::path folder_dir = config_.dataPath / tf.name;
+          const std::string dest = copy_image_to_folder(drop.path, folder_dir);
+          if(!dest.empty())
+          {
+            invalidate_folder_image_cache(tf.name);
+            flash_mark_folder(tf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+          }
+        }
+      }
+    }
+    pending_dropped_files_.clear();
+  }
+
   if(drag_hover_folder_idx >= 0 && drag_hover_folder_idx < (int)folders_.size())
   {
     ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -4555,6 +4784,53 @@ __CURSOR__)MD");
       fg->AddRectFilled(rmin, rmax, ImGui::GetColorU32(with_alpha(neutral_sel, 0.18f)));
       fg->AddRect(rmin, rmax, ImGui::GetColorU32(with_alpha(neutral_sel, 0.95f)), 0.0f, 0, 1.5f);
     }
+
+    // Canvas background: accept image drop (not over a note) to create new note
+    if(ImGui::IsDragDropActive())
+    {
+      const ImRect canvas_rect(bg_p0, bg_p1);
+      if(ImGui::BeginDragDropTargetCustom(canvas_rect,
+                                          ImGui::GetID("##canvas_img_drop")))
+      {
+        const ImGuiPayload *payload =
+            ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT");
+        if(payload && !mouse_over_note_area)
+        {
+          const char *img_path_raw = static_cast<const char *>(payload->Data);
+          const std::string img_filename =
+              std::filesystem::path(img_path_raw).filename().string();
+          const std::string img_alt =
+              std::filesystem::path(img_path_raw).stem().string();
+          const std::string content =
+              "![" + img_alt + "](" + img_filename + ")\n";
+
+          push_sidebar_snapshot();
+          ensure_default_index();
+          FolderMeta &cf = folders_[(size_t)active_folder_idx_];
+          const std::string new_title =
+              make_unique_note_title(active_folder_idx_, img_alt);
+          NoteMeta new_note;
+          new_note.title = new_title;
+          new_note.path = make_note_path(cf.name, new_title);
+          const ImVec2 drop_pos = ImGui::GetMousePos();
+          new_note.pos_x = drop_pos.x - 60.0f;
+          new_note.pos_y = drop_pos.y - 30.0f;
+          new_note.width = 400.0f;
+          new_note.height = 300.0f;
+          new_note.has_layout = true;
+          remove_pending_delete_path(new_note.path);
+          write_text_file(new_note.path, content);
+          cf.notes.push_back(new_note);
+          active_note_idx_ = (int)cf.notes.size() - 1;
+          selected_note_indices.clear();
+          selected_note_indices.insert(active_note_idx_);
+          flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+          save_index();
+        }
+        ImGui::EndDragDropTarget();
+      }
+    }
+
     ImGui::End();
 
     if(open_rename_win_popup)
@@ -5095,6 +5371,48 @@ __CURSOR__)MD");
         layout_dirty_ = true;
       }
 
+      // Image drop target: drop from Explorer panel onto this note window
+      if(ImGui::BeginDragDropTarget())
+      {
+        if(const ImGuiPayload *payload =
+               ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
+        {
+          const char *img_path_raw = static_cast<const char *>(payload->Data);
+          const std::string img_filename =
+              std::filesystem::path(img_path_raw).filename().string();
+          const std::string img_alt =
+              std::filesystem::path(img_path_raw).stem().string();
+          const std::string img_insert =
+              "\n![" + img_alt + "](" + img_filename + ")\n";
+
+          if(is_editing_this)
+          {
+            const int insert_pos =
+                (fmt_folder.cursor_pos >= 0 &&
+                 fmt_folder.cursor_pos <= (int)markdown_text_.size())
+                    ? fmt_folder.cursor_pos
+                    : (int)markdown_text_.size();
+            markdown_text_.insert((size_t)insert_pos, img_insert);
+            const int new_cursor = insert_pos + (int)img_insert.size();
+            fmt_folder.pending_select_range = true;
+            fmt_folder.pending_sel_start = new_cursor;
+            fmt_folder.pending_sel_end = new_cursor;
+            refocus_folder_editor = true;
+            save_state();
+          }
+          else
+          {
+            std::string note_content = read_file_text(n.path);
+            note_content += img_insert;
+            write_text_file(n.path, note_content);
+            if(is_current_note_document)
+              markdown_text_ = note_content;
+          }
+          flash_mark_note(n.path, ImVec4(0.25f, 0.70f, 0.96f, 1.0f));
+        }
+        ImGui::EndDragDropTarget();
+      }
+
       ImGui::End();
       ImGui::PopStyleColor(folder_theme_count);
 
@@ -5578,6 +5896,35 @@ __CURSOR__)MD");
           markdown_text_,
           should_push_word_granular_undo(before_edit, markdown_text_, fmt));
       save_state();
+    }
+    // Image drop target for the single-note editor
+    if(ImGui::BeginDragDropTarget())
+    {
+      if(const ImGuiPayload *payload =
+             ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
+      {
+        const char *img_path_raw = static_cast<const char *>(payload->Data);
+        const std::string img_filename =
+            std::filesystem::path(img_path_raw).filename().string();
+        const std::string img_alt =
+            std::filesystem::path(img_path_raw).stem().string();
+        const std::string img_insert =
+            "\n![" + img_alt + "](" + img_filename + ")\n";
+        const int insert_pos =
+            (fmt.cursor_pos >= 0 && fmt.cursor_pos <= (int)markdown_text_.size())
+                ? fmt.cursor_pos
+                : (int)markdown_text_.size();
+        const std::string before_drop = markdown_text_;
+        markdown_text_.insert((size_t)insert_pos, img_insert);
+        const int new_cursor = insert_pos + (int)img_insert.size();
+        fmt.pending_select_range = true;
+        fmt.pending_sel_start = new_cursor;
+        fmt.pending_sel_end = new_cursor;
+        refocus_editor = true;
+        update_pending_text_history("Insert image", before_drop, markdown_text_, true);
+        save_state();
+      }
+      ImGui::EndDragDropTarget();
     }
     // After the widget: show popup if selection is non-empty and editor is focused/active
     const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
