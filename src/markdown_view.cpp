@@ -87,6 +87,11 @@ static std::filesystem::path resolve_image_path(std::string_view href)
 
   std::vector<std::filesystem::path> candidates;
   candidates.push_back(p);
+
+  // Relative to the note's own directory (highest priority for user images)
+  if(!g_document_path.empty())
+    candidates.push_back(g_document_path.parent_path() / p);
+
   candidates.push_back(repo_root / p);
   candidates.push_back(asset_root / p);
 
@@ -581,11 +586,13 @@ struct MyMarkdown : public imgui_md
     if(m_href.empty()) return false;
     if(starts_with(m_href, "http://") || starts_with(m_href, "https://")) return false;
 
-    auto it = g_image_cache.find(m_href);
+    const std::filesystem::path resolved = resolve_image_path(m_href);
+    const std::string cache_key = resolved.empty() ? m_href : resolved.string();
+    auto it = g_image_cache.find(cache_key);
     if(it == g_image_cache.end())
     {
-      TextureRecord rec = load_texture_from_file(resolve_image_path(m_href));
-      it = g_image_cache.emplace(m_href, rec).first;
+      TextureRecord rec = load_texture_from_file(resolved);
+      it = g_image_cache.emplace(cache_key, rec).first;
     }
 
     if(!it->second.loaded || it->second.texture_id == 0) return false;
