@@ -21,13 +21,10 @@ RUN apt-get update && apt-get install -y \
     libncurses5-dev \
     mingw-w64 \
     cmake \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Add Ninja
 RUN apt-get update && apt-get install -y ninja-build
-
-# # Add Lua
-# RUN apt-get install -y lua5.4 liblua5.4-dev
 
 # Add clang compilers 
 RUN apt-get install -y clang gdb

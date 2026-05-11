@@ -49,7 +49,6 @@ find_package(SDL2_image REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(LUA REQUIRED lua5.4)
 
 add_subdirectory(externals)
 add_subdirectory(libraries)
