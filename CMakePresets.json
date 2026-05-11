@@ -106,6 +106,28 @@
       }
     },
     {
+      "name": "Release_debian",
+      "displayName": "📦 Release (Debian)",
+      "description": "Builds a .deb package for Ubuntu/Debian/Mint",
+      "inherits": "config-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_LOG": "OFF",
+        "ENABLE_RENDER": "ON",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_UNITY_BUILD": "OFF",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=gold",
+        "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fuse-ld=gold",
+        "USE_PORTABLE_PATHS": "OFF",
+        "NOTEPP_ASSETS_PATH": "/usr/share/notepp/assets",
+        "NOTEPP_DATA_PATH": "/usr/share/notepp/data",
+        "CMAKE_INSTALL_PREFIX": "/usr",
+        "ENABLE_DEB_PACKAGE": "ON"
+      }
+    },
+    {
       "name": "Test",
       "displayName": "🧪 Test",
       "inherits": "config-linux",
@@ -147,6 +169,11 @@
       "jobs": 0
     },
     {
+      "name": "Release_debian",
+      "configurePreset": "Release_debian",
+      "jobs": 0
+    },
+    {
       "name": "Test",
       "configurePreset": "Test",
       "jobs": 16
@@ -180,6 +207,14 @@
     {
       "name": "Release_mingw",
       "configurePreset": "Release_mingw",
+      "output": {
+        "shortProgress": true,
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "Release_debian",
+      "configurePreset": "Release_debian",
       "output": {
         "shortProgress": true,
         "outputOnFailure": true

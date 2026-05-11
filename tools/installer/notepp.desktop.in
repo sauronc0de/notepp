@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Notepp
+Comment=Markdown note-taking application
+Exec=/usr/bin/Notepp
+Icon=notepp
+Type=Application
+Categories=Office;TextEditor;
+Terminal=false
+MimeType=application/x-notepp;
+StartupNotify=true

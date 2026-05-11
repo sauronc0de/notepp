@@ -24,13 +24,20 @@ option(ENABLE_LOG "Enable logging" OFF)
 option(ENABLE_RENDER "Enable rendering" ON)
 option(ENABLE_TEST "Enable tests" OFF)
 
-if(USE_PORTABLE_PATHS)
-  set(NOTEPP_ASSETS_PATH "assets")
-  set(NOTEPP_DATA_PATH "data")
-else()
-  message(STATUS "Use absolute development paths")
-  set(NOTEPP_ASSETS_PATH "${CMAKE_SOURCE_DIR}/assets")
-  set(NOTEPP_DATA_PATH "${CMAKE_SOURCE_DIR}/data")
+if(NOT NOTEPP_ASSETS_PATH)
+  if(USE_PORTABLE_PATHS)
+    set(NOTEPP_ASSETS_PATH "assets")
+  else()
+    message(STATUS "Use absolute development paths")
+    set(NOTEPP_ASSETS_PATH "${CMAKE_SOURCE_DIR}/assets")
+  endif()
+endif()
+if(NOT NOTEPP_DATA_PATH)
+  if(USE_PORTABLE_PATHS)
+    set(NOTEPP_DATA_PATH "data")
+  else()
+    set(NOTEPP_DATA_PATH "${CMAKE_SOURCE_DIR}/data")
+  endif()
 endif()
 
 add_compile_definitions(
@@ -93,9 +100,17 @@ target_link_libraries(${PROJECT_NAME}
     nfd
 )
 
+option(ENABLE_DEB_PACKAGE "Build Debian .deb package" OFF)
+
 configure_file(
   ${CMAKE_SOURCE_DIR}/tools/installer/notepp.iss.in
   ${CMAKE_BINARY_DIR}/notepp.iss
+  @ONLY
+)
+
+configure_file(
+  ${CMAKE_SOURCE_DIR}/tools/installer/notepp.desktop.in
+  ${CMAKE_BINARY_DIR}/notepp.desktop
   @ONLY
 )
 
@@ -133,6 +148,49 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Building Inno Setup installer"
+    VERBATIM
+  )
+elseif(ENABLE_DEB_PACKAGE)
+  install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION bin
+    COMPONENT notepp
+  )
+
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/"
+    DESTINATION "share/notepp/assets"
+    COMPONENT notepp
+  )
+
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/"
+    DESTINATION "share/notepp/data"
+    COMPONENT notepp
+  )
+
+  install(FILES "${CMAKE_BINARY_DIR}/notepp.desktop"
+    DESTINATION "share/applications"
+    COMPONENT notepp
+  )
+
+  set(CPACK_GENERATOR "DEB")
+  set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_SOURCE_DIR}/dist")
+  set(CPACK_PACKAGE_NAME "notepp")
+  set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+  set(CPACK_PACKAGE_CONTACT "sauroncode@gmail.com")
+  set(CPACK_DEBIAN_PACKAGE_MAINTAINER "sauroncode <sauroncode@gmail.com>")
+  set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "Notepp - Markdown note-taking application")
+  set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libsdl2-2.0-0 (>= 2.0.0), libsdl2-image-2.0-0 (>= 2.0.0), libglew2.2 | libglew2.1, libgl1")
+  set(CPACK_PACKAGE_FILE_NAME "notepp_${PROJECT_VERSION}_amd64")
+  set(CPACK_COMPONENTS_ALL "notepp")
+  set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};notepp;/")
+
+  include(CPack)
+
+  add_custom_target(deb_package ALL
+    COMMAND "${CMAKE_CPACK_COMMAND}" --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake"
+    DEPENDS ${PROJECT_NAME}
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMMENT "Building Debian package"
     VERBATIM
   )
 endif()
