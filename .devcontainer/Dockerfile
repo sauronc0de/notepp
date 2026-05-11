@@ -19,8 +19,10 @@ RUN apt-get update && apt-get install -y \
     libsdl2-ttf-dev \
     libreadline-dev \
     libncurses5-dev \
+    libgtk-3-dev \
     mingw-w64 \
     cmake \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Ninja
