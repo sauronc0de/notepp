@@ -4,7 +4,7 @@ RUN apt-get upgrade -y
 RUN apt-get install -y curl git
 
 # C++ environment and SDL2
-RUN apt-get install -y \
+RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     gcc-multilib \
@@ -17,16 +17,17 @@ RUN apt-get install -y \
     libsdl2-mixer-dev \
     libsdl2-net-dev \
     libsdl2-ttf-dev \
-    libreadline6-dev \
+    libreadline-dev \
     libncurses5-dev \
     mingw-w64 \
-    cmake
+    cmake \
+ && rm -rf /var/lib/apt/lists/*
 
 # Add Ninja
-RUN apt-get install -y ninja-build
+RUN apt-get update && apt-get install -y ninja-build
 
-# Add Lua
-RUN apt-get install -y lua5.4 liblua5.4-dev
+# # Add Lua
+# RUN apt-get install -y lua5.4 liblua5.4-dev
 
 # Add clang compilers 
 RUN apt-get install -y clang gdb
