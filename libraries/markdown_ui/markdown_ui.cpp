@@ -1772,6 +1772,7 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
     render_styled_label(label);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
   }
+  ImGui::SetNextItemWidth(width);
   ImGui::BeginDisabled(readonly);
   if(ImGui::BeginCombo(make_hidden_widget_id("multicheck", stmt).c_str(), preview.c_str()))
   {
