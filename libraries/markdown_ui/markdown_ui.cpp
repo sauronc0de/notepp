@@ -2817,6 +2817,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   bool changed = false;
   ImGui::BeginDisabled(readonly);
   std::vector<int> cell_lookup = build_inventory_cell_lookup(*items, total_cells);
+  bool any_slot_hovered = false;
   if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, needs_scroll ? ImGuiWindowFlags_HorizontalScrollbar : ImGuiWindowFlags_None))
   {
     for(int row = 0; row < rows; ++row)
@@ -2830,6 +2831,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         ImGui::InvisibleButton("##slot", ImVec2(cell_size, cell_size));
         if(ImGui::IsItemClicked(ImGuiMouseButton_Left)) selected_index = index;
         const bool hovered = ImGui::IsItemHovered();
+        if(hovered) any_slot_hovered = true;
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
 
@@ -3005,7 +3007,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     }
 
     static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
-    if(!readonly && ImGui::BeginPopupContextWindow("##grid_settings", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
+    if(!readonly && !any_slot_hovered && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+      ImGui::OpenPopup("grid_settings");
+    if(!readonly && ImGui::BeginPopup("grid_settings"))
     {
       InventoryGridEditorState &gs = grid_editor_states[child_id];
       if(ImGui::IsWindowAppearing())
