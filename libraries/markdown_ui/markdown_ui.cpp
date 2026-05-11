@@ -1754,6 +1754,7 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
     return;
   }
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const float width = evaluate_width(ctx, stmt.args[2], 180.0f);
   std::set<std::string> selected;
   for(const Value &item : value_result.value.array)
   {
