@@ -58,41 +58,9 @@
       }
     },
     {
-      "name": "develop_console",
-      "displayName": "⌨️ Develop",
-      "inherits": "config-linux",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "ENABLE_LOG": "ON",
-        "ENABLE_RENDER": "OFF",
-        "CMAKE_UNITY_BUILD": "ON",
-        "CMAKE_UNITY_BUILD_BATCH_SIZE": "4",
-        "CMAKE_CXX_FLAGS_DEBUG": "-Og -g",
-        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fuse-ld=lld",
-        "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fuse-ld=lld",
-        "USE_PORTABLE_PATHS": "OFF"
-      }
-    },
-    {
-      "name": "Release",
-      "displayName": "✅ Release",
-      "inherits": "config-linux",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "ENABLE_LOG": "OFF",
-        "ENABLE_RENDER": "ON",
-        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
-        "CMAKE_UNITY_BUILD": "OFF",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
-        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-fuse-ld=gold",
-        "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-fuse-ld=gold",
-        "USE_PORTABLE_PATHS": "ON"
-      }
-    },
-    {
       "name": "Release_mingw",
-      "displayName": "✅ Release (MinGW)",
+      "displayName": "🪟 Release (Windows)",
+      "description": "📦 Builds with minGW an .exe package for Windows 10/11",
       "inherits": "config-mingw",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -107,8 +75,8 @@
     },
     {
       "name": "Release_debian",
-      "displayName": "📦 Release (Debian)",
-      "description": "Builds a .deb package for Ubuntu/Debian/Mint",
+      "displayName": "🐧 Release (Debian)",
+      "description": "📦 Builds a .deb package for Ubuntu/Debian/Mint",
       "inherits": "config-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -154,16 +122,6 @@
       "jobs": 16
     },
     {
-      "name": "develop_console",
-      "configurePreset": "develop_console",
-      "jobs": 16
-    },
-    {
-      "name": "Release",
-      "configurePreset": "Release",
-      "jobs": 0
-    },
-    {
       "name": "Release_mingw",
       "configurePreset": "Release_mingw",
       "jobs": 0
@@ -183,22 +141,6 @@
     {
       "name": "develop_gui",
       "configurePreset": "develop_gui",
-      "output": {
-        "shortProgress": true,
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "develop_console",
-      "configurePreset": "develop_console",
-      "output": {
-        "shortProgress": true,
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "Release",
-      "configurePreset": "Release",
       "output": {
         "shortProgress": true,
         "outputOnFailure": true
