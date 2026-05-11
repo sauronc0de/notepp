@@ -2077,6 +2077,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         const MarkdownUi::RenderResult ui_result = MarkdownUi::try_render_ui_block(markdown, line_start, line_end, block_end);
         result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
         result.preview_state_changed = result.preview_state_changed || ui_result.preview_state_changed;
+        result.consumed_right_click = result.consumed_right_click || ui_result.consumed_right_click;
         pos = block_end;
         continue;
       }

@@ -11,6 +11,7 @@ struct RenderResult
   bool handled = false;
   bool markdown_changed = false;
   bool preview_state_changed = false;
+  bool consumed_right_click = false;
 };
 
 std::string capture_ui_state_snapshot();

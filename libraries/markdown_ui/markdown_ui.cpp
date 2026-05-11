@@ -609,6 +609,7 @@ struct EvalContext
 {
   const ParsedBlock &block;
   bool preview_state_changed = false;
+  bool consumed_right_click = false;
   std::unordered_map<std::string, Value> overrides;
   std::unordered_map<std::string, Value> cache;
   std::unordered_map<std::string, std::string> cache_errors;
@@ -3008,7 +3009,10 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
     static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
     if(!readonly && !any_slot_hovered && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    {
       ImGui::OpenPopup("grid_settings");
+      ctx.consumed_right_click = true;
+    }
     if(!readonly && ImGui::BeginPopup("grid_settings"))
     {
       InventoryGridEditorState &gs = grid_editor_states[child_id];
@@ -3238,6 +3242,7 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
     result.markdown_changed = true;
   }
   result.preview_state_changed = ctx.preview_state_changed;
+  result.consumed_right_click = ctx.consumed_right_click;
   return result;
 }
 } // namespace MarkdownUi
