@@ -30,6 +30,14 @@
 
 namespace MarkdownUi
 {
+
+static std::filesystem::path g_widget_document_path;
+
+void set_widget_document_path(std::filesystem::path path)
+{
+  g_widget_document_path = std::move(path);
+}
+
 namespace
 {
 using NoteCore::trim;
@@ -501,6 +509,13 @@ std::filesystem::path resolve_widget_image_path(std::string_view raw_path)
 
   std::filesystem::path path(raw_path);
   if(path.is_absolute() && std::filesystem::exists(path)) return path;
+
+  if(!g_widget_document_path.empty())
+  {
+    const std::filesystem::path doc_candidate = g_widget_document_path.parent_path() / path;
+    if(std::filesystem::exists(doc_candidate)) return std::filesystem::absolute(doc_candidate);
+  }
+
   if(std::filesystem::exists(path)) return std::filesystem::absolute(path);
 
   const std::filesystem::path assets_root = std::filesystem::path(ASSETS_PATH);
@@ -2909,21 +2924,30 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           }
           if(const ImGuiPayload *img_payload = ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
           {
-            const char *img_path = static_cast<const char *>(img_payload->Data);
-            if(img_path)
+            const char *img_path_raw = static_cast<const char *>(img_payload->Data);
+            if(img_path_raw)
             {
+              std::string stored_path = img_path_raw;
+              if(!g_widget_document_path.empty())
+              {
+                std::error_code ec;
+                std::filesystem::path rel = std::filesystem::relative(
+                    std::filesystem::path(img_path_raw),
+                    g_widget_document_path.parent_path(), ec);
+                if(!ec && !rel.empty()) stored_path = rel.generic_string();
+              }
               if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
               {
                 InventorySlotInfo existing;
                 std::string existing_error;
                 extract_inventory_slot(items->array[static_cast<size_t>(item_index)], existing, existing_error);
-                Value new_slot = make_inventory_slot_value(existing.title, std::string(img_path), existing.tooltip, existing.quantity, existing.color_text, existing.enabled);
+                Value new_slot = make_inventory_slot_value(existing.title, stored_path, existing.tooltip, existing.quantity, existing.color_text, existing.enabled);
                 set_inventory_slot_position(new_slot, index);
                 items->array[static_cast<size_t>(item_index)] = std::move(new_slot);
               }
               else
               {
-                Value new_slot = make_inventory_slot_value({}, std::string(img_path), {});
+                Value new_slot = make_inventory_slot_value({}, stored_path, {});
                 set_inventory_slot_position(new_slot, index);
                 items->array.push_back(std::move(new_slot));
               }

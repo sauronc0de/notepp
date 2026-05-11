@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 
@@ -13,6 +14,8 @@ struct RenderResult
   bool preview_state_changed = false;
   bool consumed_right_click = false;
 };
+
+void set_widget_document_path(std::filesystem::path path);
 
 std::string capture_ui_state_snapshot();
 void apply_ui_state_snapshot(std::string_view snapshot);

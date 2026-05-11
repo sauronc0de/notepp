@@ -1963,6 +1963,7 @@ void set_preview_document_path(std::string_view path)
 {
   g_preview_document_path.assign(path.data(), path.size());
   MarkdownView::set_document_path(path);
+  MarkdownUi::set_widget_document_path(std::filesystem::path(path));
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)
