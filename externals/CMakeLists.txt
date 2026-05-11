@@ -33,17 +33,6 @@ target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/
 target_link_libraries(imgui PUBLIC SDL2::SDL2 m)
 # ------------------------------------------------------------#
 
-# 🌐 Added ETL libraries -------------------------------------#
-Include(FetchContent)
-FetchContent_Declare(
-  etl
-  GIT_REPOSITORY https://github.com/ETLCPP/etl
-  GIT_TAG        20.40.0
-)
-FetchContent_MakeAvailable(etl)
-# ------------------------------------------------------------#
-
-
 # 🌐 Added magic enum library -----------------------------------#
 include(FetchContent)
 
@@ -82,30 +71,6 @@ FetchContent_Declare(
 )
 
 FetchContent_MakeAvailable(nlohmann_json)
-# ------------------------------------------------------------#
-
-# 🌐 Added sol library -----------------------------------#
-# Fetch Sol2
-FetchContent_Declare(
-    sol2
-    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
-    GIT_TAG        v3.3.0
-)
-FetchContent_MakeAvailable(sol2)
-add_library(lua_common INTERFACE)
-target_include_directories(lua_common INTERFACE ${LUA_INCLUDE_DIRS})
-target_link_libraries(lua_common INTERFACE ${LUA_LIBRARIES} sol2::sol2)
-# ------------------------------------------------------------#
-
-# 🌐 Added sol library -----------------------------------#
-# Fetch doctest
-FetchContent_Declare(
-  doctest
-  GIT_REPOSITORY https://github.com/doctest/doctest.git
-  GIT_TAG v2.4.11   # or a newer tag
-)
-FetchContent_MakeAvailable(doctest)
-
 # ------------------------------------------------------------#
 
 # ------------------------------------------------------------#
