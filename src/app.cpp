@@ -243,7 +243,11 @@ static void invalidate_folder_font_cache(const std::string &folder_name)
 
 static ImFont *get_or_load_note_font(const std::string &abs_path, float size)
 {
-  auto it = g_note_font_cache.find(abs_path);
+  char size_buf[16];
+  std::snprintf(size_buf, sizeof(size_buf), "%.1f", size);
+  const std::string cache_key = abs_path + ":" + size_buf;
+
+  auto it = g_note_font_cache.find(cache_key);
   if(it != g_note_font_cache.end()) return it->second;
 
   ImGuiIO &io = ImGui::GetIO();
@@ -254,7 +258,7 @@ static ImFont *get_or_load_note_font(const std::string &abs_path, float size)
     io.Fonts->Build();
     ImGui_ImplOpenGL3_CreateFontsTexture();
   }
-  g_note_font_cache[abs_path] = font;
+  g_note_font_cache[cache_key] = font;
   return font;
 }
 
@@ -654,8 +658,15 @@ void App::init_imgui()
     io.Fonts->AddFontFromFileTTF(emoji_font_path, kUiFontSize, &emoji_cfg, emoji_ranges);
   };
 
-  ImFont *font_regular = io.Fonts->AddFontFromFileTTF((config_.assetsPath / "fonts" / "Roboto-Medium.ttf").string().c_str(), kUiFontSize);
-  if(!font_regular) font_regular = io.Fonts->AddFontFromFileTTF((config_.assetsPath / "fonts" / "opensans.ttf").string().c_str(), kUiFontSize);
+  const std::string roboto_path = (config_.assetsPath / "fonts" / "Roboto-Medium.ttf").string();
+  const std::string opensans_path = (config_.assetsPath / "fonts" / "opensans.ttf").string();
+  ImFont *font_regular = io.Fonts->AddFontFromFileTTF(roboto_path.c_str(), kUiFontSize);
+  if(font_regular) default_font_path_ = roboto_path;
+  if(!font_regular)
+  {
+    font_regular = io.Fonts->AddFontFromFileTTF(opensans_path.c_str(), kUiFontSize);
+    if(font_regular) default_font_path_ = opensans_path;
+  }
   if(font_regular)
   {
     merge_emoji_fallback((config_.assetsPath / "fonts" / "openmojiblack.ttf").string().c_str());
@@ -823,6 +834,7 @@ void App::load_state()
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
                     n.color_b = (float)json_find_int(nobj, "color_b", 0) / 255.0f;
                     n.font_path = json_find_string(nobj, "font_path");
+                    n.font_size = (float)json_find_int(nobj, "font_size", 0);
                     if(n.title.empty()) n.title = "Note";
                     if(n.path.empty()) n.path = make_note_path(f.name, n.title);
                     f.notes.push_back(std::move(n));
@@ -929,6 +941,8 @@ void App::save_index() const
           << ", \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_b)) * 255.0f);
       if(!n.font_path.empty())
         out << ", \"font_path\": \"" << json_escape(n.font_path) << "\"";
+      if(n.font_size > 0.0f)
+        out << ", \"font_size\": " << (int)std::lround(n.font_size);
       out << "}";
       if(ni + 1 < f.notes.size()) out << ",";
       out << "\n";
@@ -5099,21 +5113,48 @@ __CURSOR__)MD");
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
       const bool is_editing_this = editing_mode_ && ni == active_note_idx_;
 
-      // Per-note custom font
+      // Per-note custom font / size
       ImFont *note_font = nullptr;
-      if(!n.font_path.empty())
       {
-        std::filesystem::path abs_font = std::filesystem::path(n.font_path);
-        if(abs_font.is_relative())
-          abs_font = config_.dataPath / f.name / abs_font;
-        constexpr float kUiFontSize = 14.0f;
-        note_font = get_or_load_note_font(abs_font.string(), kUiFontSize);
-        if(note_font)
+        constexpr float kDefaultSize = 14.0f;
+        const float effective_size = n.font_size > 0.0f ? n.font_size : kDefaultSize;
+        std::string effective_path;
+        if(!n.font_path.empty())
         {
-          ImGui::PushFont(note_font);
-          MarkdownView::set_fonts(note_font, font_italic_, font_bold_);
+          std::filesystem::path abs_font(n.font_path);
+          if(abs_font.is_relative()) abs_font = config_.dataPath / f.name / abs_font;
+          effective_path = abs_font.string();
         }
-        else note_font = nullptr;
+        else if(n.font_size > 0.0f && !default_font_path_.empty())
+        {
+          effective_path = default_font_path_;
+        }
+        if(!effective_path.empty())
+        {
+          note_font = get_or_load_note_font(effective_path, effective_size);
+          if(note_font)
+          {
+            ImGui::PushFont(note_font);
+            MarkdownView::set_fonts(note_font, font_italic_, font_bold_);
+          }
+          else note_font = nullptr;
+        }
+      }
+
+      // Ctrl+scroll to change font size
+      if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::GetIO().KeyCtrl)
+      {
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if(wheel != 0.0f)
+        {
+          constexpr float kDefaultSize = 14.0f;
+          constexpr float kMinSize = 8.0f;
+          constexpr float kMaxSize = 48.0f;
+          const float current = n.font_size > 0.0f ? n.font_size : kDefaultSize;
+          const float next = std::max(kMinSize, std::min(kMaxSize, current + wheel));
+          n.font_size = (std::fabs(next - kDefaultSize) < 0.5f) ? 0.0f : next;
+          save_index();
+        }
       }
 
       const ImVec2 win_pos = ImGui::GetWindowPos();
@@ -5239,6 +5280,29 @@ __CURSOR__)MD");
         {
           n.font_path.clear();
           save_index();
+        }
+        {
+          constexpr float kDefaultSize = 14.0f;
+          constexpr float kMinSize = 8.0f;
+          constexpr float kMaxSize = 48.0f;
+          const float cur = n.font_size > 0.0f ? n.font_size : kDefaultSize;
+          if(ImGui::MenuItem("Increase font size", nullptr, false, cur < kMaxSize))
+          {
+            const float next = std::min(kMaxSize, cur + 1.0f);
+            n.font_size = (std::fabs(next - kDefaultSize) < 0.5f) ? 0.0f : next;
+            save_index();
+          }
+          if(ImGui::MenuItem("Decrease font size", nullptr, false, cur > kMinSize))
+          {
+            const float next = std::max(kMinSize, cur - 1.0f);
+            n.font_size = (std::fabs(next - kDefaultSize) < 0.5f) ? 0.0f : next;
+            save_index();
+          }
+          if(n.font_size > 0.0f && ImGui::MenuItem("Reset font size"))
+          {
+            n.font_size = 0.0f;
+            save_index();
+          }
         }
         if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
         {

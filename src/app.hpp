@@ -91,6 +91,7 @@ private:
   ImFont *font_regular_ = nullptr;
   ImFont *font_italic_ = nullptr;
   ImFont *font_bold_ = nullptr;
+  std::string default_font_path_;
 
   bool running_ = true;
   bool editing_mode_ = false;
@@ -125,6 +126,7 @@ private:
     std::string title;
     std::string path;
     std::string font_path;
+    float font_size = 0.0f;
     bool use_custom_color = false;
     float color_r = 0.0f;
     float color_g = 0.0f;
