@@ -42,7 +42,7 @@ die() { echo "ERROR: $1" >&2; exit 1; }
 get_version() {
   local version
   version="$(sed -nE \
-    "s/^project\(${CMAKE_PROJECT_NAME} VERSION ([0-9]+\.[0-9]+\.[0-9]+).*\$/\1/p" \
+    "s/^project\(.*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*\$/\1/p" \
     "${WORKSPACE_DIR}/CMakeLists.txt")"
   [ -n "$version" ] || die "Could not extract version from CMakeLists.txt"
   printf '%s\n' "$version"
