@@ -909,6 +909,7 @@ void App::load_state()
     folders_.push_back(std::move(f));
   }
 
+  sync_project_files();
   ensure_default_index();
   normalize_active_indices();
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
@@ -1075,6 +1076,67 @@ bool App::has_active_note() const
   if(active_folder_idx_ < 0 || active_folder_idx_ >= (int)folders_.size()) return false;
   const auto &notes = folders_[(size_t)active_folder_idx_].notes;
   return active_note_idx_ >= 0 && active_note_idx_ < (int)notes.size();
+}
+
+void App::sync_project_files()
+{
+  namespace fs = std::filesystem;
+
+  // Collect all currently tracked note paths (normalized).
+  std::unordered_set<std::string> tracked;
+  for(const auto &f : folders_)
+    for(const auto &n : f.notes)
+      if(!n.path.empty())
+        tracked.insert(fs::path(n.path).lexically_normal().string());
+
+  bool changed = false;
+  std::error_code ec;
+
+  for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, ec))
+  {
+    if(ec) { ec.clear(); continue; }
+    if(!entry.is_regular_file(ec)) { ec.clear(); continue; }
+    const fs::path &p = entry.path();
+    if(p.extension() != ".md") continue;
+
+    const std::string norm = p.lexically_normal().string();
+    if(tracked.count(norm)) continue;
+
+    // Determine folder and title from path relative to dataPath.
+    const fs::path rel = fs::relative(p, config_.dataPath, ec);
+    if(ec || rel.empty()) { ec.clear(); continue; }
+
+    const fs::path parent_rel = rel.parent_path();
+    std::string folder_name;
+    if(parent_rel.empty() || parent_rel == fs::path("."))
+      folder_name = "General";
+    else
+      folder_name = parent_rel.generic_string();
+
+    const std::string title = p.stem().string().empty() ? "Note" : p.stem().string();
+
+    // Find or create the folder.
+    int fi = -1;
+    for(int i = 0; i < (int)folders_.size(); ++i)
+      if(folders_[(size_t)i].name == folder_name) { fi = i; break; }
+    if(fi < 0)
+    {
+      FolderMeta nf;
+      nf.name = folder_name;
+      folders_.push_back(std::move(nf));
+      fi = (int)folders_.size() - 1;
+    }
+
+    NoteMeta n;
+    n.title = title;
+    n.path = norm;
+    folders_[(size_t)fi].notes.push_back(std::move(n));
+    tracked.insert(norm);
+    changed = true;
+  }
+
+  if(changed)
+    save_index();
 }
 
 void App::load_note_content_for_active()
@@ -2092,8 +2154,38 @@ void App::frame_ui()
           ImGuiWindowFlags_NoCollapse |
           ImGuiWindowFlags_NoSavedSettings |
           ImGuiWindowFlags_NoDocking |
+          ImGuiWindowFlags_NoTitleBar |
           (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
   ImGui::PopStyleColor();
+  // Custom Explorer header: label on the left, refresh button on the right.
+  static bool request_sync_files = false;
+  {
+    const float btn_sz = 14.0f;
+    const float right_margin = ImGui::GetStyle().WindowPadding.x;
+    const ImTextureID refresh_icon = get_toolbar_icon_texture("refresh.png");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Explorer");
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz - right_margin);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.12f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.24f));
+    if(refresh_icon
+           ? ImGui::ImageButton("##explorer_refresh", refresh_icon, ImVec2(btn_sz, btn_sz), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.75f))
+           : ImGui::SmallButton("R##explorer_refresh"))
+    {
+      request_sync_files = true;
+    }
+    ImGui::PopStyleColor(3);
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+      ImGui::SetTooltip("Refresh: detect new files in the project folder");
+    ImGui::Separator();
+  }
+  if(request_sync_files)
+  {
+    sync_project_files();
+    request_sync_files = false;
+  }
   static char new_folder_buf[128] = {};
   static char new_note_buf[128] = {};
   static bool open_new_folder_popup = false;
