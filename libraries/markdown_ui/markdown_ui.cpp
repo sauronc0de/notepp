@@ -2696,16 +2696,14 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
   if(!slot.enabled) fill_color = mix(fill_color, ImVec4(0.05f, 0.05f, 0.06f, fill_color.w), 0.35f);
 
   draw_list->AddRectFilled(min, max, ImGui::GetColorU32(fill_color), 6.0f);
-  draw_list->AddRect(min, max, ImGui::GetColorU32(border_color), 6.0f, 0, selected ? 2.0f : 1.0f);
 
   if(has_content)
   {
-    const float padding = 6.0f;
     const ImTextureID texture = get_widget_image_texture(slot.image);
     const ImU32 tint = ImGui::GetColorU32(slot.enabled ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.72f, 0.72f, 0.72f, 0.55f));
     if(texture != static_cast<ImTextureID>(0))
     {
-      draw_list->AddImage(texture, ImVec2(min.x + padding, min.y + padding), ImVec2(max.x - padding, max.y - padding), ImVec2(0, 0), ImVec2(1, 1), tint);
+      draw_list->AddImage(texture, min, max, ImVec2(0, 0), ImVec2(1, 1), tint);
     }
     else
     {
@@ -2730,6 +2728,9 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
       draw_list->AddText(ImVec2(badge_min.x + 6.0f, badge_min.y + 2.0f), ImGui::GetColorU32(ImGuiCol_Text), qty.c_str());
     }
   }
+
+  // Border drawn last so it always appears on top of the image.
+  draw_list->AddRect(min, max, ImGui::GetColorU32(border_color), 6.0f, 0, selected ? 2.0f : 1.0f);
 
   if(!slot.enabled)
   {
