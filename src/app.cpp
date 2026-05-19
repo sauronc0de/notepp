@@ -4624,6 +4624,15 @@ __CURSOR__)MD");
         }
         ImGui::SameLine();
       }
+      {
+        const char *ver = "v" NOTEPP_VERSION;
+        const ImVec2 ver_sz = ImGui::CalcTextSize(ver);
+        const float right_margin = ImGui::GetStyle().WindowPadding.x;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ver_sz.x - right_margin, (bar_h - ver_sz.y) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.65f, 1.0f));
+        ImGui::TextUnformatted(ver);
+        ImGui::PopStyleColor();
+      }
       ImGui::PopStyleColor(8);
       ImGui::End();
       ImGui::PopStyleVar(2);
