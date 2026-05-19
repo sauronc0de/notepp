@@ -879,6 +879,39 @@ void App::load_state()
                 }
               }
             }
+            // Parse images array
+            {
+              const std::string ipat = "\"images\"";
+              size_t ik = fobj.find(ipat);
+              if(ik != std::string_view::npos)
+              {
+                size_t ib = fobj.find('[', ik + ipat.size());
+                if(ib != std::string_view::npos)
+                {
+                  size_t ie = find_matching(fobj, ib, '[', ']');
+                  if(ie != std::string_view::npos)
+                  {
+                    std::string_view img_arr = fobj.substr(ib + 1, ie - ib - 1);
+                    size_t pos = 0;
+                    while(pos < img_arr.size())
+                    {
+                      size_t q1 = img_arr.find('"', pos);
+                      if(q1 == std::string_view::npos) break;
+                      size_t q2 = q1 + 1;
+                      while(q2 < img_arr.size() && img_arr[q2] != '"')
+                      {
+                        if(img_arr[q2] == '\\') ++q2; // skip escaped char
+                        ++q2;
+                      }
+                      if(q2 >= img_arr.size()) break;
+                      std::string img_path = json_unescape(img_arr.substr(q1 + 1, q2 - q1 - 1));
+                      if(!img_path.empty()) f.images.push_back(std::move(img_path));
+                      pos = q2 + 1;
+                    }
+                  }
+                }
+              }
+            }
             folders_.push_back(std::move(f));
           }
         }
@@ -985,7 +1018,14 @@ void App::save_index() const
       if(ni + 1 < f.notes.size()) out << ",";
       out << "\n";
     }
-    out << "      ]\n";
+    out << "      ],\n";
+    out << "      \"images\": [";
+    for(size_t ii = 0; ii < f.images.size(); ++ii)
+    {
+      if(ii > 0) out << ", ";
+      out << "\"" << json_escape(f.images[ii]) << "\"";
+    }
+    out << "]\n";
     out << "    }";
     if(fi + 1 < folders_.size()) out << ",";
     out << "\n";
@@ -1082,57 +1122,116 @@ void App::sync_project_files()
 {
   namespace fs = std::filesystem;
 
-  // Collect all currently tracked note paths (normalized).
-  std::unordered_set<std::string> tracked;
-  for(const auto &f : folders_)
-    for(const auto &n : f.notes)
-      if(!n.path.empty())
-        tracked.insert(fs::path(n.path).lexically_normal().string());
+  static const auto kImageExts = []() {
+    std::unordered_set<std::string> s;
+    for(const char *e : {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg", ".tga", ".tiff"})
+      s.insert(e);
+    return s;
+  }();
+
+  auto norm_path = [](const fs::path &p) { return p.lexically_normal().string(); };
+
+  auto lower_ext = [](const fs::path &p) {
+    std::string e = p.extension().string();
+    for(auto &c : e) c = (char)std::tolower((unsigned char)c);
+    return e;
+  };
 
   bool changed = false;
   std::error_code ec;
 
+  // ---- 1. Remove stale notes whose files no longer exist on disk ----
+  for(auto &f : folders_)
+  {
+    const size_t before = f.notes.size();
+    f.notes.erase(
+        std::remove_if(f.notes.begin(), f.notes.end(), [&](const NoteMeta &n) {
+          return !n.path.empty() && !fs::exists(fs::path(n.path), ec);
+        }),
+        f.notes.end());
+    if(f.notes.size() != before) changed = true;
+  }
+
+  // ---- 2. Remove stale image paths whose files no longer exist on disk ----
+  for(auto &f : folders_)
+  {
+    const size_t before = f.images.size();
+    f.images.erase(
+        std::remove_if(f.images.begin(), f.images.end(), [&](const std::string &img) {
+          return !img.empty() && !fs::exists(fs::path(img), ec);
+        }),
+        f.images.end());
+    if(f.images.size() != before) changed = true;
+  }
+
+  // ---- 3. Build sets of already-tracked paths ----
+  std::unordered_set<std::string> tracked_notes;
+  std::unordered_set<std::string> tracked_images;
+  for(const auto &f : folders_)
+  {
+    for(const auto &n : f.notes)
+      if(!n.path.empty()) tracked_notes.insert(norm_path(fs::path(n.path)));
+    for(const auto &img : f.images)
+      if(!img.empty()) tracked_images.insert(norm_path(fs::path(img)));
+  }
+
+  // Helper: find or create folder by name, return index.
+  auto find_or_create_folder = [&](const std::string &folder_name) -> int {
+    for(int i = 0; i < (int)folders_.size(); ++i)
+      if(folders_[(size_t)i].name == folder_name) return i;
+    FolderMeta nf;
+    nf.name = folder_name;
+    folders_.push_back(std::move(nf));
+    return (int)folders_.size() - 1;
+  };
+
+  // Helper: compute folder name and return false if the file should be skipped.
+  auto folder_name_for = [&](const fs::path &p, std::string &out_folder) -> bool {
+    const fs::path rel = fs::relative(p, config_.dataPath, ec);
+    if(ec || rel.empty()) { ec.clear(); return false; }
+    const fs::path parent_rel = rel.parent_path();
+    if(parent_rel.empty() || parent_rel == fs::path("."))
+      out_folder = "General";
+    else
+      out_folder = parent_rel.generic_string();
+    return true;
+  };
+
+  // ---- 4. Scan disk — add new .md and image files ----
   for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, ec))
   {
     if(ec) { ec.clear(); continue; }
     if(!entry.is_regular_file(ec)) { ec.clear(); continue; }
     const fs::path &p = entry.path();
-    if(p.extension() != ".md") continue;
+    const std::string ext = lower_ext(p);
+    const std::string norm = norm_path(p);
 
-    const std::string norm = p.lexically_normal().string();
-    if(tracked.count(norm)) continue;
-
-    // Determine folder and title from path relative to dataPath.
-    const fs::path rel = fs::relative(p, config_.dataPath, ec);
-    if(ec || rel.empty()) { ec.clear(); continue; }
-
-    const fs::path parent_rel = rel.parent_path();
-    std::string folder_name;
-    if(parent_rel.empty() || parent_rel == fs::path("."))
-      folder_name = "General";
-    else
-      folder_name = parent_rel.generic_string();
-
-    const std::string title = p.stem().string().empty() ? "Note" : p.stem().string();
-
-    // Find or create the folder.
-    int fi = -1;
-    for(int i = 0; i < (int)folders_.size(); ++i)
-      if(folders_[(size_t)i].name == folder_name) { fi = i; break; }
-    if(fi < 0)
+    if(ext == ".md")
     {
-      FolderMeta nf;
-      nf.name = folder_name;
-      folders_.push_back(std::move(nf));
-      fi = (int)folders_.size() - 1;
+      if(tracked_notes.count(norm)) continue;
+      std::string folder_name;
+      if(!folder_name_for(p, folder_name)) continue;
+      const std::string title = p.stem().string().empty() ? "Note" : p.stem().string();
+      const int fi = find_or_create_folder(folder_name);
+      NoteMeta n;
+      n.title = title;
+      n.path = norm;
+      folders_[(size_t)fi].notes.push_back(std::move(n));
+      tracked_notes.insert(norm);
+      changed = true;
     }
-
-    NoteMeta n;
-    n.title = title;
-    n.path = norm;
-    folders_[(size_t)fi].notes.push_back(std::move(n));
-    tracked.insert(norm);
-    changed = true;
+    else if(kImageExts.count(ext))
+    {
+      if(tracked_images.count(norm)) continue;
+      std::string folder_name;
+      if(!folder_name_for(p, folder_name)) continue;
+      const int fi = find_or_create_folder(folder_name);
+      folders_[(size_t)fi].images.push_back(norm);
+      tracked_images.insert(norm);
+      // Invalidate the per-folder image display cache.
+      invalidate_folder_image_cache(folder_name);
+      changed = true;
+    }
   }
 
   if(changed)

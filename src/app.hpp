@@ -150,6 +150,7 @@ private:
   {
     std::string name;
     std::vector<NoteMeta> notes;
+    std::vector<std::string> images; // tracked image file paths (abs)
   };
   struct PendingDroppedFile
   {
