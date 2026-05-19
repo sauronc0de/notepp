@@ -1,5 +1,8 @@
 #include "app.hpp"
 #include "helpers.hpp"
+#if USE_PORTABLE_PATHS
+#include "project_manager.hpp"
+#endif
 #include "markdown_sections.hpp"
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
@@ -567,6 +570,40 @@ App::App(AppConfig config)
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
 }
+
+#if USE_PORTABLE_PATHS
+void App::switch_project(const std::filesystem::path &new_root)
+{
+  save_state();
+
+  auto project = notepp::project::create_or_open_project(new_root);
+  config_.dataPath = project.notes;
+
+  default_state_file_ = config_.dataPath / "note.md";
+  legacy_state_meta_file_ = config_.dataPath / "current_note_path.txt";
+  index_file_ = config_.dataPath / "notes_index.json";
+  imgui_ini_file_ = config_.dataPath / "imgui_layout.ini";
+  drawings_file_ = config_.dataPath / "drawings_state.txt";
+  g_clipboard_file = config_.dataPath / "note_clipboard.json";
+  g_drawings_file = drawings_file_;
+  state_file_path_ = default_state_file_.string();
+
+  g_folder_drawings.clear();
+  g_draw_undo.clear();
+  g_draw_redo.clear();
+  g_drawings_legacy_checked.clear();
+  g_drawings_dirty = false;
+  g_explorer_image_cache.clear();
+  g_explorer_font_cache.clear();
+
+  MarkdownView::set_document_path(config_.dataPath);
+
+  note_title_ = "Note";
+  markdown_text_.clear();
+
+  load_state();
+}
+#endif
 
 int App::run()
 {
@@ -2531,6 +2568,72 @@ void App::frame_ui()
     request_redo_draw_ = false;
   }
 
+#if USE_PORTABLE_PATHS
+  static bool open_project_picker_popup = false;
+  static std::vector<std::filesystem::path> recent_projects_cache;
+  if(request_open_project_)
+  {
+    open_project_picker_popup = true;
+    recent_projects_cache = notepp::project::load_recent_projects();
+    request_open_project_ = false;
+  }
+  if(open_project_picker_popup)
+  {
+    ImGui::OpenPopup("Open Project");
+    open_project_picker_popup = false;
+  }
+  if(ImGui::BeginPopupModal("Open Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+  {
+    std::filesystem::path selected_root;
+    ImGui::TextUnformatted("Recent projects:");
+    ImGui::Spacing();
+    if(recent_projects_cache.empty())
+    {
+      ImGui::TextDisabled("  (none)");
+    }
+    else
+    {
+      const float list_w = 420.0f;
+      const float line_h = ImGui::GetTextLineHeightWithSpacing();
+      const float list_h = std::min((float)recent_projects_cache.size(), 8.0f) * line_h + ImGui::GetStyle().WindowPadding.y;
+      if(ImGui::BeginChild("##recent_list", ImVec2(list_w, list_h), true))
+      {
+        for(const auto &p : recent_projects_cache)
+        {
+          const std::string label = p.filename().string() + "##" + p.generic_string();
+          const bool is_current = (p == config_.dataPath.parent_path());
+          if(is_current)
+            ImGui::BeginDisabled();
+          if(ImGui::Selectable(label.c_str()))
+            selected_root = p;
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("%s", p.generic_string().c_str());
+          if(is_current)
+            ImGui::EndDisabled();
+        }
+      }
+      ImGui::EndChild();
+    }
+    ImGui::Spacing();
+    if(ImGui::Button("Browse..."))
+    {
+      ImGui::CloseCurrentPopup();
+      auto picked = notepp::project::select_project_folder();
+      if(picked)
+        selected_root = *picked;
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Cancel"))
+      ImGui::CloseCurrentPopup();
+    if(!selected_root.empty())
+    {
+      ImGui::CloseCurrentPopup();
+      switch_project(selected_root);
+    }
+    ImGui::EndPopup();
+  }
+#endif
+
   // Creation is handled from context menus (right-click).
 
   if(open_new_folder_popup)
@@ -2796,6 +2899,11 @@ void App::frame_ui()
     if(ImGui::MenuItem("Reveal in File Explorer"))
       open_directory(config_.dataPath);
     ImGui::Separator();
+#if USE_PORTABLE_PATHS
+    if(ImGui::MenuItem("Open project..."))
+      request_open_project_ = true;
+    ImGui::Separator();
+#endif
     if(ImGui::MenuItem("Find in project..."))
     {
       request_open_project_search_ = true;

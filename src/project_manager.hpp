@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <vector>
 
 namespace notepp::project
 {
@@ -18,6 +19,8 @@ std::filesystem::path get_config_file();
 
 std::optional<std::filesystem::path> load_last_project_path();
 void save_last_project_path(const std::filesystem::path &path);
+
+std::vector<std::filesystem::path> load_recent_projects();
 
 std::optional<std::filesystem::path> select_project_folder();
 

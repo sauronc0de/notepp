@@ -43,6 +43,11 @@ fs::path get_config_file()
   return get_appdata_dir() / "config.json";
 }
 
+static fs::path get_recent_projects_file()
+{
+  return get_appdata_dir() / "recent_projects.txt";
+}
+
 void save_last_project_path(const fs::path &path)
 {
   const auto configDir = get_appdata_dir();
@@ -56,6 +61,41 @@ void save_last_project_path(const fs::path &path)
   file << "{\n";
   file << "  \"lastProjectPath\": \"" << path.generic_string() << "\"\n";
   file << "}\n";
+
+  // Maintain the recent projects list (most recent first, max 10)
+  const auto recentFile = get_recent_projects_file();
+  const std::string pathStr = path.generic_string();
+  std::vector<std::string> lines;
+  {
+    std::ifstream rf(recentFile);
+    std::string line;
+    while(std::getline(rf, line))
+      if(!line.empty() && line != pathStr)
+        lines.push_back(line);
+  }
+  lines.insert(lines.begin(), pathStr);
+  if(lines.size() > 10) lines.resize(10);
+
+  std::ofstream wf(recentFile, std::ios::trunc);
+  for(const auto &l : lines)
+    wf << l << "\n";
+}
+
+std::vector<fs::path> load_recent_projects()
+{
+  std::ifstream file(get_recent_projects_file());
+  if(!file) return {};
+
+  std::vector<fs::path> result;
+  std::string line;
+  while(std::getline(file, line))
+  {
+    if(line.empty()) continue;
+    fs::path p(line);
+    if(fs::exists(p))
+      result.push_back(p);
+  }
+  return result;
 }
 
 std::optional<fs::path> load_last_project_path()

@@ -78,6 +78,9 @@ private:
   void frame_ui();
   void frame_end();
   void save_note_clipboard();
+#if USE_PORTABLE_PATHS
+  void switch_project(const std::filesystem::path &new_root);
+#endif
 
   std::filesystem::path default_state_file_;
   std::filesystem::path legacy_state_meta_file_;
@@ -108,6 +111,9 @@ private:
   bool request_paste_sidebar_ = false;
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
+#if USE_PORTABLE_PATHS
+  bool request_open_project_ = false;
+#endif
   bool request_close_search_ = false;
   bool search_window_visible_ = false;
   bool search_request_window_focus_ = false;
