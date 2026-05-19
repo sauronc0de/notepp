@@ -706,21 +706,18 @@ void App::init_imgui()
   }
   if(font_regular)
   {
-    merge_emoji_fallback((config_.assetsPath / "fonts" / "openmojiblack.ttf").string().c_str());
     merge_emoji_fallback((config_.assetsPath / "fonts" / "twemoji.ttf").string().c_str());
   }
 
   ImFont *font_italic = io.Fonts->AddFontFromFileTTF((config_.assetsPath / "fonts" / "Roboto-Italic.ttf").string().c_str(), kUiFontSize);
   if(font_italic)
   {
-    merge_emoji_fallback((config_.assetsPath / "fonts" / "openmojiblack.ttf").string().c_str());
     merge_emoji_fallback((config_.assetsPath / "fonts" / "twemoji.ttf").string().c_str());
   }
 
   ImFont *font_bold = io.Fonts->AddFontFromFileTTF((config_.assetsPath / "fonts" / "Roboto-Bold.ttf").string().c_str(), kUiFontSize);
   if(font_bold)
   {
-    merge_emoji_fallback((config_.assetsPath / "fonts" / "openmojiblack.ttf").string().c_str());
     merge_emoji_fallback((config_.assetsPath / "fonts" / "twemoji.ttf").string().c_str());
   }
 
