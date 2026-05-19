@@ -604,14 +604,19 @@ public:
   bool eof() const;
 
 private:
+  ExprResult parse_logical_or();
+  ExprResult parse_logical_and();
+  ExprResult parse_comparison();
   ExprResult parse_additive();
   ExprResult parse_multiplicative();
   ExprResult parse_unary();
   ExprResult parse_primary();
+  ExprResult parse_call(const std::string &name);
   ExprResult parse_string_literal();
   ExprResult parse_array();
   ExprResult parse_object();
   bool consume(char c);
+  static ExprResult call_builtin(const std::string &name, const std::vector<Value> &args);
   char peek() const;
   static ExprResult combine_numeric(const ExprResult &lhs, const ExprResult &rhs, char op);
 
@@ -721,7 +726,101 @@ ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &
 
 ExprResult ExprParser::parse_expression()
 {
-  return parse_additive();
+  return parse_logical_or();
+}
+
+ExprResult ExprParser::parse_logical_or()
+{
+  ExprResult lhs = parse_logical_and();
+  if(!lhs.error.empty()) return lhs;
+  while(true)
+  {
+    skip_ws();
+    if(pos_ + 1 >= source_.size() || source_[pos_] != '|' || source_[pos_ + 1] != '|') break;
+    pos_ += 2;
+    ExprResult rhs = parse_logical_and();
+    if(!rhs.error.empty()) return rhs;
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = is_true(lhs.value) || is_true(rhs.value);
+    lhs = {result, {}};
+  }
+  return lhs;
+}
+
+ExprResult ExprParser::parse_logical_and()
+{
+  ExprResult lhs = parse_comparison();
+  if(!lhs.error.empty()) return lhs;
+  while(true)
+  {
+    skip_ws();
+    if(pos_ + 1 >= source_.size() || source_[pos_] != '&' || source_[pos_ + 1] != '&') break;
+    pos_ += 2;
+    ExprResult rhs = parse_comparison();
+    if(!rhs.error.empty()) return rhs;
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = is_true(lhs.value) && is_true(rhs.value);
+    lhs = {result, {}};
+  }
+  return lhs;
+}
+
+ExprResult ExprParser::parse_comparison()
+{
+  ExprResult lhs = parse_additive();
+  if(!lhs.error.empty()) return lhs;
+  skip_ws();
+  if(eof()) return lhs;
+
+  const char c0 = source_[pos_];
+  const char c1 = (pos_ + 1 < source_.size()) ? source_[pos_ + 1] : '\0';
+
+  enum class CmpOp { Gt, Lt, Ge, Le, Eq, Ne, None };
+  CmpOp op = CmpOp::None;
+  if     (c0 == '>' && c1 == '=') { op = CmpOp::Ge; pos_ += 2; }
+  else if(c0 == '<' && c1 == '=') { op = CmpOp::Le; pos_ += 2; }
+  else if(c0 == '=' && c1 == '=') { op = CmpOp::Eq; pos_ += 2; }
+  else if(c0 == '!' && c1 == '=') { op = CmpOp::Ne; pos_ += 2; }
+  else if(c0 == '>')              { op = CmpOp::Gt; pos_ += 1; }
+  else if(c0 == '<')              { op = CmpOp::Lt; pos_ += 1; }
+
+  if(op == CmpOp::None) return lhs;
+
+  ExprResult rhs = parse_additive();
+  if(!rhs.error.empty()) return rhs;
+
+  Value result;
+  result.kind = ValueKind::Bool;
+
+  if(op == CmpOp::Eq || op == CmpOp::Ne)
+  {
+    bool eq;
+    if(lhs.value.kind == ValueKind::Number && rhs.value.kind == ValueKind::Number)
+      eq = std::fabs(lhs.value.number - rhs.value.number) < 1e-9;
+    else if(lhs.value.kind == ValueKind::String && rhs.value.kind == ValueKind::String)
+      eq = lhs.value.str == rhs.value.str;
+    else if(lhs.value.kind == ValueKind::Bool && rhs.value.kind == ValueKind::Bool)
+      eq = lhs.value.boolean == rhs.value.boolean;
+    else
+      eq = false;
+    result.boolean = (op == CmpOp::Eq) ? eq : !eq;
+  }
+  else
+  {
+    if(lhs.value.kind != ValueKind::Number || rhs.value.kind != ValueKind::Number)
+      return {{}, "comparison requires numeric operands"};
+    switch(op)
+    {
+    case CmpOp::Gt: result.boolean = lhs.value.number >  rhs.value.number; break;
+    case CmpOp::Lt: result.boolean = lhs.value.number <  rhs.value.number; break;
+    case CmpOp::Ge: result.boolean = lhs.value.number >= rhs.value.number; break;
+    case CmpOp::Le: result.boolean = lhs.value.number <= rhs.value.number; break;
+    default: break;
+    }
+  }
+  return {result, {}};
 }
 
 ExprResult ExprParser::parse_additive()
@@ -764,7 +863,110 @@ ExprResult ExprParser::parse_unary()
     inner.value.number = -inner.value.number;
     return inner;
   }
+  // Logical not: '!' not followed by '=' (which would be the != operator)
+  if(peek() == '!' && (pos_ + 1 >= source_.size() || source_[pos_ + 1] != '='))
+  {
+    ++pos_;
+    ExprResult inner = parse_unary();
+    if(!inner.error.empty()) return inner;
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = !is_true(inner.value);
+    return {result, {}};
+  }
   return parse_primary();
+}
+
+ExprResult ExprParser::parse_call(const std::string &name)
+{
+  ++pos_; // consume '('
+  std::vector<Value> args;
+  skip_ws();
+  if(peek() != ')')
+  {
+    while(true)
+    {
+      ExprResult arg = parse_expression();
+      if(!arg.error.empty()) return arg;
+      args.push_back(std::move(arg.value));
+      skip_ws();
+      if(peek() == ')') break;
+      if(!consume(',')) return {{}, "expected ',' or ')' in function call"};
+    }
+  }
+  if(!consume(')')) return {{}, "expected ')'"};
+  return call_builtin(name, args);
+}
+
+ExprResult ExprParser::call_builtin(const std::string &name, const std::vector<Value> &args)
+{
+  if(name == "len")
+  {
+    if(args.size() != 1) return {{}, "len() expects 1 argument"};
+    Value result;
+    result.kind = ValueKind::Number;
+    result.is_integer = true;
+    if(args[0].kind == ValueKind::String)
+      result.number = static_cast<double>(args[0].str.size());
+    else if(args[0].kind == ValueKind::Array)
+      result.number = static_cast<double>(args[0].array.size());
+    else
+      return {{}, "len() expects a string or array"};
+    return {result, {}};
+  }
+  if(name == "contains")
+  {
+    if(args.size() != 2) return {{}, "contains() expects 2 arguments"};
+    Value result;
+    result.kind = ValueKind::Bool;
+    if(args[0].kind == ValueKind::String && args[1].kind == ValueKind::String)
+    {
+      result.boolean = args[0].str.find(args[1].str) != std::string::npos;
+    }
+    else if(args[0].kind == ValueKind::Array)
+    {
+      result.boolean = false;
+      for(const Value &v : args[0].array)
+      {
+        if(v.kind == ValueKind::String && args[1].kind == ValueKind::String && v.str == args[1].str)
+          { result.boolean = true; break; }
+        if(v.kind == ValueKind::Number && args[1].kind == ValueKind::Number && std::fabs(v.number - args[1].number) < 1e-9)
+          { result.boolean = true; break; }
+        if(v.kind == ValueKind::Bool && args[1].kind == ValueKind::Bool && v.boolean == args[1].boolean)
+          { result.boolean = true; break; }
+      }
+    }
+    else
+      return {{}, "contains() expects (string, string) or (array, value)"};
+    return {result, {}};
+  }
+  if(name == "starts_with")
+  {
+    if(args.size() != 2 || args[0].kind != ValueKind::String || args[1].kind != ValueKind::String)
+      return {{}, "starts_with() expects two string arguments"};
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = args[0].str.starts_with(args[1].str);
+    return {result, {}};
+  }
+  if(name == "ends_with")
+  {
+    if(args.size() != 2 || args[0].kind != ValueKind::String || args[1].kind != ValueKind::String)
+      return {{}, "ends_with() expects two string arguments"};
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = args[0].str.ends_with(args[1].str);
+    return {result, {}};
+  }
+  if(name == "empty")
+  {
+    if(args.size() != 1) return {{}, "empty() expects 1 argument"};
+    Value result;
+    result.kind = ValueKind::Bool;
+    result.boolean = !is_true(args[0]);
+    return {result, {}};
+  }
+  return {{}, "unknown function '" + name + "'"};
 }
 
 ExprResult ExprParser::parse_string_literal()
@@ -935,6 +1137,8 @@ ExprResult ExprParser::parse_primary()
       value.boolean = ident == "true";
       return {value, {}};
     }
+    skip_ws();
+    if(peek() == '(') return parse_call(ident);
     return ctx_.resolve_variable(ident);
   }
 
@@ -1164,7 +1368,7 @@ bool statement_needs_more_input(std::string_view text)
   return saw_open && paren_depth > 0;
 }
 
-ParsedBlock parse_block(std::string_view body, size_t body_start)
+ParsedBlock parse_block(std::string_view body)
 {
   ParsedBlock block;
   std::vector<std::string> condition_stack;
@@ -1240,7 +1444,7 @@ ParsedBlock parse_block(std::string_view body, size_t body_start)
       }
 
       pending_statement = std::string(line);
-      pending_offset = body_start + line_start;
+      pending_offset = line_start;
       pending_line_number = line_number;
       pending_conditions = condition_stack;
     }
@@ -3182,7 +3386,7 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
   }
 }
 
-void apply_replacements(std::string &markdown, const ParsedBlock &block, const std::unordered_map<std::string, std::string> &replacements)
+void apply_replacements(std::string &markdown, size_t body_start, const ParsedBlock &block, const std::unordered_map<std::string, std::string> &replacements)
 {
   struct PendingReplace
   {
@@ -3196,7 +3400,7 @@ void apply_replacements(std::string &markdown, const ParsedBlock &block, const s
   {
     const auto it = block.declarations.find(name);
     if(it == block.declarations.end()) continue;
-    pending.push_back(PendingReplace{it->second.expr_span.start, it->second.expr_span.end, text});
+    pending.push_back(PendingReplace{body_start + it->second.expr_span.start, body_start + it->second.expr_span.end, text});
   }
   std::sort(pending.begin(), pending.end(), [](const PendingReplace &a, const PendingReplace &b) {
     return a.start > b.start;
@@ -3206,6 +3410,8 @@ void apply_replacements(std::string &markdown, const ParsedBlock &block, const s
     markdown.replace(rep.start, rep.end - rep.start, rep.text);
   }
 }
+
+static std::unordered_map<std::string, ParsedBlock> g_block_parse_cache;
 
 } // namespace
 
@@ -3251,7 +3457,11 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
   if(fence_close_start >= block_end) return result;
 
   const std::string_view body(markdown.data() + body_start, fence_close_start - body_start);
-  ParsedBlock block = parse_block(body, body_start);
+  std::string body_key(body);
+  auto cache_it = g_block_parse_cache.find(body_key);
+  if(cache_it == g_block_parse_cache.end())
+    cache_it = g_block_parse_cache.emplace(body_key, parse_block(body)).first;
+  const ParsedBlock &block = cache_it->second;
 
   result.handled = true;
   ImGui::PushID(static_cast<int>(fence_start));
@@ -3289,11 +3499,14 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
 
   if(!replacements.empty())
   {
-    apply_replacements(markdown, block, replacements);
+    apply_replacements(markdown, body_start, block, replacements);
     result.markdown_changed = true;
   }
   result.preview_state_changed = ctx.preview_state_changed;
   result.consumed_right_click = ctx.consumed_right_click;
+  // Erase stale cache entry after all reads from block are done
+  if(result.markdown_changed)
+    g_block_parse_cache.erase(body_key);
   return result;
 }
 } // namespace MarkdownUi
