@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "demo_note_content.hpp"
 #include "helpers.hpp"
 #if USE_PORTABLE_PATHS
 #include "project_manager.hpp"
@@ -941,6 +942,15 @@ void App::load_state()
 
   sync_project_files();
   ensure_default_index();
+
+  {
+    bool has_any_note = false;
+    for(const auto &f : folders_)
+      if(!f.notes.empty()) { has_any_note = true; break; }
+    if(!has_any_note)
+      open_or_create_readme();
+  }
+
   normalize_active_indices();
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
   load_drawings_state();
@@ -1093,6 +1103,46 @@ void App::ensure_default_index()
     if(f.name.empty()) f.name = "General";
   }
   normalize_active_indices();
+}
+
+
+void App::open_or_create_readme()
+{
+  ensure_default_index();
+
+  for(int fi = 0; fi < (int)folders_.size(); ++fi)
+  {
+    const FolderMeta &f = folders_[(size_t)fi];
+    for(int ni = 0; ni < (int)f.notes.size(); ++ni)
+    {
+      std::string lower = f.notes[(size_t)ni].title;
+      for(auto &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if(lower == "demo")
+      {
+        save_state();
+        active_folder_idx_ = fi;
+        active_note_idx_ = ni;
+        editing_mode_ = false;
+        request_exit_edit_mode_ = false;
+        load_note_content_for_active();
+        save_index();
+        return;
+      }
+    }
+  }
+
+  FolderMeta &f = folders_[0];
+  NoteMeta n;
+  n.title = "demo";
+  n.path = make_note_path(f.name, n.title);
+  write_text_file(n.path, kDemoNoteContent);
+  f.notes.insert(f.notes.begin(), std::move(n));
+  active_folder_idx_ = 0;
+  active_note_idx_ = 0;
+  editing_mode_ = false;
+  request_exit_edit_mode_ = false;
+  load_note_content_for_active();
+  save_index();
 }
 
 void App::normalize_active_indices()
@@ -3112,6 +3162,9 @@ void App::frame_ui()
       std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
       open_paste_note_popup = true;
     }
+    ImGui::Separator();
+    if(ImGui::MenuItem("Demo"))
+      open_or_create_readme();
     ImGui::EndPopup();
   }
 

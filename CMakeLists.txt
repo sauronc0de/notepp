@@ -72,6 +72,24 @@ set(NOTEPP_SOURCES
   src/project_manager.cpp
 )
 
+set(NOTEPP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${NOTEPP_GENERATED_DIR}")
+
+add_custom_command(
+  OUTPUT "${NOTEPP_GENERATED_DIR}/demo_note_content.hpp"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT_FILE=${CMAKE_SOURCE_DIR}/readme.md
+    -DOUTPUT_FILE=${NOTEPP_GENERATED_DIR}/demo_note_content.hpp
+    -P ${CMAKE_SOURCE_DIR}/cmake/embed_text_file.cmake
+  DEPENDS "${CMAKE_SOURCE_DIR}/readme.md"
+  COMMENT "Embedding readme.md -> generated/demo_note_content.hpp"
+  VERBATIM
+)
+
+add_custom_target(demo_note_content_gen
+  DEPENDS "${NOTEPP_GENERATED_DIR}/demo_note_content.hpp"
+)
+
 if(WIN32)
   enable_language(RC)
 
@@ -85,7 +103,8 @@ else()
   add_executable(${PROJECT_NAME} ${NOTEPP_SOURCES})
 endif()
 
-target_include_directories(${PROJECT_NAME} PUBLIC src)
+add_dependencies(${PROJECT_NAME} demo_note_content_gen)
+target_include_directories(${PROJECT_NAME} PUBLIC src "${NOTEPP_GENERATED_DIR}")
 
 target_link_libraries(${PROJECT_NAME}
   PRIVATE

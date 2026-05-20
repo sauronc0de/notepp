@@ -34,6 +34,7 @@ private:
   void load_note_content_for_active();
   void set_active_note(int folder_idx, int note_idx);
   void ensure_default_index();
+  void open_or_create_readme();
   void sync_project_files();
   /**
    * @brief Clamp active folder/note indices to valid ranges.

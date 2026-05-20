@@ -4,8 +4,8 @@
 
 ![Version](https://img.shields.io/badge/version-0.0.1-green)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![GitHub top language](https://img.shields.io/badge/C++-00599C?style=flat-square&logo=C%2B%2B&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![Language](https://img.shields.io/badge/C++-00599C?style=flat-square&logo=C%2B%2B&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
 
 A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as plain **Markdown files**, organized in folders, and enriched with an interactive UI block system, drawings, and rich formatting.
 
