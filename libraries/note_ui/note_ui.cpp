@@ -119,17 +119,6 @@ ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
   SDL_FreeSurface(loaded);
   if(!rgba) return static_cast<ImTextureID>(0);
 
-  Uint8 *px = static_cast<Uint8 *>(rgba->pixels);
-  const int count = rgba->w * rgba->h;
-  for(int i = 0; i < count; ++i)
-  {
-    Uint8 *p4 = px + i * 4;
-    if(p4[3] == 0) continue;
-    p4[0] = 255;
-    p4[1] = 255;
-    p4[2] = 255;
-  }
-
   GLuint tex = 0;
   glGenTextures(1, &tex);
   if(tex == 0)
