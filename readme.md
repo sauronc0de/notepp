@@ -4,7 +4,7 @@
 
 ![title](assets/icon/notepp.ico)
 
-![Version](https://img.shields.io/badge/version-0.0.1-green)
+![Version](https://img.shields.io/badge/version-0.0.2-green)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Language](https://img.shields.io/badge/C++-00599C?style=flat-square&logo=C%2B%2B&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
