@@ -4814,6 +4814,14 @@ __CURSOR__)MD");
         {
           request_open_search_ = true;
         }
+#if !defined(_WIN32)
+        ImGui::SameLine();
+        if(tool_button("##tb_emoji", (ImTextureID)0, "😀", "Emoji picker (Ctrl+.)"))
+        {
+          show_emoji_picker_ = !show_emoji_picker_;
+          if(show_emoji_picker_) emoji_picker_.reset_search();
+        }
+#endif
         ImGui::SameLine();
       }
 

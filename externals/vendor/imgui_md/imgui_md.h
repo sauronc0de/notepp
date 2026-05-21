@@ -122,6 +122,10 @@ protected:
   bool m_is_table_body = false;
   bool m_is_image = false;
   bool m_is_code = false;
+  bool m_is_kbd = false;
+  bool m_is_mark = false;
+  bool m_is_sup = false;
+  bool m_is_sub = false;
   unsigned m_hlevel = 0; // 0 - no heading
 
 private:

@@ -475,6 +475,50 @@ void imgui_md::render_text(const char *str, const char *str_end)
       if(te == str) ++te;
     }
 
+    // <sup> / <sub>: render at vertical offset via draw list, then dummy to advance cursor
+    if(m_is_sup || m_is_sub)
+    {
+      const float font_h = ImGui::GetFontSize();
+      const ImVec2 csp = ImGui::GetCursorScreenPos();
+      const ImVec2 ts = ImGui::CalcTextSize(str, te);
+      const float y_off = m_is_sup ? -(font_h * 0.45f) : (font_h * 0.3f);
+      ImGui::GetWindowDrawList()->AddText(
+        ImVec2(csp.x, csp.y + y_off),
+        ImGui::GetColorU32(ImGuiCol_Text), str, te);
+      ImGui::Dummy(ImVec2(ts.x > 0.5f ? ts.x : 1.0f, font_h));
+      str = te;
+      while(str < str_end && *str == ' ') ++str;
+      continue;
+    }
+
+    // <mark>: draw highlight background behind text
+    if(m_is_mark)
+    {
+      const ImVec2 csp = ImGui::GetCursorScreenPos();
+      const ImVec2 ts = ImGui::CalcTextSize(str, te);
+      ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(csp.x, csp.y),
+        ImVec2(csp.x + ts.x, csp.y + ts.y),
+        IM_COL32(255, 215, 0, 110));
+    }
+
+    // <kbd>: draw chip background and border around text
+    if(m_is_kbd)
+    {
+      const float px = 3.0f, py = 1.0f;
+      const ImVec2 csp = ImGui::GetCursorScreenPos();
+      const ImVec2 ts = ImGui::CalcTextSize(str, te);
+      ImDrawList *dl = ImGui::GetWindowDrawList();
+      dl->AddRectFilled(
+        ImVec2(csp.x - px, csp.y - py),
+        ImVec2(csp.x + ts.x + px, csp.y + ts.y + py),
+        IM_COL32(45, 45, 60, 255), 3.0f);
+      dl->AddRect(
+        ImVec2(csp.x - px, csp.y - py),
+        ImVec2(csp.x + ts.x + px, csp.y + ts.y + py),
+        IM_COL32(110, 110, 135, 220), 3.0f);
+    }
+
     ImGui::TextUnformatted(str, te);
 
     if(te > str && *(te - 1) == '\n')
@@ -609,26 +653,32 @@ bool imgui_md::check_html(const char *str, const char *str_end)
 {
   const size_t sz = str_end - str;
 
-  if(strncmp(str, "<br>", sz) == 0)
+  auto eq = [&](const char *tag) -> bool {
+    const size_t tsz = strlen(tag);
+    return sz == tsz && strncmp(str, tag, tsz) == 0;
+  };
+
+  if(eq("<br>") || eq("<br/>") || eq("<br />"))
   {
     ImGui::NewLine();
     return true;
   }
-  if(strncmp(str, "<hr>", sz) == 0)
+  if(eq("<hr>") || eq("<hr/>") || eq("<hr />"))
   {
     ImGui::Separator();
     return true;
   }
-  if(strncmp(str, "<u>", sz) == 0)
-  {
-    m_is_underline = true;
-    return true;
-  }
-  if(strncmp(str, "</u>", sz) == 0)
-  {
-    m_is_underline = false;
-    return true;
-  }
+  if(eq("<u>"))  { m_is_underline = true;  return true; }
+  if(eq("</u>")) { m_is_underline = false; return true; }
+
+  if(eq("<kbd>"))   { m_is_kbd = true;   return true; }
+  if(eq("</kbd>"))  { m_is_kbd = false;  return true; }
+  if(eq("<mark>"))  { m_is_mark = true;  return true; }
+  if(eq("</mark>")) { m_is_mark = false; return true; }
+  if(eq("<sup>"))   { m_is_sup = true;   return true; }
+  if(eq("</sup>"))  { m_is_sup = false;  return true; }
+  if(eq("<sub>"))   { m_is_sub = true;   return true; }
+  if(eq("</sub>"))  { m_is_sub = false;  return true; }
 
   const size_t div_sz = 4;
   if(strncmp(str, "<div", sz > div_sz ? div_sz : sz) == 0)

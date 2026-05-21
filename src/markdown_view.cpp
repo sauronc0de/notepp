@@ -977,6 +977,7 @@ struct MyMarkdown : public imgui_md
         {
           // Not enough room — wrap first so the image keeps its natural size.
           ImGui::NewLine();
+          ImGui::Dummy(ImVec2(0.0f, k_row_gap)); // vertical breathing room between rows
           m_last_item_was_image = false;
         }
       }
@@ -1124,8 +1125,12 @@ struct MyMarkdown : public imgui_md
       {
         ImGui::NewLine();
         m_last_item_was_image = false;
+        ImGui::Dummy(ImVec2(0.0f, k_row_gap)); // gap after last image row in paragraph
       }
-      ImGui::Dummy(ImVec2(0.0f, 0.0f));
+      else
+      {
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+      }
     }
   }
 
