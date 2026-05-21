@@ -99,7 +99,7 @@ if $BUILD_DEB; then
   cmake --preset Release_debian -S "${WORKSPACE_DIR}"
   cmake --build --preset Release_debian --target package
 
-  DEB_FILE="${WORKSPACE_DIR}/dist/${PROJECT_NAME}_${VERSION}_amd64.deb"
+  DEB_FILE="${WORKSPACE_DIR}/dist/${VERSION}/${PROJECT_NAME}.deb"
   [ -f "${DEB_FILE}" ] || die ".deb not found at ${DEB_FILE}"
 
   echo "⬆️  Uploading ${DEB_FILE} to release ${TAG}..."

@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 RUN apt-get update -y
 RUN apt-get upgrade -y
-RUN apt-get install -y curl git
+RUN apt-get install -y curl git gh
 
 # C++ environment and SDL2
 RUN apt-get update && apt-get install -y \
