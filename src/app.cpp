@@ -4818,8 +4818,43 @@ __CURSOR__)MD");
         ImGui::SameLine();
         if(tool_button("##tb_emoji", (ImTextureID)0, "😀", "Emoji picker (Ctrl+.)"))
         {
-          show_emoji_picker_ = !show_emoji_picker_;
-          if(show_emoji_picker_) emoji_picker_.reset_search();
+          emoji_picker_.reset_search();
+          ImGui::OpenPopup("##emoji_picker_modal");
+        }
+        if(show_emoji_picker_)
+        {
+          emoji_picker_.reset_search();
+          ImGui::OpenPopup("##emoji_picker_modal");
+          show_emoji_picker_ = false;
+        }
+        ImGui::SetNextWindowSize({300.0f, 370.0f}, ImGuiCond_Always);
+        static bool emoji_picker_was_open = false;
+        if(ImGui::BeginPopupModal("##emoji_picker_modal", nullptr,
+               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+        {
+          emoji_picker_was_open = true;
+          if(emoji_picker_.render_content())
+          {
+            const int pos = std::max(0, std::min(fmt_folder.cursor_pos, static_cast<int>(markdown_text_.size())));
+            push_undo_snapshot();
+            markdown_text_.insert(static_cast<size_t>(pos), emoji_picker_.last_selected);
+            normalize_input_text_buffer(markdown_text_);
+            save_state();
+            const int new_pos = pos + static_cast<int>(emoji_picker_.last_selected.size());
+            fmt_folder.cursor_pos = new_pos;
+            fmt_folder.sel_start  = new_pos;
+            fmt_folder.sel_end    = new_pos;
+            fmt_folder.selection_anchor   = new_pos;
+            fmt_folder.pending_select_range = true;
+            fmt_folder.pending_sel_start  = new_pos;
+            fmt_folder.pending_sel_end    = new_pos;
+          }
+          ImGui::EndPopup();
+        }
+        else if(emoji_picker_was_open)
+        {
+          emoji_picker_was_open = false;
+          refocus_folder_editor = true;
         }
 #endif
         ImGui::SameLine();
@@ -5785,9 +5820,6 @@ __CURSOR__)MD");
           search_jump_force_edit_ = false;
         }
 
-        if(!pending_emoji_insert_.empty())
-          refocus_folder_editor = true;
-
         if(refocus_folder_editor)
         {
           fmt_folder.typing_word_group = false;
@@ -5795,12 +5827,6 @@ __CURSOR__)MD");
           fmt_folder.last_edit_cursor = -1;
           ImGui::SetKeyboardFocusHere();
           refocus_folder_editor = false;
-        }
-
-        if(!pending_emoji_insert_.empty())
-        {
-          ImGui::GetIO().AddInputCharactersUTF8(pending_emoji_insert_.c_str());
-          pending_emoji_insert_.clear();
         }
 
         const std::string before_edit = markdown_text_;
@@ -6556,9 +6582,6 @@ __CURSOR__)MD");
         ImGuiInputTextFlags_CallbackResize |
         ImGuiInputTextFlags_CallbackEdit |
         ImGuiInputTextFlags_CallbackAlways;
-    if(!pending_emoji_insert_.empty())
-      refocus_editor = true;
-
     if(refocus_editor)
     {
       fmt.typing_word_group = false;
@@ -6566,12 +6589,6 @@ __CURSOR__)MD");
       fmt.last_edit_cursor = -1;
       ImGui::SetKeyboardFocusHere();
       refocus_editor = false;
-    }
-
-    if(!pending_emoji_insert_.empty())
-    {
-      ImGui::GetIO().AddInputCharactersUTF8(pending_emoji_insert_.c_str());
-      pending_emoji_insert_.clear();
     }
 
     const std::string before_edit = markdown_text_;
@@ -6825,26 +6842,6 @@ __CURSOR__)MD");
     save_index();
     layout_dirty_ = false;
   }
-#if !defined(_WIN32)
-  if(show_emoji_picker_)
-  {
-    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Always, {0.5f, 0.5f});
-    ImGui::SetNextWindowSize({300.0f, 370.0f}, ImGuiCond_Always);
-    bool picker_open = true;
-    if(ImGui::Begin("Emoji##emoji_picker_win", &picker_open,
-           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking))
-    {
-      if(emoji_picker_.render_content())
-      {
-        pending_emoji_insert_ = emoji_picker_.last_selected;
-        show_emoji_picker_ = false;
-      }
-    }
-    ImGui::End();
-    if(!picker_open) show_emoji_picker_ = false;
-  }
-#endif
   render_search_dialog();
   render_debug_history_window();
   if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
