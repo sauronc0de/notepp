@@ -141,33 +141,27 @@ if(WIN32)
     REQUIRED
   )
 
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory
-    "${CMAKE_SOURCE_DIR}/dist/Notepp"
-
-  COMMAND ${CMAKE_COMMAND} -E copy
-    "$<TARGET_FILE:${PROJECT_NAME}>"
-    "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
-
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    "${CMAKE_SOURCE_DIR}/assets"
-    "${CMAKE_SOURCE_DIR}/dist/Notepp/assets"
-
-  COMMAND C:/msys64/usr/bin/bash.exe --login
-    "${CMAKE_SOURCE_DIR}/tools/tasks/copy_mingw_dlls.sh"
-    "${CMAKE_SOURCE_DIR}"
-    "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
-
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  COMMENT "Copying Notepp executable, assets and MinGW DLLs"
-  VERBATIM
-)
-
   add_custom_target(installer ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "${CMAKE_SOURCE_DIR}/dist/Notepp"
+
+    COMMAND ${CMAKE_COMMAND} -E copy
+      "$<TARGET_FILE:${PROJECT_NAME}>"
+      "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_SOURCE_DIR}/assets"
+      "${CMAKE_SOURCE_DIR}/dist/Notepp/assets"
+
+    COMMAND C:/msys64/usr/bin/bash.exe --login
+      "${CMAKE_SOURCE_DIR}/tools/tasks/copy_mingw_dlls.sh"
+      "${CMAKE_SOURCE_DIR}"
+      "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+
     COMMAND "${ISCC_EXE}" "${CMAKE_BINARY_DIR}/notepp.iss"
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Building Inno Setup installer"
+    COMMENT "Staging app files and building Inno Setup installer"
     VERBATIM
   )
 elseif(ENABLE_DEB_PACKAGE)
