@@ -87,7 +87,7 @@ Hold **Ctrl + Click** to select several notes in the sidebar for batch operation
 
 ## 3. Editing & Markdown
 
-Each note is a `.md` file. The editor supports full UTF-8 text including emoji.
+Each note is a `.md` file. The editor supports full UTF-8 text including emoji ✅.
 
 ### Supported Markdown
 
@@ -106,7 +106,7 @@ Each note is a `.md` file. The editor supports full UTF-8 text including emoji.
 | `> quote` | blockquote |
 | `| col | col |` | table |
 
-### Emoji Picker
+### Emoji Picker 
 
 Press **Ctrl+.** while editing to insert emoji.
 
