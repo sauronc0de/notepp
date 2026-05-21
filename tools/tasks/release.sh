@@ -2,12 +2,16 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# release.sh — Create a GitHub release and optionally attach build artifacts
+# release.sh — Create a GitHub release and attach build artifacts
 #
 # Usage:
-#   release.sh            Create the git tag + GitHub release (no artifacts)
-#   release.sh --deb      Build Release_debian preset, attach .deb package
-#   release.sh --windows  Build Release_mingw preset, build installer, attach .exe
+#   release.sh            Create tag + release, upload any pre-built artifacts
+#   release.sh --deb      Also build Release_debian preset before uploading
+#   release.sh --windows  Also build Release_mingw preset before uploading
+#
+# Artifact discovery is delegated to .config/release.config.sh via
+# release_config_package_extra_assets(). Pre-built files in dist/<version>/
+# are uploaded automatically even without --deb / --windows flags.
 #
 # Environment:
 #   PROJECT_NAME   lowercase project name (e.g. notepp)
@@ -34,6 +38,14 @@ for arg in "$@"; do
 done
 
 # ---------------------------------------------------------------------------
+# Source project release config (provides release_config_package_extra_assets)
+# ---------------------------------------------------------------------------
+
+RELEASE_CONFIG="${WORKSPACE_DIR}/.config/release.config.sh"
+# shellcheck source=../../.config/release.config.sh
+[ -f "${RELEASE_CONFIG}" ] && source "${RELEASE_CONFIG}"
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -50,6 +62,39 @@ get_version() {
 
 ensure_gh() {
   command -v gh >/dev/null 2>&1 || die "gh CLI not found — install it from https://cli.github.com"
+}
+
+upload_assets() {
+  local tag="$1"
+  local repo="$2"
+
+  if ! declare -f release_config_package_extra_assets > /dev/null; then
+    echo "⏭️  No release_config_package_extra_assets defined — skipping extra assets"
+    return
+  fi
+
+  local artifact_dir
+  artifact_dir="$(mktemp -d)"
+
+  echo ""
+  local assets
+  # stderr (progress messages) passes through; stdout captured as asset paths
+  mapfile -t assets < <(release_config_package_extra_assets "" "${artifact_dir}" "${tag}")
+
+  if [ "${#assets[@]}" -eq 0 ]; then
+    echo "⏭️  No artifacts found in dist/${tag#v}/ — skipping upload"
+    rm -rf "${artifact_dir}"
+    return
+  fi
+
+  for asset in "${assets[@]}"; do
+    [ -n "$asset" ] || continue
+    echo "⬆️  Uploading $(basename "${asset}") to release ${tag}..."
+    gh release upload "${tag}" "${asset}" --repo "${repo}" --clobber
+    echo "✅ Uploaded $(basename "${asset}")"
+  done
+
+  rm -rf "${artifact_dir}"
 }
 
 # ---------------------------------------------------------------------------
@@ -78,7 +123,9 @@ fi
 
 ensure_gh
 
-if gh release view "${TAG}" --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" >/dev/null 2>&1; then
+REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+
+if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
   echo "🚀 Release ${TAG} already exists — will upload artifacts to it"
 else
   gh release create "${TAG}" \
@@ -87,10 +134,8 @@ else
   echo "🚀 Created GitHub release ${TAG}"
 fi
 
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
-
 # ---------------------------------------------------------------------------
-# --deb: build Release_debian + CPack → upload .deb
+# Optional builds
 # ---------------------------------------------------------------------------
 
 if $BUILD_DEB; then
@@ -98,18 +143,7 @@ if $BUILD_DEB; then
   echo "🐧 Building Release_debian preset..."
   cmake --preset Release_debian -S "${WORKSPACE_DIR}"
   cmake --build --preset Release_debian --target package
-
-  DEB_FILE="${WORKSPACE_DIR}/dist/${VERSION}/${PROJECT_NAME}.deb"
-  [ -f "${DEB_FILE}" ] || die ".deb not found at ${DEB_FILE}"
-
-  echo "⬆️  Uploading ${DEB_FILE} to release ${TAG}..."
-  gh release upload "${TAG}" "${DEB_FILE}" --repo "${REPO}" --clobber
-  echo "✅ Debian package uploaded"
 fi
-
-# ---------------------------------------------------------------------------
-# --windows: build Release_mingw + InnoSetup → upload installer
-# ---------------------------------------------------------------------------
 
 if $BUILD_WINDOWS; then
   echo ""
@@ -117,7 +151,6 @@ if $BUILD_WINDOWS; then
   cmake --preset Release_mingw -S "${WORKSPACE_DIR}"
   cmake --build --preset Release_mingw
 
-  # Stage DLLs alongside the exe before packaging
   DIST_WIN="${WORKSPACE_DIR}/dist/Notepp"
   if command -v cygpath >/dev/null 2>&1; then
     "${WORKSPACE_DIR}/tools/tasks/copy_mingw_dlls.sh" \
@@ -126,26 +159,22 @@ if $BUILD_WINDOWS; then
     echo "⚠️  cygpath not found — skipping DLL copy (MSYS2 environment required)"
   fi
 
-  # Build installer with InnoSetup
   ISS_FILE="${WORKSPACE_DIR}/build/Release_mingw/notepp.iss"
-  INSTALLER="${WORKSPACE_DIR}/dist/NoteppSetup-${VERSION}.exe"
-
   if command -v iscc >/dev/null 2>&1; then
     iscc "${ISS_FILE}"
-    [ -f "${INSTALLER}" ] || die "Installer not found at ${INSTALLER}"
-    echo "⬆️  Uploading ${INSTALLER} to release ${TAG}..."
-    gh release upload "${TAG}" "${INSTALLER}" --repo "${REPO}" --clobber
-    echo "✅ Windows installer uploaded"
   else
     echo "⚠️  iscc (InnoSetup) not found — packaging as zip instead"
-    ZIP_FILE="${WORKSPACE_DIR}/dist/${PROJECT_NAME}-${VERSION}-windows-x64.zip"
+    ZIP_FILE="${WORKSPACE_DIR}/dist/${VERSION}/${PROJECT_NAME}-windows-x64.zip"
+    mkdir -p "${WORKSPACE_DIR}/dist/${VERSION}"
     (cd "${DIST_WIN}" && zip -r "${ZIP_FILE}" .)
-    [ -f "${ZIP_FILE}" ] || die "Zip not found at ${ZIP_FILE}"
-    echo "⬆️  Uploading ${ZIP_FILE} to release ${TAG}..."
-    gh release upload "${TAG}" "${ZIP_FILE}" --repo "${REPO}" --clobber
-    echo "✅ Windows zip uploaded"
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# Upload artifacts via release config
+# ---------------------------------------------------------------------------
+
+upload_assets "${TAG}" "${REPO}"
 
 echo ""
 echo "🎉 Release ${TAG} done — $(gh release view "${TAG}" --repo "${REPO}" --json url -q .url)"
