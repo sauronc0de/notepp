@@ -11,8 +11,15 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <SDL.h>
+#ifndef _WIN32
+#  include <sys/types.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
 #include <SDL_image.h>
 #include <SDL_opengl.h>
 #include <imgui.h>
@@ -54,6 +61,17 @@ static std::unordered_map<std::string, TextureRecord> g_image_cache{};
 static float g_render_width = 0.0f;
 static std::filesystem::path g_document_path;
 static bool g_hover_preview_enabled = true;
+
+enum class UrlFetchState { pending, complete, failed };
+
+struct UrlFetchRecord
+{
+  UrlFetchState state = UrlFetchState::pending;
+  std::filesystem::path local_path;
+};
+
+static std::unordered_map<std::string, UrlFetchRecord> g_url_fetches;
+static std::mutex g_url_fetch_mutex;
 
 struct HoverPreviewState
 {
@@ -299,6 +317,139 @@ static bool request_internal_link_preview(std::string_view href)
   g_hover_preview.title = std::string(href);
   g_hover_preview.body = std::move(body);
   return true;
+}
+
+static bool url_is_downloadable(std::string_view url)
+{
+  if(!starts_with(url, "http://") && !starts_with(url, "https://")) return false;
+  for(unsigned char c : url)
+  {
+    if(!std::isalnum(c) && !::strchr("-._~:/?#[]@!$&()*+,;=%", (char)c))
+      return false;
+  }
+  return true;
+}
+
+// Extract the image file extension from a URL path, e.g. ".svg", ".png".
+// Returns empty string when none found or not a known image extension.
+static std::string url_image_extension(std::string_view url)
+{
+  // Strip query string
+  const size_t q = url.find('?');
+  const std::string_view path = (q != std::string_view::npos) ? url.substr(0, q) : url;
+  const size_t dot = path.rfind('.');
+  const size_t slash = path.rfind('/');
+  if(dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash))
+    return {};
+  std::string ext(path.substr(dot + 1));
+  for(char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  static const char *const known[] = {"svg", "png", "jpg", "jpeg", "gif", "bmp", "webp", nullptr};
+  for(const char *const *p = known; *p; ++p)
+    if(ext == *p) return "." + ext;
+  return {};
+}
+
+// Peek at the first bytes of a downloaded file to detect SVG content.
+static bool file_content_is_svg(const std::filesystem::path &p)
+{
+  std::ifstream f(p, std::ios::binary);
+  char buf[256] = {};
+  f.read(buf, sizeof(buf) - 1);
+  return ::strstr(buf, "<svg") || ::strstr(buf, "<?xml");
+}
+
+static bool download_to_file_blocking(const std::string &url, const std::filesystem::path &dest)
+{
+#ifndef _WIN32
+  const std::string dest_str = dest.string();
+  const char *args[] = {"curl", "-s", "-L", "--max-time", "15",
+                        "--output", dest_str.c_str(), url.c_str(), nullptr};
+  const pid_t pid = ::fork();
+  if(pid == 0) { ::execvp("curl", const_cast<char **>(args)); ::_exit(1); }
+  if(pid < 0) return false;
+  int status;
+  ::waitpid(pid, &status, 0);
+  std::error_code ec;
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+         std::filesystem::exists(dest, ec);
+#else
+  const std::string cmd = "curl -s -L --max-time 15 --output \"" +
+                          dest.string() + "\" \"" + url + "\"";
+  std::error_code ec;
+  return ::system(cmd.c_str()) == 0 && std::filesystem::exists(dest, ec);
+#endif
+}
+
+// Returns true when the SVG file uses <text> elements that nanosvg cannot render.
+static bool file_svg_has_text(const std::filesystem::path &p)
+{
+  std::ifstream f(p, std::ios::binary);
+  const std::string content(std::istreambuf_iterator<char>(f), {});
+  return content.find("<text") != std::string::npos;
+}
+
+// Build a PNG variant of an SVG URL (strips .svg extension if present, appends .png).
+static std::string svg_url_to_png(std::string_view url)
+{
+  const size_t q = url.find_first_of("?#");
+  std::string path(q != std::string_view::npos ? url.substr(0, q) : url);
+  const std::string_view tail = (q != std::string_view::npos) ? url.substr(q) : "";
+  if(path.size() > 4 && path.substr(path.size() - 4) == ".svg")
+    path.resize(path.size() - 4);
+  return path + ".png" + std::string(tail);
+}
+
+static void start_url_fetch(const std::string &url)
+{
+  const std::string base_name = "notepp_img_" + std::to_string(std::hash<std::string>{}(url));
+  const std::string url_ext = url_image_extension(url);
+  const std::filesystem::path dest =
+      std::filesystem::temp_directory_path() / (base_name + url_ext);
+
+  std::thread([url, dest, base_name, url_ext]() {
+    bool ok = download_to_file_blocking(url, dest);
+
+    std::error_code ec;
+    std::filesystem::path final_dest = dest;
+
+    if(ok)
+    {
+      // No extension from URL: detect SVG by content and rename so SDL_image
+      // picks the right decoder based on extension.
+      if(url_ext.empty() && file_content_is_svg(dest))
+      {
+        const std::filesystem::path svg_dest =
+            std::filesystem::temp_directory_path() / (base_name + ".svg");
+        std::filesystem::rename(dest, svg_dest, ec);
+        if(!ec) final_dest = svg_dest;
+      }
+
+      // nanosvg (SDL_image's SVG renderer) silently drops <text> elements.
+      // If the SVG contains text, try fetching a PNG variant of the URL instead.
+      if(final_dest.extension() == ".svg" && file_svg_has_text(final_dest))
+      {
+        const std::string png_url = svg_url_to_png(url);
+        if(!png_url.empty() && png_url != url && url_is_downloadable(png_url))
+        {
+          const std::filesystem::path png_dest =
+              std::filesystem::temp_directory_path() / (base_name + ".png");
+          if(download_to_file_blocking(png_url, png_dest) &&
+             !file_content_is_svg(png_dest))
+          {
+            std::filesystem::remove(final_dest, ec);
+            final_dest = png_dest;
+          }
+        }
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(g_url_fetch_mutex);
+      auto &rec = g_url_fetches[url];
+      rec.state = ok ? UrlFetchState::complete : UrlFetchState::failed;
+      if(ok) rec.local_path = final_dest;
+    }
+  }).detach();
 }
 
 static TextureRecord load_texture_from_file(const std::filesystem::path &file)
@@ -575,6 +726,28 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
+  static bool fill_image_nfo(const TextureRecord &rec, image_info &nfo)
+  {
+    if(!rec.loaded || rec.texture_id == 0) return false;
+    const float max_w = std::floor(std::max(8.0f, g_render_width));
+    ImVec2 draw_size = rec.size;
+    if(draw_size.x > max_w)
+    {
+      const float s = max_w / draw_size.x;
+      draw_size.x = max_w;
+      draw_size.y *= s;
+    }
+    draw_size.x = std::floor(draw_size.x);
+    draw_size.y = std::floor(draw_size.y);
+    nfo.texture_id = (ImTextureID)(uintptr_t)rec.texture_id;
+    nfo.size = draw_size;
+    nfo.uv0 = ImVec2(0, 0);
+    nfo.uv1 = ImVec2(1, 1);
+    nfo.col_tint = ImVec4(1, 1, 1, 1);
+    nfo.col_border = ImVec4(0, 0, 0, 0);
+    return true;
+  }
+
   static void compact_newline(float tighten = 4.0f)
   {
     ImGui::NewLine();
@@ -584,7 +757,39 @@ struct MyMarkdown : public imgui_md
   bool get_image(image_info &nfo) const override
   {
     if(m_href.empty()) return false;
-    if(starts_with(m_href, "http://") || starts_with(m_href, "https://")) return false;
+
+    if(is_external_link(m_href))
+    {
+      // Return immediately if already loaded as a texture
+      auto tex_it = g_image_cache.find(m_href);
+      if(tex_it != g_image_cache.end())
+        return fill_image_nfo(tex_it->second, nfo);
+
+      if(!url_is_downloadable(m_href)) return false;
+
+      std::unique_lock<std::mutex> lk(g_url_fetch_mutex);
+      auto fetch_it = g_url_fetches.find(m_href);
+
+      if(fetch_it == g_url_fetches.end())
+      {
+        // First encounter: kick off background download
+        g_url_fetches[m_href] = {UrlFetchState::pending, {}};
+        const std::string url_copy = m_href;
+        lk.unlock();
+        start_url_fetch(url_copy);
+        return false;
+      }
+
+      if(fetch_it->second.state != UrlFetchState::complete) return false;
+
+      // Download finished: load texture on the main thread
+      const std::filesystem::path local = fetch_it->second.local_path;
+      lk.unlock();
+
+      TextureRecord rec = load_texture_from_file(local);
+      g_image_cache[m_href] = rec;
+      return fill_image_nfo(rec, nfo);
+    }
 
     const std::filesystem::path resolved = resolve_image_path(m_href);
     const std::string cache_key = resolved.empty() ? m_href : resolved.string();
@@ -595,26 +800,7 @@ struct MyMarkdown : public imgui_md
       it = g_image_cache.emplace(cache_key, rec).first;
     }
 
-    if(!it->second.loaded || it->second.texture_id == 0) return false;
-
-    const float max_w = std::floor(std::max(8.0f, g_render_width));
-    ImVec2 draw_size = it->second.size;
-    if(draw_size.x > max_w)
-    {
-      const float s = max_w / draw_size.x;
-      draw_size.x = max_w;
-      draw_size.y *= s;
-    }
-    draw_size.x = std::floor(draw_size.x);
-    draw_size.y = std::floor(draw_size.y);
-
-    nfo.texture_id = (ImTextureID)(uintptr_t)it->second.texture_id;
-    nfo.size = draw_size;
-    nfo.uv0 = ImVec2(0, 0);
-    nfo.uv1 = ImVec2(1, 1);
-    nfo.col_tint = ImVec4(1, 1, 1, 1);
-    nfo.col_border = ImVec4(0, 0, 0, 0);
-    return true;
+    return fill_image_nfo(it->second, nfo);
   }
 
   void BLOCK_P(bool e) override
