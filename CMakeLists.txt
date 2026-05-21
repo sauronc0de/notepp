@@ -167,6 +167,8 @@ if(WIN32)
     VERBATIM
   )
 elseif(ENABLE_DEB_PACKAGE)
+  set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "notepp")
+
   install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION bin
     COMPONENT notepp

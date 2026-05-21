@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Notepp
 Comment=Markdown note-taking application
-Exec=/usr/bin/Notepp
+Exec=/usr/bin/notepp
 Icon=notepp
 Type=Application
 Categories=Office;TextEditor;
