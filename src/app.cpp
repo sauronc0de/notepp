@@ -1,4 +1,7 @@
 #include "app.hpp"
+#ifdef IMGUI_ENABLE_FREETYPE
+#include "imgui_freetype.h"
+#endif
 #include "demo_note_content.hpp"
 #include "helpers.hpp"
 #if USE_PORTABLE_PATHS
@@ -29,6 +32,10 @@
 
 #include <SDL.h>
 #include <SDL_opengl.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <vector>
 
 #include <imgui.h>
@@ -686,7 +693,10 @@ void App::init_imgui()
     ImFontConfig emoji_cfg;
     emoji_cfg.MergeMode = true;
     emoji_cfg.PixelSnapH = true;
-    emoji_cfg.GlyphMinAdvanceX = kUiFontSize; // keep inline width stable
+    emoji_cfg.GlyphMinAdvanceX = kUiFontSize;
+#ifdef IMGUI_ENABLE_FREETYPE
+    emoji_cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_LoadColor;
+#endif
     static const ImWchar emoji_ranges[] = {
         0x200D, 0x200D,   // ZWJ
         0x2600, 0x27BF,   // misc symbols + dingbats
@@ -2147,6 +2157,21 @@ void App::frame_begin()
       if(edit_redo_shortcut)
       {
         request_redo_edit_ = true;
+        continue;
+      }
+      if(edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_PERIOD)
+      {
+#if defined(_WIN32)
+        INPUT inputs[4] = {};
+        inputs[0].type = INPUT_KEYBOARD; inputs[0].ki.wVk = VK_LWIN;
+        inputs[1].type = INPUT_KEYBOARD; inputs[1].ki.wVk = VK_OEM_PERIOD;
+        inputs[2] = inputs[1]; inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[3] = inputs[0]; inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(4, inputs, sizeof(INPUT));
+#else
+        show_emoji_picker_ = !show_emoji_picker_;
+        if(show_emoji_picker_) emoji_picker_.reset_search();
+#endif
         continue;
       }
     }
@@ -5752,6 +5777,9 @@ __CURSOR__)MD");
           search_jump_force_edit_ = false;
         }
 
+        if(!pending_emoji_insert_.empty())
+          refocus_folder_editor = true;
+
         if(refocus_folder_editor)
         {
           fmt_folder.typing_word_group = false;
@@ -5759,6 +5787,12 @@ __CURSOR__)MD");
           fmt_folder.last_edit_cursor = -1;
           ImGui::SetKeyboardFocusHere();
           refocus_folder_editor = false;
+        }
+
+        if(!pending_emoji_insert_.empty())
+        {
+          ImGui::GetIO().AddInputCharactersUTF8(pending_emoji_insert_.c_str());
+          pending_emoji_insert_.clear();
         }
 
         const std::string before_edit = markdown_text_;
@@ -6514,6 +6548,9 @@ __CURSOR__)MD");
         ImGuiInputTextFlags_CallbackResize |
         ImGuiInputTextFlags_CallbackEdit |
         ImGuiInputTextFlags_CallbackAlways;
+    if(!pending_emoji_insert_.empty())
+      refocus_editor = true;
+
     if(refocus_editor)
     {
       fmt.typing_word_group = false;
@@ -6521,6 +6558,12 @@ __CURSOR__)MD");
       fmt.last_edit_cursor = -1;
       ImGui::SetKeyboardFocusHere();
       refocus_editor = false;
+    }
+
+    if(!pending_emoji_insert_.empty())
+    {
+      ImGui::GetIO().AddInputCharactersUTF8(pending_emoji_insert_.c_str());
+      pending_emoji_insert_.clear();
     }
 
     const std::string before_edit = markdown_text_;
@@ -6774,6 +6817,26 @@ __CURSOR__)MD");
     save_index();
     layout_dirty_ = false;
   }
+#if !defined(_WIN32)
+  if(show_emoji_picker_)
+  {
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Always, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({300.0f, 370.0f}, ImGuiCond_Always);
+    bool picker_open = true;
+    if(ImGui::Begin("Emoji##emoji_picker_win", &picker_open,
+           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking))
+    {
+      if(emoji_picker_.render_content())
+      {
+        pending_emoji_insert_ = emoji_picker_.last_selected;
+        show_emoji_picker_ = false;
+      }
+    }
+    ImGui::End();
+    if(!picker_open) show_emoji_picker_ = false;
+  }
+#endif
   render_search_dialog();
   render_debug_history_window();
   if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();

@@ -44,6 +44,7 @@ add_compile_definitions(
   ASSETS_PATH="${NOTEPP_ASSETS_PATH}"
   DATA_PATH="${NOTEPP_DATA_PATH}"
   IMGUI_USE_WCHAR32
+  IMGUI_ENABLE_FREETYPE
   NOTEPP_VERSION="${PROJECT_VERSION}"
   $<$<CONFIG:Debug>:NOTEPP_DEBUG_UI>
   $<$<BOOL:${ENABLE_LOG}>:ENABLE_LOG=true>
@@ -66,6 +67,7 @@ add_subdirectory(src)
 set(NOTEPP_SOURCES
   src/main.cpp
   src/app.cpp
+  src/emoji_picker.cpp
   src/markdown_sections.cpp
   src/markdown_view.cpp
   src/undo_redo.cpp

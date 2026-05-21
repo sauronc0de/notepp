@@ -1,5 +1,6 @@
 #pragma once
 
+#include "emoji_picker.hpp"
 #include "undo_redo.hpp"
 
 #include <imgui.h>
@@ -111,6 +112,10 @@ private:
   bool request_redo_edit_ = false;
   bool request_copy_sidebar_ = false;
   bool request_paste_sidebar_ = false;
+  bool show_emoji_picker_ = false;
+  std::string pending_emoji_insert_;
+  EmojiPicker emoji_picker_;
+
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
 #if USE_PORTABLE_PATHS

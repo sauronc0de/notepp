@@ -18,6 +18,7 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 1. [Interface Overview](#1-interface-overview)
 2. [Folders & Notes](#2-folders--notes)
 3. [Editing & Markdown](#3-editing--markdown)
+   - [Emoji Picker](#emoji-picker)
 4. [Toolbar Reference](#4-toolbar-reference)
 5. [Text Color Syntax](#5-text-color-syntax)
 6. [Drawing Tools](#6-drawing-tools)
@@ -104,6 +105,24 @@ Each note is a `.md` file. The editor supports full UTF-8 text including emoji.
 | `![alt](path)` | embedded image |
 | `> quote` | blockquote |
 | `| col | col |` | table |
+
+### Emoji Picker
+
+Press **Ctrl+.** while editing to insert emoji.
+
+| Platform | Behaviour |
+|----------|-----------|
+| **Linux** | Opens a built-in floating panel with ~380 emoji |
+| **Windows** | Triggers the native OS emoji panel (Win+.) |
+
+**Built-in picker (Linux):**
+
+- **Search bar** — type any keyword (e.g. `fire`, `cat`, `heart`) to filter across all categories.
+- **Category tabs** — click a tab icon to browse Smileys, People, Animals, Food, Travel, Objects, Nature, or Symbols.
+- Click any emoji to insert it at the cursor and close the picker.
+- Press **Ctrl+.** again or click **×** to close without selecting.
+
+---
 
 ### Markdown Preview
 
@@ -263,6 +282,7 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 | Ctrl+Z | Undo |
 | Ctrl+Y / Ctrl+Shift+Z | Redo |
 | Ctrl+F | Open Find / Search |
+| Ctrl+. | Open emoji picker (Linux) / native emoji panel (Windows) |
 | Ctrl+Scroll | Change font size (hover over note) |
 | Ctrl+Click | Multi-select notes in sidebar |
 | Double-click word | Select entire word |

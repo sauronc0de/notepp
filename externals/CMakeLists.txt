@@ -18,19 +18,45 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(imgui)
 
-# Add imgui library with SDL2 support
-add_library(imgui 
-    ${imgui_SOURCE_DIR}/imgui.cpp 
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp 
+# 🌐 FreeType (system preferred, source fallback for Windows CI) ----#
+find_package(Freetype QUIET)
+if(NOT Freetype_FOUND)
+  FetchContent_Declare(
+    freetype
+    GIT_REPOSITORY https://gitlab.freedesktop.org/freetype/freetype.git
+    GIT_TAG        VER-2-13-3
+    GIT_SHALLOW    TRUE
+  )
+  set(FT_DISABLE_ZLIB    TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BZIP2   TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_PNG     TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_HARFBUZZ TRUE CACHE BOOL "" FORCE)
+  set(FT_DISABLE_BROTLI  TRUE CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(freetype)
+  set(FREETYPE_LIBRARIES freetype)
+  set(FREETYPE_INCLUDE_DIRS ${freetype_SOURCE_DIR}/include)
+endif()
+# ------------------------------------------------------------------#
+
+# Add imgui library with SDL2 + FreeType support
+add_library(imgui
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp 
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp 
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
 )
 
-target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
-target_link_libraries(imgui PUBLIC SDL2::SDL2 m)
+target_include_directories(imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/freetype
+    ${FREETYPE_INCLUDE_DIRS}
+)
+target_link_libraries(imgui PUBLIC SDL2::SDL2 m ${FREETYPE_LIBRARIES})
 # ------------------------------------------------------------#
 
 # 🌐 Added magic enum library -----------------------------------#
