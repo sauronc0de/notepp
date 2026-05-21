@@ -186,6 +186,11 @@ elseif(ENABLE_DEB_PACKAGE)
     COMPONENT notepp
   )
 
+  install(FILES "${CMAKE_SOURCE_DIR}/readme.md"
+    DESTINATION "share/doc/notepp"
+    COMPONENT notepp
+  )
+
   install(FILES "${CMAKE_BINARY_DIR}/notepp.desktop"
     DESTINATION "share/applications"
     COMPONENT notepp
