@@ -2249,6 +2249,11 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   result.markdown_changed = result.markdown_changed || checkbox_changed || !table_replacements.empty();
   if(result.preview_state_changed) save_preview_state_if_dirty();
   render_link_hover_preview_popup();
+
+  const auto img_ctx = MarkdownView::render_image_context_menu(markdown);
+  result.consumed_right_click = result.consumed_right_click || img_ctx.consumed_right_click;
+  result.markdown_changed     = result.markdown_changed     || img_ctx.markdown_changed;
+
   return result;
 }
 

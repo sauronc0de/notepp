@@ -19,22 +19,23 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 2. [Folders & Notes](#2-folders--notes)
 3. [Editing & Markdown](#3-editing--markdown)
    - [Emoji Picker](#emoji-picker)
-4. [Toolbar Reference](#4-toolbar-reference)
-5. [Text Color Syntax](#5-text-color-syntax)
-6. [Drawing Tools](#6-drawing-tools)
-7. [Images & Fonts](#7-images--fonts)
-8. [Search](#8-search)
-9. [Detached Windows](#9-detached-windows)
-10. [Undo / Redo](#10-undo--redo)
-11. [Keyboard Shortcuts](#11-keyboard-shortcuts)
-12. [UI Block System](#12-ui-block-system)
-    - [Variables](#121-variables)
-    - [Widgets](#122-widgets)
-    - [Expressions & Operators](#123-expressions--operators)
-    - [Built-in Functions](#124-built-in-functions)
-    - [Conditionals](#125-conditionals)
-    - [Label Color Syntax](#126-label-color-syntax)
-    - [Full Examples](#127-full-examples)
+4. [HTML Compatibility](#4-html-compatibility)
+5. [Toolbar Reference](#5-toolbar-reference)
+6. [Text Color Syntax](#6-text-color-syntax)
+7. [Drawing Tools](#7-drawing-tools)
+8. [Images & Fonts](#8-images--fonts)
+9. [Search](#9-search)
+10. [Detached Windows](#10-detached-windows)
+11. [Undo / Redo](#11-undo--redo)
+12. [Keyboard Shortcuts](#12-keyboard-shortcuts)
+13. [UI Block System](#13-ui-block-system)
+    - [Variables](#131-variables)
+    - [Widgets](#132-widgets)
+    - [Expressions & Operators](#133-expressions--operators)
+    - [Built-in Functions](#134-built-in-functions)
+    - [Conditionals](#135-conditionals)
+    - [Label Color Syntax](#136-label-color-syntax)
+    - [Full Examples](#137-full-examples)
 
 ---
 
@@ -130,7 +131,78 @@ Click the **Preview** toggle in the toolbar to switch to rendered view. Section 
 
 ---
 
-## 4. Toolbar Reference
+## 4. HTML Compatibility
+
+Notes support a subset of HTML inline tags alongside standard Markdown. These can be mixed freely with Markdown syntax.
+
+### Supported Tags
+
+| Tag | Example | Result |
+|-----|---------|--------|
+| `<br>` | `line one<br>line two` | Hard line break |
+| `<kbd>` | `<kbd>Ctrl</kbd>+<kbd>Z</kbd>` | Keyboard key chip |
+| `<mark>` | `<mark>highlighted text</mark>` | Yellow highlight |
+| `<sup>` | `x<sup>2</sup>` | Superscript |
+| `<sub>` | `H<sub>2</sub>O` | Subscript |
+| `<img>` | `<img src="logo.png" width="120">` | Image with custom size |
+| `<u>` | `<u>underlined</u>` | Underline |
+| `<hr>` | `<hr>` | Horizontal rule |
+
+### `<kbd>` — Keyboard keys
+
+Render keyboard shortcuts with a styled key cap:
+
+```markdown
+Press <kbd>Ctrl</kbd>+<kbd>S</kbd> to save.
+Use <kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> for undo/redo.
+```
+
+### `<mark>` — Highlight
+
+Draw attention to important text:
+
+```markdown
+Remember: <mark>always commit before merging</mark>.
+```
+
+### `<sup>` / `<sub>` — Scripts
+
+Superscript for exponents and footnotes, subscript for formulas:
+
+```markdown
+E = mc<sup>2</sup>
+H<sub>2</sub>O is water.
+Area = πr<sup>2</sup>
+```
+
+### `<img>` — Images with custom dimensions
+
+Standard Markdown images auto-scale to the note width. Use `<img>` when you need a specific size:
+
+```markdown
+<img src="diagram.png" width="400">
+<img src="icon.png" width="32" height="32">
+<img src="https://example.com/banner.png" width="600">
+```
+
+Both `width` and `height` are optional. If only one is given, the other scales proportionally. Remote URLs follow the same background-download behaviour as Markdown images.
+
+### Inline image rows
+
+Multiple small images (height ≤ 48 px) on adjacent lines automatically flow inline, making badge rows easy to write:
+
+```markdown
+![Version](https://img.shields.io/badge/version-0.0.2-green)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Language](https://img.shields.io/badge/C++-00599C?style=flat-square&logo=C%2B%2B&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
+```
+
+A **single newline** between images keeps them on the same row. A **blank line** starts a new paragraph on a separate line.
+
+---
+
+## 5. Toolbar Reference
 
 ### Edit mode toolbar
 
@@ -168,7 +240,7 @@ Click the **Preview** toggle in the toolbar to switch to rendered view. Section 
 
 ---
 
-## 5. Text Color Syntax
+## 6. Text Color Syntax
 
 Apply color to any text inside a note (editor or UI block labels):
 
@@ -189,7 +261,7 @@ The color picker in the toolbar generates this syntax automatically for selected
 
 ---
 
-## 6. Drawing Tools
+## 7. Drawing Tools
 
 Drawings are stored **per folder** (shared across all notes in the folder) and overlaid on the note view.
 
@@ -216,7 +288,7 @@ Drawings are stored **per folder** (shared across all notes in the folder) and o
 
 ---
 
-## 7. Images & Fonts
+## 8. Images & Fonts
 
 ### Images
 
@@ -225,6 +297,21 @@ Drawings are stored **per folder** (shared across all notes in the folder) and o
 - **Image browser:** The sidebar lists all images in the current folder
 - **Drag & drop:** Drag an image from the sidebar onto the note text to insert it
 - **Right-click image in sidebar → Reveal in File Explorer**
+
+### Right-click an image in preview
+
+Right-clicking any rendered image opens a context menu with two actions:
+
+| Action | Description |
+|--------|-------------|
+| **Copy image text** | Copies the original source line (`![alt](path)` or `<img …>`) to the clipboard, ready to paste into another note |
+| **Edit size…** | Opens a dialog to set width and height |
+
+**Edit size dialog:**
+
+- **Width / Height** — pixel values for the rendered size.
+- **Proportional** checkbox — when checked, height is computed automatically from the aspect ratio and only `width=` is stored. Uncheck to set both dimensions independently.
+- Clicking **Apply** replaces the image reference with an `<img>` tag using the chosen dimensions. Markdown syntax (`![](…)`) is automatically converted to HTML in the process.
 
 ### Fonts
 
@@ -236,7 +323,7 @@ Drawings are stored **per folder** (shared across all notes in the folder) and o
 
 ---
 
-## 8. Search
+## 9. Search
 
 Open with **Ctrl+F** or the ![find](assets/icons/find.png) toolbar button.
 
@@ -247,7 +334,7 @@ Open with **Ctrl+F** or the ![find](assets/icons/find.png) toolbar button.
 
 ---
 
-## 9. Detached Windows
+## 10. Detached Windows
 
 Click ![detach](assets/icons/detach.png) to enable floating note windows. Each note opens in its own movable panel.
 
@@ -261,7 +348,7 @@ Click ![detach](assets/icons/detach.png) to enable floating note windows. Each n
 
 ---
 
-## 10. Undo / Redo
+## 11. Undo / Redo
 
 A unified history tracks text edits, note selection, layout changes, preview state, and drawings.
 
@@ -275,7 +362,7 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 
 ---
 
-## 11. Keyboard Shortcuts
+## 12. Keyboard Shortcuts
 
 | Shortcut | Action |
 |----------|--------|
@@ -290,7 +377,7 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 
 ---
 
-## 12. UI Block System
+## 13. UI Block System
 
 Embed **interactive widgets** directly inside any note using a fenced code block with the `UI` language tag.
 
@@ -305,7 +392,7 @@ Widget state is **persistent** — values survive edits, closing, and reopening.
 
 ---
 
-### 12.1 Variables
+### 13.1 Variables
 
 Declare variables on their own line: `name(expression)`
 
@@ -328,7 +415,7 @@ label("Total: ")
 
 ---
 
-### 12.2 Widgets
+### 13.2 Widgets
 
 Every widget goes on its own line (or multiple widgets on the same line, separated by spaces — they render inline on the same row).
 
@@ -517,7 +604,7 @@ button("Max",   80, count=100)
 
 ---
 
-### 12.3 Expressions & Operators
+### 13.3 Expressions & Operators
 
 Expressions are used in variable declarations and `if()` conditions.
 
@@ -539,7 +626,7 @@ Expressions are used in variable declarations and `if()` conditions.
 
 ---
 
-### 12.4 Built-in Functions
+### 13.4 Built-in Functions
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -567,7 +654,7 @@ if(!empty(description) && len(description) <= 200) {
 
 ---
 
-### 12.5 Conditionals
+### 13.5 Conditionals
 
 Show or hide any group of widgets based on a condition:
 
@@ -610,7 +697,7 @@ if(mode == "hard") {
 
 ---
 
-### 12.6 Label Color Syntax
+### 13.6 Label Color Syntax
 
 Widget labels support inline color formatting:
 
@@ -623,7 +710,7 @@ Format: `[color=#RRGGBB]text[/color]` or `[color=#RRGGBBAA]text[/color]` for alp
 
 ---
 
-### 12.7 Full Examples
+### 13.7 Full Examples
 
 #### Simple counter
 

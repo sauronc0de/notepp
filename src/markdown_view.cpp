@@ -16,9 +16,9 @@
 #include <unordered_map>
 #include <SDL.h>
 #ifndef _WIN32
-#  include <sys/types.h>
-#  include <sys/wait.h>
-#  include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 #include <SDL_image.h>
 #include <SDL_opengl.h>
@@ -62,7 +62,12 @@ static float g_render_width = 0.0f;
 static std::filesystem::path g_document_path;
 static bool g_hover_preview_enabled = true;
 
-enum class UrlFetchState { pending, complete, failed };
+enum class UrlFetchState
+{
+  pending,
+  complete,
+  failed
+};
 
 struct UrlFetchRecord
 {
@@ -84,6 +89,28 @@ struct HoverPreviewState
 };
 
 static HoverPreviewState g_hover_preview;
+
+struct ImageContextMenuState
+{
+  // Set when user right-clicks on a rendered image
+  bool open_request = false;
+
+  // Image source info captured at right-click time
+  bool is_html = false;        // true if the image was <img ...>, false if ![](...)
+  std::string src;             // raw src as md4c / HTML saw it (may be %XX encoded)
+  std::string src_decoded;     // decoded version for searching the raw markdown text
+  int orig_width = 0;          // width= from HTML; 0 when not specified / markdown
+  int orig_height = 0;         // height= from HTML; 0 when not specified / markdown
+  std::string html_tag;        // full original <img ...> tag text (only when is_html)
+  ImVec2 natural_size;         // original pixel dimensions from the loaded texture
+
+  // "Edit size..." dialog state
+  bool edit_size_pending = false;  // set to open the modal on the next render pass
+  int edit_width = 0;
+  int edit_height = 0;
+  bool proportional = true;
+};
+static ImageContextMenuState g_image_ctx;
 
 static ImVec4 markdown_link_color()
 {
@@ -162,6 +189,122 @@ static std::string decode_link_component(std::string_view s)
       out.push_back(s[i]);
   }
   return out;
+}
+
+// ─── helpers used by the image context menu ──────────────────────────────────
+
+static ImVec2 get_natural_size_for_src(const std::string &src)
+{
+  if(is_external_link(src))
+  {
+    auto it = g_image_cache.find(src);
+    if(it != g_image_cache.end() && it->second.loaded) return it->second.size;
+    return ImVec2(0, 0);
+  }
+  const auto resolved = resolve_image_path(src);
+  if(!resolved.empty())
+  {
+    auto it = g_image_cache.find(resolved.string());
+    if(it != g_image_cache.end() && it->second.loaded) return it->second.size;
+  }
+  auto it = g_image_cache.find(src);
+  return (it != g_image_cache.end() && it->second.loaded) ? it->second.size : ImVec2(0, 0);
+}
+
+static bool find_image_in_text(const std::string &text,
+                                bool is_html,
+                                const std::string &html_tag,
+                                const std::string &src,
+                                size_t &out_start,
+                                size_t &out_end)
+{
+  if(is_html)
+  {
+    if(html_tag.empty()) return false;
+    const size_t pos = text.find(html_tag);
+    if(pos == std::string::npos) return false;
+    out_start = pos;
+    out_end   = pos + html_tag.size();
+    return true;
+  }
+
+  // Markdown: search for ](src) where the bracket pair is preceded by '!'
+  const std::string needle = "](" + src;
+  size_t sp = 0;
+  while(sp < text.size())
+  {
+    const size_t pos = text.find(needle, sp);
+    if(pos == std::string::npos) break;
+
+    const size_t after_src = pos + needle.size();
+    if(after_src < text.size() &&
+       text[after_src] != ')' && text[after_src] != ' ' && text[after_src] != '"')
+    {
+      sp = pos + 1;
+      continue;
+    }
+
+    size_t close = after_src;
+    while(close < text.size() && text[close] != ')') ++close;
+    if(close >= text.size()) { sp = pos + 1; continue; }
+
+    if(pos == 0) { sp = pos + 1; continue; }
+
+    int depth = 1;
+    size_t br = pos - 1;
+    bool found_bracket = false;
+    while(true)
+    {
+      if(text[br] == ']')      ++depth;
+      else if(text[br] == '[') { if(--depth == 0) { found_bracket = true; break; } }
+      if(br == 0) break;
+      --br;
+    }
+
+    if(found_bracket && br > 0 && text[br - 1] == '!')
+    {
+      out_start = br - 1;
+      out_end   = close + 1;
+      return true;
+    }
+    sp = pos + 1;
+  }
+  return false;
+}
+
+static std::string find_markdown_image_syntax(const std::string &markdown,
+                                               const std::string &src,
+                                               const std::string &src_decoded)
+{
+  size_t s, e;
+  if(!src_decoded.empty() && src_decoded != src &&
+     find_image_in_text(markdown, false, {}, src_decoded, s, e))
+    return markdown.substr(s, e - s);
+  if(find_image_in_text(markdown, false, {}, src, s, e))
+    return markdown.substr(s, e - s);
+  return "![](" + src + ")";
+}
+
+static bool replace_image_in_text(std::string &text,
+                                   bool is_html,
+                                   const std::string &html_tag,
+                                   const std::string &src,
+                                   const std::string &src_decoded,
+                                   const std::string &new_text)
+{
+  size_t s, e;
+  if(!is_html && !src_decoded.empty() && src_decoded != src &&
+     find_image_in_text(text, false, {}, src_decoded, s, e))
+  {
+    text.replace(s, e - s, new_text);
+    return true;
+  }
+  if(find_image_in_text(text, is_html, html_tag, src, s, e))
+  {
+    text.replace(s, e - s, new_text);
+    return true;
+  }
+  return false;
 }
 
 static std::string slugify_heading(std::string_view s)
@@ -365,7 +508,11 @@ static bool download_to_file_blocking(const std::string &url, const std::filesys
   const char *args[] = {"curl", "-s", "-L", "--max-time", "15",
                         "--output", dest_str.c_str(), url.c_str(), nullptr};
   const pid_t pid = ::fork();
-  if(pid == 0) { ::execvp("curl", const_cast<char **>(args)); ::_exit(1); }
+  if(pid == 0)
+  {
+    ::execvp("curl", const_cast<char **>(args));
+    ::_exit(1);
+  }
   if(pid < 0) return false;
   int status;
   ::waitpid(pid, &status, 0);
@@ -726,6 +873,9 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
+  bool   m_last_item_was_image    = false;
+  ImVec2 m_last_rendered_image_sz = {0.0f, 0.0f};
+
   static bool fill_image_nfo(const TextureRecord &rec, image_info &nfo)
   {
     if(!rec.loaded || rec.texture_id == 0) return false;
@@ -803,15 +953,186 @@ struct MyMarkdown : public imgui_md
     return fill_image_nfo(it->second, nfo);
   }
 
+  static constexpr float k_inline_spacing = 12.0f;
+  static constexpr float k_inline_max_h  = 48.0f;
+
+  void SPAN_IMG(const MD_SPAN_IMG_DETAIL *d, bool e) override
+  {
+    if(e && d->src.size > 0)
+    {
+      // Pre-render: peek at cached size to decide wrapping before the image is placed.
+      const std::string saved_href = m_href;
+      m_href.assign(d->src.text, d->src.size);
+      image_info pre_nfo;
+      const bool has_pre = get_image(pre_nfo);
+      m_href = saved_href;
+
+      if(has_pre && m_last_item_was_image)
+      {
+        const float fscale = ImGui::GetIO().FontGlobalScale;
+        const float est_h  = pre_nfo.size.y * fscale;
+        const float est_w  = pre_nfo.size.x * fscale;
+        if(est_h <= k_inline_max_h && ImGui::GetContentRegionAvail().x < est_w)
+        {
+          // Not enough room — wrap first so the image keeps its natural size.
+          ImGui::NewLine();
+          m_last_item_was_image = false;
+        }
+      }
+      m_last_rendered_image_sz = {0.0f, 0.0f};
+    }
+
+    imgui_md::SPAN_IMG(d, e);
+
+    if(e)
+    {
+      // Record rendered size now; spacing is applied in the leave callback.
+      // Reason: render_text() calls SameLine(0,0) for the alt-text span (even
+      // though the loop is skipped while m_is_image is true), which fires
+      // between enter and leave and would overwrite any SameLine we set here.
+      m_last_rendered_image_sz = ImGui::GetItemRectSize();
+    }
+    else
+    {
+      // Leave: apply inline spacing HERE, after alt-text's SameLine(0,0) has fired.
+      // Our call wins because it is the last SameLine before the next widget.
+      const ImVec2 sz = m_last_rendered_image_sz;
+
+      // Right-click before SameLine so IsItemHovered() still refers to the Image widget.
+      if(sz.x > 0.5f && sz.y > 0.5f &&
+         ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+      {
+        const std::string src_str(d->src.text, d->src.size);
+        g_image_ctx.open_request  = true;
+        g_image_ctx.is_html       = false;
+        g_image_ctx.src           = src_str;
+        g_image_ctx.src_decoded   = decode_link_component(src_str);
+        g_image_ctx.orig_width    = 0;
+        g_image_ctx.orig_height   = 0;
+        g_image_ctx.html_tag.clear();
+        g_image_ctx.natural_size  = get_natural_size_for_src(g_image_ctx.src_decoded);
+        if(g_image_ctx.natural_size.x < 0.5f)
+          g_image_ctx.natural_size = get_natural_size_for_src(src_str);
+      }
+
+      if(sz.x > 0.5f && sz.y > 0.5f && sz.y <= k_inline_max_h)
+      {
+        ImGui::SameLine(0.0f, k_inline_spacing);
+        m_last_item_was_image = true;
+      }
+      else if(sz.x > 0.5f)
+      {
+        m_last_item_was_image = false;
+      }
+      m_last_rendered_image_sz = {0.0f, 0.0f};
+    }
+  }
+
+  bool check_html(const char *str, const char *str_end) override
+  {
+    const size_t sz = str_end - str;
+
+    // <img src="..." width="N" height="N"> — HTML image with optional size override
+    if(sz >= 4 && strncmp(str, "<img", 4) == 0)
+    {
+      const std::string tag(str, str_end);
+
+      auto get_attr = [&](const char *name) -> std::string {
+        for(char q : {'"', '\''})
+        {
+          const std::string key = std::string(name) + "=" + q;
+          const size_t p = tag.find(key);
+          if(p == std::string::npos) continue;
+          const size_t vs = p + key.size();
+          const size_t ve = tag.find(q, vs);
+          if(ve == std::string::npos) continue;
+          return tag.substr(vs, ve - vs);
+        }
+        return {};
+      };
+
+      const std::string src = get_attr("src");
+      if(!src.empty())
+      {
+        const std::string width_str = get_attr("width");
+        const std::string height_str = get_attr("height");
+
+        float ow = 0.0f, oh = 0.0f;
+        try
+        {
+          if(!width_str.empty()) ow = (float)std::stoi(width_str);
+          if(!height_str.empty()) oh = (float)std::stoi(height_str);
+        }
+        catch(...)
+        {
+        }
+
+        const std::string saved = m_href;
+        m_href = src;
+        image_info nfo;
+        const bool got = get_image(nfo);
+        m_href = saved;
+
+        if(got)
+        {
+          // Apply dimension overrides before scaling
+          if(ow > 0.0f && oh > 0.0f)
+            nfo.size = ImVec2(ow, oh);
+          else if(ow > 0.0f && nfo.size.x > 0.0f)
+            nfo.size = ImVec2(ow, ow * (nfo.size.y / nfo.size.x));
+          else if(oh > 0.0f && nfo.size.y > 0.0f)
+            nfo.size = ImVec2(oh * (nfo.size.x / nfo.size.y), oh);
+
+          const float fscale = ImGui::GetIO().FontGlobalScale;
+          nfo.size.x = std::floor(nfo.size.x * fscale);
+          nfo.size.y = std::floor(nfo.size.y * fscale);
+
+          ImGui::Image(nfo.texture_id, nfo.size, nfo.uv0, nfo.uv1, nfo.col_tint, nfo.col_border);
+
+          if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+          {
+            g_image_ctx.open_request  = true;
+            g_image_ctx.is_html       = true;
+            g_image_ctx.src           = src;
+            g_image_ctx.src_decoded   = src; // HTML src is not URL-encoded
+            g_image_ctx.orig_width    = (int)ow;
+            g_image_ctx.orig_height   = (int)oh;
+            g_image_ctx.html_tag      = tag;
+            g_image_ctx.natural_size  = get_natural_size_for_src(src);
+          }
+
+          if(nfo.size.y <= k_inline_max_h)
+          {
+            ImGui::SameLine(0.0f, k_inline_spacing);
+            m_last_item_was_image = true;
+          }
+        }
+      }
+      return true;
+    }
+
+    return imgui_md::check_html(str, str_end);
+  }
+
   void BLOCK_P(bool e) override
   {
-    // Extra compact paragraph spacing for dense note-taking.
-    if(!e) ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    if(!e)
+    {
+      // If a pending SameLine from inline images is open, cancel it before the paragraph break.
+      if(m_last_item_was_image)
+      {
+        ImGui::NewLine();
+        m_last_item_was_image = false;
+      }
+      ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    }
   }
 
   void soft_break() override
   {
-    // Compact line breaks from source markdown.
+    // When the previous item was a small inline image, keep the cursor inline
+    // so badge rows separated by single newlines flow horizontally.
+    if(m_last_item_was_image) return;
     compact_newline(4.0f);
   }
 
@@ -958,6 +1279,145 @@ bool MarkdownView::take_hover_preview(MarkdownHoverPreviewData &out)
 void MarkdownView::clear_hover_preview()
 {
   g_hover_preview = HoverPreviewState{};
+}
+
+MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::string &markdown)
+{
+  ImageContextResult out;
+
+  // ── Step 1: if a right-click was detected this frame, open the context menu ──
+  if(g_image_ctx.open_request)
+  {
+    out.consumed_right_click = true;
+    g_image_ctx.open_request = false;
+
+    // Initialise edit-size dialog fields from what was specified (HTML) or from
+    // the natural texture dimensions.
+    const int nat_w = (int)g_image_ctx.natural_size.x;
+    const int nat_h = (int)g_image_ctx.natural_size.y;
+    g_image_ctx.edit_width  = g_image_ctx.orig_width  > 0 ? g_image_ctx.orig_width
+                            : nat_w > 0               ? nat_w : 100;
+    g_image_ctx.edit_height = g_image_ctx.orig_height > 0 ? g_image_ctx.orig_height
+                            : nat_h > 0               ? nat_h : 100;
+    // Start proportional unless both dimensions were explicitly specified.
+    g_image_ctx.proportional = !(g_image_ctx.orig_width > 0 && g_image_ctx.orig_height > 0);
+
+    ImGui::OpenPopup("##img_ctx_menu");
+  }
+
+  // ── Step 2: render the context menu popup ────────────────────────────────────
+  if(ImGui::BeginPopup("##img_ctx_menu"))
+  {
+    out.consumed_right_click = true;
+
+    // Build the text that represents the image in the source note.
+    const std::string copy_text = g_image_ctx.is_html
+        ? g_image_ctx.html_tag
+        : find_markdown_image_syntax(markdown, g_image_ctx.src, g_image_ctx.src_decoded);
+
+    if(ImGui::MenuItem("Copy image text"))
+      ImGui::SetClipboardText(copy_text.c_str());
+
+    if(ImGui::MenuItem("Edit size..."))
+      g_image_ctx.edit_size_pending = true;
+
+    ImGui::EndPopup();
+  }
+
+  // ── Step 3: open the edit-size modal if requested ────────────────────────────
+  if(g_image_ctx.edit_size_pending)
+  {
+    g_image_ctx.edit_size_pending = false;
+    ImGui::OpenPopup("Edit Image Size##img_sz_modal");
+  }
+
+  // ── Step 4: render the edit-size modal ───────────────────────────────────────
+  if(ImGui::BeginPopupModal("Edit Image Size##img_sz_modal", nullptr,
+      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+  {
+    out.consumed_right_click = true;
+
+    const float nat_w   = g_image_ctx.natural_size.x;
+    const float nat_h   = g_image_ctx.natural_size.y;
+    const float aspect  = (nat_w > 0.5f && nat_h > 0.5f) ? (nat_h / nat_w) : 1.0f;
+
+    // Info row
+    const std::string &src_label = g_image_ctx.src_decoded.empty()
+        ? g_image_ctx.src : g_image_ctx.src_decoded;
+    ImGui::TextUnformatted(src_label.c_str());
+    if(nat_w > 0.5f && nat_h > 0.5f)
+      ImGui::Text("Natural size: %d × %d px", (int)nat_w, (int)nat_h);
+    ImGui::Separator();
+
+    // Width field (always enabled)
+    const bool w_changed = ImGui::InputInt("Width##img_edit_w",
+        &g_image_ctx.edit_width, 1, 10);
+    if(g_image_ctx.edit_width < 1) g_image_ctx.edit_width = 1;
+    if(w_changed && g_image_ctx.proportional)
+      g_image_ctx.edit_height = std::max(1, (int)(g_image_ctx.edit_width * aspect + 0.5f));
+
+    // Height field — disabled when proportional, editable otherwise
+    if(g_image_ctx.proportional)
+    {
+      ImGui::BeginDisabled(true);
+      int disp_h = std::max(1, (int)(g_image_ctx.edit_width * aspect + 0.5f));
+      ImGui::InputInt("Height##img_edit_h", &disp_h, 1, 10);
+      ImGui::EndDisabled();
+    }
+    else
+    {
+      ImGui::InputInt("Height##img_edit_h", &g_image_ctx.edit_height, 1, 10);
+      if(g_image_ctx.edit_height < 1) g_image_ctx.edit_height = 1;
+    }
+
+    // Proportional checkbox
+    if(ImGui::Checkbox("Proportional##img_prop", &g_image_ctx.proportional))
+    {
+      if(g_image_ctx.proportional && nat_w > 0.5f)
+        g_image_ctx.edit_height = std::max(1, (int)(g_image_ctx.edit_width * aspect + 0.5f));
+    }
+    if(g_image_ctx.proportional)
+    {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(width only)");
+    }
+
+    ImGui::Separator();
+
+    // Apply / Cancel
+    if(ImGui::Button("Apply##img_apply"))
+    {
+      const int fw = std::max(1, g_image_ctx.edit_width);
+      const int fh = g_image_ctx.proportional
+          ? std::max(1, (int)(fw * aspect + 0.5f))
+          : std::max(1, g_image_ctx.edit_height);
+
+      // Build the replacement HTML tag — always <img> regardless of original syntax.
+      std::string new_tag;
+      if(g_image_ctx.proportional)
+        new_tag = "<img src=\"" + g_image_ctx.src + "\" width=\"" + std::to_string(fw) + "\">";
+      else
+        new_tag = "<img src=\"" + g_image_ctx.src + "\" width=\"" + std::to_string(fw)
+                + "\" height=\"" + std::to_string(fh) + "\">";
+
+      if(replace_image_in_text(markdown,
+                               g_image_ctx.is_html,
+                               g_image_ctx.html_tag,
+                               g_image_ctx.src,
+                               g_image_ctx.src_decoded,
+                               new_tag))
+        out.markdown_changed = true;
+
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if(ImGui::Button("Cancel##img_cancel"))
+      ImGui::CloseCurrentPopup();
+
+    ImGui::EndPopup();
+  }
+
+  return out;
 }
 
 static void render_sections(const MdSection &s,
