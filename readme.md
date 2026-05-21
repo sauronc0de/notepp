@@ -1,5 +1,7 @@
 # Notes App
 
+## Introduction
+
 ![title](assets/icon/notepp.ico)
 
 ![Version](https://img.shields.io/badge/version-0.0.1-green)
@@ -273,10 +275,10 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 Embed **interactive widgets** directly inside any note using a fenced code block with the `UI` language tag.
 
 ````markdown
-```UI
-variableName(initialValue)
-widget(variable, "Label", width, ...options)
-```
+>```UI
+>variableName(initialValue)
+>widget(variable, "Label", width, ...options)
+>```
 ````
 
 Widget state is **persistent** — values survive edits, closing, and reopening. Changing the markdown source resets only the blocks that actually changed.
@@ -665,15 +667,15 @@ list(tasks, "Tasks", 260, true)
 
 ````markdown
 ```UI
-bag([
-  {name:"Sword",    image:"sword.png",    tooltip:"Iron sword",    quantity:1},
-  {name:"Shield",   image:"shield.png",   tooltip:"Wooden shield", quantity:1},
-  {name:"Potion",   image:"potion.png",   tooltip:"Heals 50 HP",   quantity:5, color:"#FF4444"},
-  {name:"Gold",     image:"coin.png",     tooltip:"Gold coins",    quantity:120, color:"#FFD700"},
-  {name:"Key",      image:"key.png",      tooltip:"Mystery key",   enabled:false},
-  {}
-])
-inventory(bag, "Backpack", 320, 2, 3)
+inventory_data({
+  rows:2,
+  cols:2,
+  items:[
+    {name:"Potion", image:"potion.png", tooltip:"Consumable item", quantity:3, color:"#57A7FF"},
+    {tooltip:"Disabled example cell", color:"#FFB347", enabled:false}
+  ]
+})
+inventory(inventory_data, "Inventory", 220, 2, 2)
 ```
 ````
 
