@@ -955,6 +955,7 @@ struct MyMarkdown : public imgui_md
 
   static constexpr float k_inline_spacing = 12.0f;
   static constexpr float k_inline_max_h  = 48.0f;
+  static constexpr float k_row_gap       =  6.0f;
 
   void SPAN_IMG(const MD_SPAN_IMG_DETAIL *d, bool e) override
   {
