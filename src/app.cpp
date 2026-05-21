@@ -784,6 +784,7 @@ void App::shutdown()
     if(alive_paths.find(p) != alive_paths.end()) continue;
     std::error_code ec;
     std::filesystem::remove(std::filesystem::path(p), ec);
+    std::filesystem::remove(std::filesystem::path(p + ".bak"), ec);
   }
   pending_fs_delete_paths_.clear();
 
@@ -1649,6 +1650,8 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   for(const auto &[path, content] : restored_contents)
   {
     write_text_file(path, content);
+    std::error_code bak_ec;
+    std::filesystem::remove(std::filesystem::path(path + ".bak"), bak_ec);
   }
   for(const std::string &path : current_paths)
   {
@@ -2440,6 +2443,11 @@ void App::frame_ui()
     pending_fs_delete_paths_.erase(
         std::remove(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path),
         pending_fs_delete_paths_.end());
+    // If the file was renamed to .bak on deletion, restore it now
+    std::error_code rp_ec;
+    const std::string bak = path + ".bak";
+    if(!std::filesystem::exists(path, rp_ec) && std::filesystem::exists(bak, rp_ec))
+      std::filesystem::rename(bak, path, rp_ec);
   };
   auto flash_key_folder = [](const std::string &folder_name) { return std::string("F:") + folder_name; };
   auto flash_key_note = [](const std::string &note_path) { return std::string("N:") + note_path; };
@@ -3801,6 +3809,19 @@ void App::frame_ui()
           {
             if(ImGui::MenuItem("Reveal in File Explorer"))
               reveal_in_file_explorer(img.path);
+            ImGui::Separator();
+            if(ImGui::MenuItem("Delete image"))
+            {
+              const std::string img_path = img.path;
+              std::error_code img_ec;
+              std::filesystem::rename(img_path, img_path + ".bak", img_ec);
+              f.images.erase(
+                  std::remove(f.images.begin(), f.images.end(), img_path),
+                  f.images.end());
+              invalidate_folder_image_cache(f.name);
+              queue_pending_delete_path(img_path);
+              save_index();
+            }
             ImGui::EndPopup();
           }
 
@@ -3973,7 +3994,13 @@ void App::frame_ui()
       for(int ni : to_delete)
       {
         if(ni < 0 || ni >= (int)df.notes.size()) continue;
-        queue_pending_delete_path(df.notes[(size_t)ni].path);
+        const std::string del_path = df.notes[(size_t)ni].path;
+        if(!del_path.empty())
+        {
+          std::error_code ren_ec;
+          std::filesystem::rename(del_path, del_path + ".bak", ren_ec);
+        }
+        queue_pending_delete_path(del_path);
         df.notes.erase(df.notes.begin() + ni);
       }
       flash_mark_folder(df.name, ImVec4(0.90f, 0.32f, 0.32f, 1.0f));
@@ -4018,6 +4045,11 @@ void App::frame_ui()
         FolderMeta &df = folders_[(size_t)idx];
         for(const NoteMeta &n : df.notes)
         {
+          if(!n.path.empty())
+          {
+            std::error_code ren_ec;
+            std::filesystem::rename(n.path, n.path + ".bak", ren_ec);
+          }
           queue_pending_delete_path(n.path);
         }
         folders_.erase(folders_.begin() + idx);
@@ -6208,7 +6240,13 @@ __CURSOR__)MD");
           for(int idx : nd)
           {
             if(idx < 0 || idx >= (int)f.notes.size()) continue;
-            queue_pending_delete_path(f.notes[(size_t)idx].path);
+            const std::string del_path = f.notes[(size_t)idx].path;
+            if(!del_path.empty())
+            {
+              std::error_code ren_ec;
+              std::filesystem::rename(del_path, del_path + ".bak", ren_ec);
+            }
+            queue_pending_delete_path(del_path);
             f.notes.erase(f.notes.begin() + idx);
           }
           if(f.notes.empty())
