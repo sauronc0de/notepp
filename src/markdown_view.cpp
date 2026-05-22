@@ -96,16 +96,16 @@ struct ImageContextMenuState
   bool open_request = false;
 
   // Image source info captured at right-click time
-  bool is_html = false;        // true if the image was <img ...>, false if ![](...)
-  std::string src;             // raw src as md4c / HTML saw it (may be %XX encoded)
-  std::string src_decoded;     // decoded version for searching the raw markdown text
-  int orig_width = 0;          // width= from HTML; 0 when not specified / markdown
-  int orig_height = 0;         // height= from HTML; 0 when not specified / markdown
-  std::string html_tag;        // full original <img ...> tag text (only when is_html)
-  ImVec2 natural_size;         // original pixel dimensions from the loaded texture
+  bool is_html = false;    // true if the image was <img ...>, false if ![](...)
+  std::string src;         // raw src as md4c / HTML saw it (may be %XX encoded)
+  std::string src_decoded; // decoded version for searching the raw markdown text
+  int orig_width = 0;      // width= from HTML; 0 when not specified / markdown
+  int orig_height = 0;     // height= from HTML; 0 when not specified / markdown
+  std::string html_tag;    // full original <img ...> tag text (only when is_html)
+  ImVec2 natural_size;     // original pixel dimensions from the loaded texture
 
   // "Edit size..." dialog state
-  bool edit_size_pending = false;  // set to open the modal on the next render pass
+  bool edit_size_pending = false; // set to open the modal on the next render pass
   int edit_width = 0;
   int edit_height = 0;
   bool proportional = true;
@@ -212,11 +212,11 @@ static ImVec2 get_natural_size_for_src(const std::string &src)
 }
 
 static bool find_image_in_text(const std::string &text,
-                                bool is_html,
-                                const std::string &html_tag,
-                                const std::string &src,
-                                size_t &out_start,
-                                size_t &out_end)
+                               bool is_html,
+                               const std::string &html_tag,
+                               const std::string &src,
+                               size_t &out_start,
+                               size_t &out_end)
 {
   if(is_html)
   {
@@ -224,7 +224,7 @@ static bool find_image_in_text(const std::string &text,
     const size_t pos = text.find(html_tag);
     if(pos == std::string::npos) return false;
     out_start = pos;
-    out_end   = pos + html_tag.size();
+    out_end = pos + html_tag.size();
     return true;
   }
 
@@ -246,17 +246,33 @@ static bool find_image_in_text(const std::string &text,
 
     size_t close = after_src;
     while(close < text.size() && text[close] != ')') ++close;
-    if(close >= text.size()) { sp = pos + 1; continue; }
+    if(close >= text.size())
+    {
+      sp = pos + 1;
+      continue;
+    }
 
-    if(pos == 0) { sp = pos + 1; continue; }
+    if(pos == 0)
+    {
+      sp = pos + 1;
+      continue;
+    }
 
     int depth = 1;
     size_t br = pos - 1;
     bool found_bracket = false;
     while(true)
     {
-      if(text[br] == ']')      ++depth;
-      else if(text[br] == '[') { if(--depth == 0) { found_bracket = true; break; } }
+      if(text[br] == ']')
+        ++depth;
+      else if(text[br] == '[')
+      {
+        if(--depth == 0)
+        {
+          found_bracket = true;
+          break;
+        }
+      }
       if(br == 0) break;
       --br;
     }
@@ -264,7 +280,7 @@ static bool find_image_in_text(const std::string &text,
     if(found_bracket && br > 0 && text[br - 1] == '!')
     {
       out_start = br - 1;
-      out_end   = close + 1;
+      out_end = close + 1;
       return true;
     }
     sp = pos + 1;
@@ -273,8 +289,8 @@ static bool find_image_in_text(const std::string &text,
 }
 
 static std::string find_markdown_image_syntax(const std::string &markdown,
-                                               const std::string &src,
-                                               const std::string &src_decoded)
+                                              const std::string &src,
+                                              const std::string &src_decoded)
 {
   size_t s, e;
   if(!src_decoded.empty() && src_decoded != src &&
@@ -286,11 +302,11 @@ static std::string find_markdown_image_syntax(const std::string &markdown,
 }
 
 static bool replace_image_in_text(std::string &text,
-                                   bool is_html,
-                                   const std::string &html_tag,
-                                   const std::string &src,
-                                   const std::string &src_decoded,
-                                   const std::string &new_text)
+                                  bool is_html,
+                                  const std::string &html_tag,
+                                  const std::string &src,
+                                  const std::string &src_decoded,
+                                  const std::string &new_text)
 {
   size_t s, e;
   if(!is_html && !src_decoded.empty() && src_decoded != src &&
@@ -873,7 +889,7 @@ static std::vector<Segment> split_color_spans(std::string_view in)
 // Renderer: derive from imgui_md and override behavior.
 struct MyMarkdown : public imgui_md
 {
-  bool   m_last_item_was_image    = false;
+  bool m_last_item_was_image = false;
   ImVec2 m_last_rendered_image_sz = {0.0f, 0.0f};
 
   static bool fill_image_nfo(const TextureRecord &rec, image_info &nfo)
@@ -954,9 +970,9 @@ struct MyMarkdown : public imgui_md
   }
 
   static constexpr float k_inline_spacing = 12.0f;
-  static constexpr float k_inline_max_h  = 48.0f;
-  static constexpr float k_row_gap       =  6.0f;
-  static constexpr float k_paragraph_gap =  5.0f;
+  static constexpr float k_inline_max_h = 48.0f;
+  static constexpr float k_row_gap = 6.0f;
+  static constexpr float k_paragraph_gap = 12.0f;
 
   void SPAN_IMG(const MD_SPAN_IMG_DETAIL *d, bool e) override
   {
@@ -972,8 +988,8 @@ struct MyMarkdown : public imgui_md
       if(has_pre && m_last_item_was_image)
       {
         const float fscale = ImGui::GetIO().FontGlobalScale;
-        const float est_h  = pre_nfo.size.y * fscale;
-        const float est_w  = pre_nfo.size.x * fscale;
+        const float est_h = pre_nfo.size.y * fscale;
+        const float est_w = pre_nfo.size.x * fscale;
         if(est_h <= k_inline_max_h && ImGui::GetContentRegionAvail().x < est_w)
         {
           // Not enough room — wrap first so the image keeps its natural size.
@@ -1006,14 +1022,14 @@ struct MyMarkdown : public imgui_md
          ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
       {
         const std::string src_str(d->src.text, d->src.size);
-        g_image_ctx.open_request  = true;
-        g_image_ctx.is_html       = false;
-        g_image_ctx.src           = src_str;
-        g_image_ctx.src_decoded   = decode_link_component(src_str);
-        g_image_ctx.orig_width    = 0;
-        g_image_ctx.orig_height   = 0;
+        g_image_ctx.open_request = true;
+        g_image_ctx.is_html = false;
+        g_image_ctx.src = src_str;
+        g_image_ctx.src_decoded = decode_link_component(src_str);
+        g_image_ctx.orig_width = 0;
+        g_image_ctx.orig_height = 0;
         g_image_ctx.html_tag.clear();
-        g_image_ctx.natural_size  = get_natural_size_for_src(g_image_ctx.src_decoded);
+        g_image_ctx.natural_size = get_natural_size_for_src(g_image_ctx.src_decoded);
         if(g_image_ctx.natural_size.x < 0.5f)
           g_image_ctx.natural_size = get_natural_size_for_src(src_str);
       }
@@ -1094,14 +1110,14 @@ struct MyMarkdown : public imgui_md
 
           if(ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
           {
-            g_image_ctx.open_request  = true;
-            g_image_ctx.is_html       = true;
-            g_image_ctx.src           = src;
-            g_image_ctx.src_decoded   = src; // HTML src is not URL-encoded
-            g_image_ctx.orig_width    = (int)ow;
-            g_image_ctx.orig_height   = (int)oh;
-            g_image_ctx.html_tag      = tag;
-            g_image_ctx.natural_size  = get_natural_size_for_src(src);
+            g_image_ctx.open_request = true;
+            g_image_ctx.is_html = true;
+            g_image_ctx.src = src;
+            g_image_ctx.src_decoded = src; // HTML src is not URL-encoded
+            g_image_ctx.orig_width = (int)ow;
+            g_image_ctx.orig_height = (int)oh;
+            g_image_ctx.html_tag = tag;
+            g_image_ctx.natural_size = get_natural_size_for_src(src);
           }
 
           if(nfo.size.y <= k_inline_max_h)
@@ -1130,6 +1146,7 @@ struct MyMarkdown : public imgui_md
       }
       else
       {
+        ImGui::NewLine(); // close any pending SameLine before adding vertical space
         ImGui::Dummy(ImVec2(0.0f, k_paragraph_gap));
       }
     }
@@ -1140,7 +1157,10 @@ struct MyMarkdown : public imgui_md
     // When the previous item was a small inline image, keep the cursor inline
     // so badge rows separated by single newlines flow horizontally.
     if(m_last_item_was_image) return;
-    compact_newline(2.0f);
+    // ItemSpacing.y is zeroed for the whole preview render, so NewLine() already
+    // advances by exactly font_size — the minimum safe gap. Any positive tighten
+    // would push lines closer than font_size and cause overlap.
+    compact_newline(-1.0f);
   }
 
   ImFont *get_font() const override
@@ -1302,10 +1322,12 @@ MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::st
     // the natural texture dimensions.
     const int nat_w = (int)g_image_ctx.natural_size.x;
     const int nat_h = (int)g_image_ctx.natural_size.y;
-    g_image_ctx.edit_width  = g_image_ctx.orig_width  > 0 ? g_image_ctx.orig_width
-                            : nat_w > 0               ? nat_w : 100;
+    g_image_ctx.edit_width = g_image_ctx.orig_width > 0 ? g_image_ctx.orig_width
+                             : nat_w > 0                ? nat_w
+                                                        : 100;
     g_image_ctx.edit_height = g_image_ctx.orig_height > 0 ? g_image_ctx.orig_height
-                            : nat_h > 0               ? nat_h : 100;
+                              : nat_h > 0                 ? nat_h
+                                                          : 100;
     // Start proportional unless both dimensions were explicitly specified.
     g_image_ctx.proportional = !(g_image_ctx.orig_width > 0 && g_image_ctx.orig_height > 0);
 
@@ -1319,8 +1341,8 @@ MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::st
 
     // Build the text that represents the image in the source note.
     const std::string copy_text = g_image_ctx.is_html
-        ? g_image_ctx.html_tag
-        : find_markdown_image_syntax(markdown, g_image_ctx.src, g_image_ctx.src_decoded);
+                                      ? g_image_ctx.html_tag
+                                      : find_markdown_image_syntax(markdown, g_image_ctx.src, g_image_ctx.src_decoded);
 
     if(ImGui::MenuItem("Copy image text"))
       ImGui::SetClipboardText(copy_text.c_str());
@@ -1340,17 +1362,18 @@ MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::st
 
   // ── Step 4: render the edit-size modal ───────────────────────────────────────
   if(ImGui::BeginPopupModal("Edit Image Size##img_sz_modal", nullptr,
-      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+                            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
   {
     out.consumed_right_click = true;
 
-    const float nat_w   = g_image_ctx.natural_size.x;
-    const float nat_h   = g_image_ctx.natural_size.y;
-    const float aspect  = (nat_w > 0.5f && nat_h > 0.5f) ? (nat_h / nat_w) : 1.0f;
+    const float nat_w = g_image_ctx.natural_size.x;
+    const float nat_h = g_image_ctx.natural_size.y;
+    const float aspect = (nat_w > 0.5f && nat_h > 0.5f) ? (nat_h / nat_w) : 1.0f;
 
     // Info row
     const std::string &src_label = g_image_ctx.src_decoded.empty()
-        ? g_image_ctx.src : g_image_ctx.src_decoded;
+                                       ? g_image_ctx.src
+                                       : g_image_ctx.src_decoded;
     ImGui::TextUnformatted(src_label.c_str());
     if(nat_w > 0.5f && nat_h > 0.5f)
       ImGui::Text("Natural size: %d × %d px", (int)nat_w, (int)nat_h);
@@ -1358,7 +1381,7 @@ MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::st
 
     // Width field (always enabled)
     const bool w_changed = ImGui::InputInt("Width##img_edit_w",
-        &g_image_ctx.edit_width, 1, 10);
+                                           &g_image_ctx.edit_width, 1, 10);
     if(g_image_ctx.edit_width < 1) g_image_ctx.edit_width = 1;
     if(w_changed && g_image_ctx.proportional)
       g_image_ctx.edit_height = std::max(1, (int)(g_image_ctx.edit_width * aspect + 0.5f));
@@ -1396,16 +1419,15 @@ MarkdownView::ImageContextResult MarkdownView::render_image_context_menu(std::st
     {
       const int fw = std::max(1, g_image_ctx.edit_width);
       const int fh = g_image_ctx.proportional
-          ? std::max(1, (int)(fw * aspect + 0.5f))
-          : std::max(1, g_image_ctx.edit_height);
+                         ? std::max(1, (int)(fw * aspect + 0.5f))
+                         : std::max(1, g_image_ctx.edit_height);
 
       // Build the replacement HTML tag — always <img> regardless of original syntax.
       std::string new_tag;
       if(g_image_ctx.proportional)
         new_tag = "<img src=\"" + g_image_ctx.src + "\" width=\"" + std::to_string(fw) + "\">";
       else
-        new_tag = "<img src=\"" + g_image_ctx.src + "\" width=\"" + std::to_string(fw)
-                + "\" height=\"" + std::to_string(fh) + "\">";
+        new_tag = "<img src=\"" + g_image_ctx.src + "\" width=\"" + std::to_string(fw) + "\" height=\"" + std::to_string(fh) + "\">";
 
       if(replace_image_in_text(markdown,
                                g_image_ctx.is_html,
@@ -1522,7 +1544,21 @@ static void render_inline_md_with_color_spans(std::string_view text)
     const auto &t = tokens[i];
     if(t.newline)
     {
-      MyMarkdown::compact_newline(4.0f);
+      const bool prev_was_newline = (i > 0 && tokens[i - 1].newline);
+      const bool next_is_newline = (i + 1 < tokens.size() && tokens[i + 1].newline);
+      if(prev_was_newline)
+      {
+        // Already handled this newline sequence — skip.
+      }
+      else if(next_is_newline)
+      {
+        // First of a multi-newline run → one paragraph gap, same as BLOCK_P in full render.
+        ImGui::Dummy(ImVec2(0.0f, MyMarkdown::k_paragraph_gap));
+      }
+      else
+      {
+        MyMarkdown::compact_newline(2.0f);
+      }
       continue;
     }
 
