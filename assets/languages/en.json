@@ -2,7 +2,7 @@
   "code": "en",
   "name": "English",
   "short": "EN",
-  "flag_icon": "english.png",
+  "flag_icon": "flags/english.png",
   "strings": {
     "Language": "Language",
     "Explorer": "Explorer",

@@ -2,7 +2,7 @@
   "code": "ca",
   "name": "Català",
   "short": "CA",
-  "flag_icon": "ca.png",
+  "flag_icon": "flags/cat.png",
   "strings": {
     "Language": "Idioma",
     "Explorer": "Explorador",

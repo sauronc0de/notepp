@@ -70,8 +70,8 @@ using NoteCore::sanitize_note_filename;
 
 using NoteUi::clear_toolbar_icon_cache;
 using NoteUi::folder_accent_color;
-using NoteUi::get_toolbar_icon_texture;
 using NoteUi::get_toolbar_icon_size;
+using NoteUi::get_toolbar_icon_texture;
 using NoteUi::make_note_theme;
 using NoteUi::mix_color;
 using NoteUi::push_folder_imgui_theme;
@@ -963,7 +963,11 @@ void App::load_state()
   {
     bool has_any_note = false;
     for(const auto &f : folders_)
-      if(!f.notes.empty()) { has_any_note = true; break; }
+      if(!f.notes.empty())
+      {
+        has_any_note = true;
+        break;
+      }
     if(!has_any_note)
       open_or_create_readme();
   }
@@ -1123,7 +1127,6 @@ void App::ensure_default_index()
   normalize_active_indices();
 }
 
-
 void App::open_or_create_readme()
 {
   ensure_default_index();
@@ -1253,7 +1256,11 @@ void App::sync_project_files()
   // Helper: compute folder name and return false if the file should be skipped.
   auto folder_name_for = [&](const fs::path &p, std::string &out_folder) -> bool {
     const fs::path rel = fs::relative(p, config_.dataPath, ec);
-    if(ec || rel.empty()) { ec.clear(); return false; }
+    if(ec || rel.empty())
+    {
+      ec.clear();
+      return false;
+    }
     const fs::path parent_rel = rel.parent_path();
     if(parent_rel.empty() || parent_rel == fs::path("."))
       out_folder = "General";
@@ -1265,8 +1272,16 @@ void App::sync_project_files()
   // ---- 4. Scan disk — add new .md and image files ----
   for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, ec))
   {
-    if(ec) { ec.clear(); continue; }
-    if(!entry.is_regular_file(ec)) { ec.clear(); continue; }
+    if(ec)
+    {
+      ec.clear();
+      continue;
+    }
+    if(!entry.is_regular_file(ec))
+    {
+      ec.clear();
+      continue;
+    }
     const fs::path &p = entry.path();
     const std::string ext = lower_ext(p);
     const std::string norm = norm_path(p);
@@ -2173,10 +2188,14 @@ void App::frame_begin()
       {
 #if defined(_WIN32)
         INPUT inputs[4] = {};
-        inputs[0].type = INPUT_KEYBOARD; inputs[0].ki.wVk = VK_LWIN;
-        inputs[1].type = INPUT_KEYBOARD; inputs[1].ki.wVk = VK_OEM_PERIOD;
-        inputs[2] = inputs[1]; inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-        inputs[3] = inputs[0]; inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[0].type = INPUT_KEYBOARD;
+        inputs[0].ki.wVk = VK_LWIN;
+        inputs[1].type = INPUT_KEYBOARD;
+        inputs[1].ki.wVk = VK_OEM_PERIOD;
+        inputs[2] = inputs[1];
+        inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[3] = inputs[0];
+        inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
         SendInput(4, inputs, sizeof(INPUT));
 #else
         show_emoji_picker_ = !show_emoji_picker_;
@@ -3783,8 +3802,16 @@ void App::frame_ui()
             ImGui::BeginTooltip();
             const float max_sz = 220.0f;
             float tw = tex.width, th = tex.height;
-            if(tw > max_sz) { th = th * max_sz / tw; tw = max_sz; }
-            if(th > max_sz) { tw = tw * max_sz / th; th = max_sz; }
+            if(tw > max_sz)
+            {
+              th = th * max_sz / tw;
+              tw = max_sz;
+            }
+            if(th > max_sz)
+            {
+              tw = tw * max_sz / th;
+              th = max_sz;
+            }
             ImGui::Image(tex.id, ImVec2(tw, th));
             ImGui::TextUnformatted(img.name.c_str());
             ImGui::EndTooltip();
@@ -4460,7 +4487,12 @@ void App::frame_ui()
       ImGui::SetNextWindowSize(ImVec2(std::max(200.0f, vp->Size.x - explorer_w), bar_h), ImGuiCond_Always);
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
-      ImGui::PushStyleColor(ImGuiCol_WindowBg, explorer_bg);
+      const ImVec4 topbar_bg(
+          clamp01(explorer_bg.x + 0.25f),
+          clamp01(explorer_bg.y + 0.25f),
+          clamp01(explorer_bg.z + 0.25f),
+          explorer_bg.w);
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, topbar_bg);
       ImGui::Begin(
           "##FormatTopBar",
           nullptr,
@@ -4471,16 +4503,12 @@ void App::frame_ui()
               ImGuiWindowFlags_NoDocking |
               (dock_drag_active ? ImGuiWindowFlags_NoInputs : 0));
       ImGui::PopStyleColor();
-      // Blue accents close to default ImGui dark style.
-      const ImVec4 top_btn(0.26f, 0.59f, 0.98f, 0.45f);
-      const ImVec4 top_btn_hov(0.26f, 0.59f, 0.98f, 0.86f);
-      const ImVec4 top_btn_act(0.06f, 0.53f, 0.98f, 1.0f);
       const ImVec4 top_frame(0.18f, 0.24f, 0.34f, 0.92f);
       const ImVec4 top_frame_hov(0.22f, 0.34f, 0.52f, 0.96f);
       const ImVec4 top_frame_act(0.12f, 0.42f, 0.74f, 1.0f);
-      ImGui::PushStyleColor(ImGuiCol_Button, top_btn);
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, top_btn_hov);
-      ImGui::PushStyleColor(ImGuiCol_ButtonActive, top_btn_act);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.12f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.24f));
       ImGui::PushStyleColor(ImGuiCol_FrameBg, top_frame);
       ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, top_frame_hov);
       ImGui::PushStyleColor(ImGuiCol_FrameBgActive, top_frame_act);
@@ -4594,6 +4622,13 @@ void App::frame_ui()
         return out.str();
       };
 
+      constexpr float kIconH = 16.0f;
+      auto icon_sz = [](const char *name) -> ImVec2 {
+        const ImVec2 orig = get_toolbar_icon_size(name);
+        if(orig.y <= 0.0f) return ImVec2(kIconH, kIconH);
+        return ImVec2(orig.x * (kIconH / orig.y), kIconH);
+      };
+
       if(editing_mode_)
       {
         const ImTextureID ic_italic = get_toolbar_icon_texture("italic.png");
@@ -4605,17 +4640,26 @@ void App::frame_ui()
         const ImTextureID ic_table = get_toolbar_icon_texture("table.png");
         const ImTextureID ic_widget = get_toolbar_icon_texture("widgets.png");
         const ImTextureID ic_find = get_toolbar_icon_texture("find.png");
-        auto tool_button = [&](const char *id, ImTextureID tex, const char *fallback, const char *tooltip) -> bool {
+        const ImVec2 sz_italic = icon_sz("italic.png");
+        const ImVec2 sz_bold = icon_sz("bold.png");
+        const ImVec2 sz_strike = icon_sz("strike.png");
+        const ImVec2 sz_note = icon_sz("note.png");
+        const ImVec2 sz_color = icon_sz("color-brush.png");
+        const ImVec2 sz_task = icon_sz("to-do-list.png");
+        const ImVec2 sz_table = icon_sz("table.png");
+        const ImVec2 sz_widget = icon_sz("widgets.png");
+        const ImVec2 sz_find = icon_sz("find.png");
+        auto tool_button = [&](const char *id, ImTextureID tex, ImVec2 disp_sz, const char *fallback, const char *tooltip) -> bool {
           bool pressed = false;
           if(tex)
-            pressed = ImGui::ImageButton(id, tex, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1));
+            pressed = ImGui::ImageButton(id, tex, disp_sz, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1));
           else
             pressed = ImGui::Button(fallback);
           if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = tooltip;
           return pressed;
         };
         ImGui::BeginDisabled(!has_anchor_selection);
-        if(tool_button("##tb_italic", ic_italic, "Italic", "Italic"))
+        if(tool_button("##tb_italic", ic_italic, sz_italic, "Italic", "Italic"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
@@ -4623,7 +4667,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_bold", ic_bold, "Bold", "Bold"))
+        if(tool_button("##tb_bold", ic_bold, sz_bold, "Bold", "Bold"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
@@ -4631,7 +4675,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_strike", ic_strike, "Strike", "Strike"))
+        if(tool_button("##tb_strike", ic_strike, sz_strike, "Strike", "Strike"))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
@@ -4639,7 +4683,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_note", ic_note, "Note", "Note quote"))
+        if(tool_button("##tb_note", ic_note, sz_note, "Note", "Note quote"))
         {
           push_undo_snapshot();
           apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
@@ -4649,7 +4693,7 @@ void App::frame_ui()
         ImGui::SameLine();
         ImGui::ColorEdit3("##top_color", (float *)&fmt_folder.color, ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
-        if(tool_button("##tb_color_apply", ic_color, "Color", "Apply color"))
+        if(tool_button("##tb_color_apply", ic_color, sz_color, "Color", "Apply color"))
         {
           push_undo_snapshot();
           const std::string hex = rgba_to_hex(fmt_folder.color);
@@ -4659,7 +4703,7 @@ void App::frame_ui()
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if(tool_button("##tb_task", ic_task, "Task", "Task list"))
+        if(tool_button("##tb_task", ic_task, sz_task, "Task", "Task list"))
         {
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
@@ -4667,12 +4711,12 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_table", ic_table, "Table", "Insert markdown table"))
+        if(tool_button("##tb_table", ic_table, sz_table, "Table", "Insert markdown table"))
         {
           ImGui::OpenPopup("##tb_table_builder_popup");
         }
         ImGui::SameLine();
-        if(tool_button("##tb_ui_widgets", ic_widget, "Widgets", "Insert UI widget example"))
+        if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", "Insert UI widget example"))
         {
           ImGui::OpenPopup("##tb_ui_widgets_popup");
         }
@@ -4849,13 +4893,13 @@ __CURSOR__)MD");
           ImGui::EndPopup();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_find", ic_find, "Find", "Find (Ctrl+F)"))
+        if(tool_button("##tb_find", ic_find, sz_find, "Find", "Find (Ctrl+F)"))
         {
           request_open_search_ = true;
         }
 #if !defined(_WIN32)
         ImGui::SameLine();
-        if(tool_button("##tb_emoji", (ImTextureID)0, "😀", "Emoji picker (Ctrl+.)"))
+        if(tool_button("##tb_emoji", (ImTextureID)0, ImVec2(kIconH, kIconH), "😀", "Emoji picker (Ctrl+.)"))
         {
           emoji_picker_.reset_search();
           ImGui::OpenPopup("##emoji_picker_modal");
@@ -4869,7 +4913,7 @@ __CURSOR__)MD");
         ImGui::SetNextWindowSize({300.0f, 370.0f}, ImGuiCond_Always);
         static bool emoji_picker_was_open = false;
         if(ImGui::BeginPopupModal("##emoji_picker_modal", nullptr,
-               ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+                                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
         {
           emoji_picker_was_open = true;
           if(emoji_picker_.render_content())
@@ -4881,12 +4925,12 @@ __CURSOR__)MD");
             save_state();
             const int new_pos = pos + static_cast<int>(emoji_picker_.last_selected.size());
             fmt_folder.cursor_pos = new_pos;
-            fmt_folder.sel_start  = new_pos;
-            fmt_folder.sel_end    = new_pos;
-            fmt_folder.selection_anchor   = new_pos;
+            fmt_folder.sel_start = new_pos;
+            fmt_folder.sel_end = new_pos;
+            fmt_folder.selection_anchor = new_pos;
             fmt_folder.pending_select_range = true;
-            fmt_folder.pending_sel_start  = new_pos;
-            fmt_folder.pending_sel_end    = new_pos;
+            fmt_folder.pending_sel_start = new_pos;
+            fmt_folder.pending_sel_end = new_pos;
           }
           ImGui::EndPopup();
         }
@@ -4910,7 +4954,16 @@ __CURSOR__)MD");
         const ImTextureID detach_icon = get_toolbar_icon_texture("detach.png");
         const ImTextureID show_icon = get_toolbar_icon_texture(drawings_visible ? "hide.png" : "show.png");
         const ImTextureID grid_icon = get_toolbar_icon_texture(grid_visible ? "hide-grid.png" : "show-grid.png");
-        auto mode_button = [&](const char *id, ImTextureID icon, const char *fallback, const char *tooltip, bool active) -> bool {
+        const ImVec2 sz_mouse = icon_sz("cursor.png");
+        const ImVec2 sz_draw = icon_sz("pencil.png");
+        const ImVec2 sz_erase = icon_sz("erase.png");
+        const ImVec2 sz_clear = icon_sz("delete-bin.png");
+        const ImVec2 sz_reset = icon_sz("focus.png");
+        const ImVec2 sz_lock = icon_sz(layout_locked_ ? "unlock.png" : "lock.png");
+        const ImVec2 sz_detach = icon_sz("detach.png");
+        const ImVec2 sz_show = icon_sz(drawings_visible ? "hide.png" : "show.png");
+        const ImVec2 sz_grid = icon_sz(grid_visible ? "hide-grid.png" : "show-grid.png");
+        auto mode_button = [&](const char *id, ImTextureID icon, ImVec2 disp_sz, const char *fallback, const char *tooltip, bool active) -> bool {
           if(active)
           {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.47f, 0.49f, 0.53f, 1.0f));
@@ -4918,7 +4971,7 @@ __CURSOR__)MD");
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.63f, 0.65f, 0.69f, 1.0f));
           }
           const bool pressed = icon
-                                   ? ImGui::ImageButton(id, icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                                   ? ImGui::ImageButton(id, icon, disp_sz, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                                    : ImGui::Button(fallback);
           if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           {
@@ -4929,7 +4982,7 @@ __CURSOR__)MD");
         };
 
         const bool mouse_mode = !draw_mode && !erase_mode;
-        if(mode_button("##mode_mouse_icon", mouse_icon, "Mouse", "Mouse", mouse_mode))
+        if(mode_button("##mode_mouse_icon", mouse_icon, sz_mouse, "Mouse", "Mouse", mouse_mode))
         {
           draw_mode = false;
           erase_mode = false;
@@ -4940,6 +4993,7 @@ __CURSOR__)MD");
         const bool draw_button_pressed = mode_button(
             "##mode_draw_icon",
             draw_icon,
+            sz_draw,
             "Draw",
             "Draw (right click for color)",
             draw_mode);
@@ -4980,7 +5034,7 @@ __CURSOR__)MD");
         }
 
         ImGui::SameLine();
-        if(mode_button("##mode_erase_icon", erase_icon, Lang::t("Erase"), Lang::t("Erase"), erase_mode))
+        if(mode_button("##mode_erase_icon", erase_icon, sz_erase, Lang::t("Erase"), Lang::t("Erase"), erase_mode))
         {
           erase_mode = true;
           draw_mode = false;
@@ -4988,7 +5042,7 @@ __CURSOR__)MD");
         }
         ImGui::SameLine();
         if((clear_icon
-                ? ImGui::ImageButton("##clear_draw_icon", clear_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                ? ImGui::ImageButton("##clear_draw_icon", clear_icon, sz_clear, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                 : ImGui::Button(Lang::t("Clear drawing"))))
         {
           push_draw_snapshot(f.name);
@@ -5000,7 +5054,7 @@ __CURSOR__)MD");
         ImGui::EndDisabled();
         ImGui::SameLine();
         if(show_icon
-               ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, sz_show, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                : ImGui::Button(drawings_visible ? Lang::t("Hide") : Lang::t("Show")))
         {
           drawings_visible = !drawings_visible;
@@ -5016,7 +5070,7 @@ __CURSOR__)MD");
           topbar_tooltip_text = drawings_visible ? Lang::t("Hide drawings") : Lang::t("Show drawings");
         ImGui::SameLine();
         if(grid_icon
-               ? ImGui::ImageButton("##toggle_grid_visibility_icon", grid_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               ? ImGui::ImageButton("##toggle_grid_visibility_icon", grid_icon, sz_grid, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                : ImGui::Button(grid_visible ? Lang::t("Hide grid") : Lang::t("Show grid")))
         {
           grid_visible = !grid_visible;
@@ -5030,7 +5084,7 @@ __CURSOR__)MD");
         }
         ImGui::SameLine();
         if(lock_icon
-               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, sz_lock, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                : ImGui::Button(layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving")))
         {
           push_sidebar_snapshot();
@@ -5041,7 +5095,7 @@ __CURSOR__)MD");
           topbar_tooltip_text = layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving");
         ImGui::SameLine();
         if((reset_icon
-                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
+                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, sz_reset, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
                 : ImGui::Button(Lang::t("Reset positions"))) &&
            !f.notes.empty())
         {
@@ -5054,6 +5108,7 @@ __CURSOR__)MD");
         if(mode_button(
                "##toggle_detach_note_windows_icon",
                detach_icon,
+               sz_detach,
                Lang::t("Detach"),
                detached_note_windows_enabled_
                    ? Lang::t("Detach_enabled")
@@ -5090,10 +5145,12 @@ __CURSOR__)MD");
         const char *lang_flag_file = (lang_info && !lang_info->flag_icon.empty()) ? lang_info->flag_icon.c_str() : "";
         const char *lang_short = (lang_info && !lang_info->short_code.empty()) ? lang_info->short_code.c_str() : "EN";
         const ImTextureID lang_flag_tex = (*lang_flag_file) ? get_toolbar_icon_texture(lang_flag_file) : static_cast<ImTextureID>(0);
-        constexpr float flag_w = 20.0f;
-        constexpr float flag_h = 13.0f;
-        const float lang_btn_w = lang_flag_tex ? (flag_w + 6.0f) : (ImGui::CalcTextSize(lang_short).x + 10.0f);
-        const float lang_btn_h = lang_flag_tex ? (flag_h + 6.0f) : 18.0f;
+        // Compute display size preserving the image aspect ratio at kIconH.
+        const ImVec2 lang_flag_display = lang_flag_tex ? icon_sz(lang_flag_file) : ImVec2(0, 0);
+        const float frame_pad_x = ImGui::GetStyle().FramePadding.x;
+        const float frame_pad_y = ImGui::GetStyle().FramePadding.y;
+        const float lang_btn_w = lang_flag_tex ? (lang_flag_display.x + 2.0f * frame_pad_x) : (ImGui::CalcTextSize(lang_short).x + 10.0f);
+        const float lang_btn_h = lang_flag_tex ? (lang_flag_display.y + 2.0f * frame_pad_y) : 18.0f;
         constexpr float gap = 6.0f;
         const float lang_x = ImGui::GetWindowWidth() - ver_sz.x - right_margin - gap - lang_btn_w;
         ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
@@ -5102,7 +5159,7 @@ __CURSOR__)MD");
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.22f));
         bool lang_clicked = false;
         if(lang_flag_tex)
-          lang_clicked = ImGui::ImageButton("##lang_btn", lang_flag_tex, ImVec2(flag_w, flag_h), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.88f));
+          lang_clicked = ImGui::ImageButton("##lang_btn", lang_flag_tex, lang_flag_display, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.88f));
         else
           lang_clicked = ImGui::SmallButton(lang_short);
         ImGui::PopStyleColor(3);
@@ -5110,7 +5167,7 @@ __CURSOR__)MD");
           ImGui::SetTooltip("%s", Lang::t("Language"));
         if(lang_clicked) ImGui::OpenPopup("##lang_select");
         const ImVec2 lang_btn_br = ImGui::GetItemRectMax();
-        ImGui::SetNextWindowPos(ImVec2(lang_btn_br.x - 120.0f, lang_btn_br.y + 2.0f));
+        ImGui::SetNextWindowPos(ImVec2(lang_btn_br.x - 140.0f, lang_btn_br.y + 2.0f));
         if(ImGui::BeginPopup("##lang_select"))
         {
           for(const auto &lang : Lang::languages())
@@ -5120,7 +5177,7 @@ __CURSOR__)MD");
             ImGui::PushID(lang.code.c_str());
             if(ftex)
             {
-              ImGui::Image(ftex, ImVec2(flag_w, flag_h));
+              ImGui::Image(ftex, icon_sz(lang.flag_icon.c_str()));
               ImGui::SameLine();
             }
             if(ImGui::MenuItem(lang.name.c_str(), nullptr, selected))
@@ -5138,7 +5195,7 @@ __CURSOR__)MD");
 
         // Version label
         ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ver_sz.x - right_margin, (bar_h - ver_sz.y) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.65f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::TextUnformatted(ver);
         ImGui::PopStyleColor();
       }
@@ -5655,7 +5712,8 @@ __CURSOR__)MD");
             ImGui::PushFont(note_font);
             MarkdownView::set_fonts(note_font, font_italic_, font_bold_);
           }
-          else note_font = nullptr;
+          else
+            note_font = nullptr;
         }
       }
 
