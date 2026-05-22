@@ -21,5 +21,7 @@ ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, 
 NoteTheme make_note_theme(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style);
 int push_folder_imgui_theme(const NoteTheme &nt, const ImGuiStyle &style);
 ImTextureID get_toolbar_icon_texture(std::string_view icon_name);
+// Returns the original pixel size of the icon, or {0,0} if not loaded.
+ImVec2 get_toolbar_icon_size(std::string_view icon_name);
 void clear_toolbar_icon_cache();
 } // namespace NoteUi

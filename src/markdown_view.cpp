@@ -956,6 +956,7 @@ struct MyMarkdown : public imgui_md
   static constexpr float k_inline_spacing = 12.0f;
   static constexpr float k_inline_max_h  = 48.0f;
   static constexpr float k_row_gap       =  6.0f;
+  static constexpr float k_paragraph_gap =  5.0f;
 
   void SPAN_IMG(const MD_SPAN_IMG_DETAIL *d, bool e) override
   {
@@ -1129,7 +1130,7 @@ struct MyMarkdown : public imgui_md
       }
       else
       {
-        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        ImGui::Dummy(ImVec2(0.0f, k_paragraph_gap));
       }
     }
   }
@@ -1139,7 +1140,7 @@ struct MyMarkdown : public imgui_md
     // When the previous item was a small inline image, keep the cursor inline
     // so badge rows separated by single newlines flow horizontally.
     if(m_last_item_was_image) return;
-    compact_newline(4.0f);
+    compact_newline(2.0f);
   }
 
   ImFont *get_font() const override

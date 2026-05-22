@@ -68,6 +68,7 @@ set(NOTEPP_SOURCES
   src/main.cpp
   src/app.cpp
   src/emoji_picker.cpp
+  src/lang.cpp
   src/markdown_sections.cpp
   src/markdown_view.cpp
   src/undo_redo.cpp

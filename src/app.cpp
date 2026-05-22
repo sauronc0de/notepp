@@ -3,6 +3,7 @@
 #include "imgui_freetype.h"
 #endif
 #include "demo_note_content.hpp"
+#include "lang.hpp"
 #include "helpers.hpp"
 #if USE_PORTABLE_PATHS
 #include "project_manager.hpp"
@@ -70,6 +71,7 @@ using NoteCore::sanitize_note_filename;
 using NoteUi::clear_toolbar_icon_cache;
 using NoteUi::folder_accent_color;
 using NoteUi::get_toolbar_icon_texture;
+using NoteUi::get_toolbar_icon_size;
 using NoteUi::make_note_theme;
 using NoteUi::mix_color;
 using NoteUi::push_folder_imgui_theme;
@@ -577,6 +579,8 @@ App::App(AppConfig config)
 
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
+
+  Lang::init(config_.assetsPath / "languages");
 }
 
 #if USE_PORTABLE_PATHS
@@ -834,6 +838,8 @@ void App::load_state()
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
     layout_locked_ = json_find_bool(doc, "layout_locked", false);
     detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", true);
+    const std::string saved_lang = json_find_string(doc, "language");
+    if(!saved_lang.empty()) Lang::set_language(saved_lang);
 
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
@@ -1005,6 +1011,7 @@ void App::save_index() const
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
   out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
   out << "  \"detached_note_windows\": " << (detached_note_windows_enabled_ ? "true" : "false") << ",\n";
+  out << "  \"language\": \"" << json_escape(Lang::current_language_code()) << "\",\n";
   out << "  \"folders\": [\n";
   for(size_t fi = 0; fi < folders_.size(); ++fi)
   {
@@ -2338,7 +2345,7 @@ void App::frame_ui()
     const float right_margin = ImGui::GetStyle().WindowPadding.x;
     const ImTextureID refresh_icon = get_toolbar_icon_texture("refresh.png");
     ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Explorer");
+    ImGui::TextUnformatted(Lang::t("Explorer"));
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz - right_margin);
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
@@ -2352,7 +2359,7 @@ void App::frame_ui()
     }
     ImGui::PopStyleColor(3);
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-      ImGui::SetTooltip("Refresh: detect new files in the project folder");
+      ImGui::SetTooltip("%s", Lang::t("refresh_tooltip"));
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -2717,7 +2724,7 @@ void App::frame_ui()
     ImGui::SetNextWindowSize(ImVec2(680.0f, 480.0f), placement_cond);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond, ImVec2(0.5f, 0.5f));
     if(search_dialog.just_opened) ImGui::SetNextWindowFocus();
-    if(!ImGui::Begin("Search", &search_dialog.visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+    if(!ImGui::Begin(Lang::t("Search"), &search_dialog.visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
     {
       search_dialog.just_opened = false;
       ImGui::End();
@@ -2757,11 +2764,11 @@ void App::frame_ui()
     ImGui::BeginChild("##search_results", ImVec2(620.0f, 360.0f), true);
     if(NoteCore::trim(current_query).empty())
     {
-      ImGui::TextDisabled("Type to search.");
+      ImGui::TextDisabled("%s", Lang::t("Type to search."));
     }
     else if(search_dialog.results.empty())
     {
-      ImGui::TextDisabled("No matches found.");
+      ImGui::TextDisabled("%s", Lang::t("No matches found."));
     }
     else
     {
@@ -2850,17 +2857,17 @@ void App::frame_ui()
   }
   if(open_project_picker_popup)
   {
-    ImGui::OpenPopup("Open Project");
+    ImGui::OpenPopup(Lang::t("Open Project"));
     open_project_picker_popup = false;
   }
-  if(ImGui::BeginPopupModal("Open Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+  if(ImGui::BeginPopupModal(Lang::t("Open Project"), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
   {
     std::filesystem::path selected_root;
-    ImGui::TextUnformatted("Recent projects:");
+    ImGui::TextUnformatted(Lang::t("Recent projects:"));
     ImGui::Spacing();
     if(recent_projects_cache.empty())
     {
-      ImGui::TextDisabled("  (none)");
+      ImGui::TextDisabled("  %s", Lang::t("(none)"));
     }
     else
     {
@@ -2886,7 +2893,7 @@ void App::frame_ui()
       ImGui::EndChild();
     }
     ImGui::Spacing();
-    if(ImGui::Button("Browse..."))
+    if(ImGui::Button(Lang::t("Browse...")))
     {
       ImGui::CloseCurrentPopup();
       auto picked = notepp::project::select_project_folder();
@@ -2894,7 +2901,7 @@ void App::frame_ui()
         selected_root = *picked;
     }
     ImGui::SameLine();
-    if(ImGui::Button("Cancel"))
+    if(ImGui::Button(Lang::t("Cancel")))
       ImGui::CloseCurrentPopup();
     if(!selected_root.empty())
     {
@@ -2944,7 +2951,7 @@ void App::frame_ui()
   if(ImGui::BeginPopup("New Folder"))
   {
     ImGui::SetNextItemWidth(200.0f);
-    if(ImGui::InputText("Name", new_folder_buf, sizeof(new_folder_buf),
+    if(ImGui::InputText(Lang::t("Name"), new_folder_buf, sizeof(new_folder_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       perform_workspace_change("Create folder", [&]() {
@@ -2992,7 +2999,7 @@ void App::frame_ui()
       ImGui::SetKeyboardFocusHere();
       focus_new_note_input = false;
     }
-    if(ImGui::InputText("Title", new_note_buf, sizeof(new_note_buf),
+    if(ImGui::InputText(Lang::t("Title"), new_note_buf, sizeof(new_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       perform_workspace_change("Create note", [&]() {
@@ -3023,7 +3030,7 @@ void App::frame_ui()
   if(ImGui::BeginPopup("Rename Note Sidebar"))
   {
     ImGui::SetNextItemWidth(240.0f);
-    if(ImGui::InputText("Name", rename_note_buf, sizeof(rename_note_buf),
+    if(ImGui::InputText(Lang::t("Name"), rename_note_buf, sizeof(rename_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       if(rename_note_folder_idx >= 0 && rename_note_idx >= 0)
@@ -3049,7 +3056,7 @@ void App::frame_ui()
   if(ImGui::BeginPopup("Rename Folder Sidebar"))
   {
     ImGui::SetNextItemWidth(240.0f);
-    if(ImGui::InputText("Name", rename_folder_buf, sizeof(rename_folder_buf),
+    if(ImGui::InputText(Lang::t("Name"), rename_folder_buf, sizeof(rename_folder_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       if(rename_folder_idx >= 0 && rename_folder_idx < (int)folders_.size())
@@ -3123,13 +3130,13 @@ void App::frame_ui()
       {
         NoteMeta &cn = cf.notes[(size_t)color_note_idx];
         bool changed = false;
-        if(ImGui::Checkbox("Use default", &note_color_use_default))
+        if(ImGui::Checkbox(Lang::t("Use default"), &note_color_use_default))
         {
           changed = true;
         }
         if(!note_color_use_default)
         {
-          if(ImGui::ColorEdit3("Color", note_color_buf, ImGuiColorEditFlags_NoInputs))
+          if(ImGui::ColorEdit3(Lang::t("Color"), note_color_buf, ImGuiColorEditFlags_NoInputs))
           {
             changed = true;
           }
@@ -3156,7 +3163,7 @@ void App::frame_ui()
   if(ImGui::BeginPopup("Paste Note"))
   {
     ImGui::SetNextItemWidth(240.0f);
-    if(ImGui::InputText("Name", paste_note_buf, sizeof(paste_note_buf),
+    if(ImGui::InputText(Lang::t("Name"), paste_note_buf, sizeof(paste_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
       pending_paste_note_folder_idx = std::max(0, paste_target_folder_idx);
@@ -3167,36 +3174,36 @@ void App::frame_ui()
 
   if(ImGui::BeginPopupContextWindow("ExplorerContext", ImGuiPopupFlags_NoOpenOverItems | ImGuiPopupFlags_MouseButtonRight))
   {
-    if(ImGui::MenuItem("Reveal in File Explorer"))
+    if(ImGui::MenuItem(Lang::t("Reveal in File Explorer")))
       open_directory(config_.dataPath);
     ImGui::Separator();
 #if USE_PORTABLE_PATHS
-    if(ImGui::MenuItem("Open project..."))
+    if(ImGui::MenuItem(Lang::t("Open project...")))
       request_open_project_ = true;
     ImGui::Separator();
 #endif
-    if(ImGui::MenuItem("Find in project..."))
+    if(ImGui::MenuItem(Lang::t("Find in project...")))
     {
       request_open_project_search_ = true;
     }
-    if(ImGui::MenuItem("New folder"))
+    if(ImGui::MenuItem(Lang::t("New folder")))
     {
       open_new_folder_popup = true;
       new_folder_parent_idx = -1;
     }
-    if(ImGui::MenuItem("New note"))
+    if(ImGui::MenuItem(Lang::t("New note")))
     {
       open_new_note_popup = true;
       new_note_target_folder_idx = active_folder_idx_;
     }
-    if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+    if(ImGui::MenuItem(Lang::t("Paste note"), nullptr, false, g_has_copied_note))
     {
       paste_target_folder_idx = active_folder_idx_;
       std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
       open_paste_note_popup = true;
     }
     ImGui::Separator();
-    if(ImGui::MenuItem("Demo"))
+    if(ImGui::MenuItem(Lang::t("Demo")))
       open_or_create_readme();
     ImGui::EndPopup();
   }
@@ -3477,29 +3484,29 @@ void App::frame_ui()
     const std::string folder_popup_id = "FolderCtx##" + std::to_string(fi);
     if(ImGui::BeginPopupContextItem(folder_popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
     {
-      if(ImGui::MenuItem("New note"))
+      if(ImGui::MenuItem(Lang::t("New note")))
       {
         new_note_target_folder_idx = fi;
         open_new_note_popup = true;
       }
-      if(ImGui::MenuItem("New folder"))
+      if(ImGui::MenuItem(Lang::t("New folder")))
       {
         open_new_folder_popup = true;
         new_folder_parent_idx = fi;
       }
-      if(ImGui::MenuItem("Rename folder"))
+      if(ImGui::MenuItem(Lang::t("Rename")))
       {
         rename_folder_idx = fi;
         std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s", folder_base_name(f.name).c_str());
         open_rename_folder_popup = true;
       }
-      if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+      if(ImGui::MenuItem(Lang::t("Paste note"), nullptr, false, g_has_copied_note))
       {
         paste_target_folder_idx = fi;
         std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
         open_paste_note_popup = true;
       }
-      if(ImGui::MenuItem("Remove folder"))
+      if(ImGui::MenuItem(Lang::t("Delete")))
       {
         pending_delete_folder_idx = fi;
       }
@@ -3643,14 +3650,14 @@ void App::frame_ui()
               (fi == active_folder_idx_) &&
               selected_note_indices.count(ni) != 0 &&
               selected_note_indices.size() > 1;
-          if(ImGui::MenuItem("Canvia nom"))
+          if(ImGui::MenuItem(Lang::t("Rename")))
           {
             rename_note_folder_idx = fi;
             rename_note_idx = ni;
             std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
             open_rename_note_popup = true;
           }
-          if(ImGui::MenuItem("Edita aquesta nota"))
+          if(ImGui::MenuItem(Lang::t("Edit note")))
           {
             save_state();
             active_folder_idx_ = fi;
@@ -3661,7 +3668,7 @@ void App::frame_ui()
             force_open_folder_idx = fi;
             save_index();
           }
-          if(ImGui::MenuItem("Set note color..."))
+          if(ImGui::MenuItem(Lang::t("Set note color...")))
           {
             color_note_folder_idx = fi;
             color_note_idx = ni;
@@ -3671,14 +3678,14 @@ void App::frame_ui()
             note_color_buf[2] = n.color_b;
             open_note_color_popup = true;
           }
-          if(ImGui::MenuItem("Reset note color", nullptr, false, n.use_custom_color))
+          if(ImGui::MenuItem(Lang::t("Reset note color"), nullptr, false, n.use_custom_color))
           {
             push_sidebar_snapshot();
             n.use_custom_color = false;
             flash_mark_note(n.path, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
             save_index();
           }
-          if(ImGui::MenuItem(multi_selected_here ? "Copy selected notes" : "Copy note"))
+          if(ImGui::MenuItem(multi_selected_here ? Lang::t("Copy selected notes") : Lang::t("Copy note")))
           {
             std::vector<int> to_copy;
             if(multi_selected_here)
@@ -3692,18 +3699,18 @@ void App::frame_ui()
             }
             copy_notes_to_internal_clipboard(fi, to_copy);
           }
-          if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+          if(ImGui::MenuItem(Lang::t("Paste note"), nullptr, false, g_has_copied_note))
           {
             paste_target_folder_idx = fi;
             std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
             open_paste_note_popup = true;
           }
-          if(ImGui::MenuItem("New note"))
+          if(ImGui::MenuItem(Lang::t("New note")))
           {
             new_note_target_folder_idx = fi;
             open_new_note_popup = true;
           }
-          if(ImGui::MenuItem(multi_selected_here ? "Remove selected notes" : "Elimina nota"))
+          if(ImGui::MenuItem(multi_selected_here ? Lang::t("Remove selected notes") : Lang::t("Remove note")))
           {
             pending_delete_note_folder_idx = fi;
             pending_delete_note_indices.clear();
@@ -3807,10 +3814,10 @@ void App::frame_ui()
           if(ImGui::BeginPopupContextItem(img_ctx_id.c_str(),
                                           ImGuiPopupFlags_MouseButtonRight))
           {
-            if(ImGui::MenuItem("Reveal in File Explorer"))
+            if(ImGui::MenuItem(Lang::t("Reveal in File Explorer")))
               reveal_in_file_explorer(img.path);
             ImGui::Separator();
-            if(ImGui::MenuItem("Delete image"))
+            if(ImGui::MenuItem(Lang::t("Delete image")))
             {
               const std::string img_path = img.path;
               std::error_code img_ec;
@@ -3872,7 +3879,7 @@ void App::frame_ui()
           {
             ImGui::BeginTooltip();
             ImGui::TextUnformatted(fnt.name.c_str());
-            ImGui::TextDisabled("Drag onto a note to set its font");
+            ImGui::TextDisabled("%s", Lang::t("Drag to set font"));
             ImGui::EndTooltip();
           }
 
@@ -3882,7 +3889,7 @@ void App::frame_ui()
             ImGui::SetDragDropPayload("NOTEPP_FONT_SET",
                                       fnt.path.c_str(), fnt.path.size() + 1);
             ImGui::TextUnformatted(fnt.name.c_str());
-            ImGui::TextDisabled("Drop on note to set font");
+            ImGui::TextDisabled("%s", Lang::t("Drop to set font"));
             ImGui::EndDragDropSource();
           }
 
@@ -3892,7 +3899,7 @@ void App::frame_ui()
           if(ImGui::BeginPopupContextItem(fnt_ctx_id.c_str(),
                                           ImGuiPopupFlags_MouseButtonRight))
           {
-            if(ImGui::MenuItem("Reveal in File Explorer"))
+            if(ImGui::MenuItem(Lang::t("Reveal in File Explorer")))
               reveal_in_file_explorer(fnt.path);
             ImGui::EndPopup();
           }
@@ -4800,15 +4807,15 @@ __CURSOR__)MD");
         if(request_open_inventory_builder) ImGui::OpenPopup("##tb_inventory_builder_popup");
         if(ImGui::BeginPopupModal("##tb_table_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
-          ImGui::TextDisabled("Insert Markdown Table");
+          ImGui::TextDisabled("%s", Lang::t("Insert Markdown Table"));
           ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt("Rows", &table_builder_rows);
+          ImGui::InputInt(Lang::t("Rows"), &table_builder_rows);
           ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt("Cols", &table_builder_cols);
+          ImGui::InputInt(Lang::t("Cols"), &table_builder_cols);
           table_builder_rows = std::max(1, table_builder_rows);
           table_builder_cols = std::max(1, table_builder_cols);
           ImGui::TextDisabled("Cells: %d", table_builder_rows * table_builder_cols);
-          if(ImGui::Button("Insert"))
+          if(ImGui::Button(Lang::t("Insert")))
           {
             push_undo_snapshot();
             insert_markdown_table_at_cursor(markdown_text_, fmt_folder, table_builder_rows, table_builder_cols);
@@ -4817,28 +4824,28 @@ __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
-          if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
           ImGui::EndPopup();
         }
         if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
-          ImGui::TextDisabled("Insert Inventory Widget");
+          ImGui::TextDisabled("%s", Lang::t("Insert Inventory Widget"));
           ImGui::SetNextItemWidth(260.0f);
-          ImGui::InputText("Title", inventory_builder_title, sizeof(inventory_builder_title));
+          ImGui::InputText(Lang::t("Title"), inventory_builder_title, sizeof(inventory_builder_title));
           ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt("Rows", &inventory_builder_rows);
+          ImGui::InputInt(Lang::t("Rows"), &inventory_builder_rows);
           ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt("Cols", &inventory_builder_cols);
+          ImGui::InputInt(Lang::t("Cols"), &inventory_builder_cols);
           inventory_builder_rows = std::max(1, inventory_builder_rows);
           inventory_builder_cols = std::max(1, inventory_builder_cols);
           ImGui::TextDisabled("Slots: %d", inventory_builder_rows * inventory_builder_cols);
-          if(ImGui::Button("Insert"))
+          if(ImGui::Button(Lang::t("Insert")))
           {
             insert_topbar_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols));
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
-          if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
           ImGui::EndPopup();
         }
         ImGui::SameLine();
@@ -4949,7 +4956,7 @@ __CURSOR__)MD");
 
         if(ImGui::BeginPopup("##draw_color_popup"))
         {
-          ImGui::TextDisabled("Draw color");
+          ImGui::TextDisabled("%s", Lang::t("Draw color"));
           ImGui::Separator();
           ImGui::ColorEdit3("##draw_color_popup_value", (float *)&draw_color, ImGuiColorEditFlags_NoInputs);
           const ImVec4 presets[] = {
@@ -4973,7 +4980,7 @@ __CURSOR__)MD");
         }
 
         ImGui::SameLine();
-        if(mode_button("##mode_erase_icon", erase_icon, "Erase", "Erase", erase_mode))
+        if(mode_button("##mode_erase_icon", erase_icon, Lang::t("Erase"), Lang::t("Erase"), erase_mode))
         {
           erase_mode = true;
           draw_mode = false;
@@ -4982,19 +4989,19 @@ __CURSOR__)MD");
         ImGui::SameLine();
         if((clear_icon
                 ? ImGui::ImageButton("##clear_draw_icon", clear_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                : ImGui::Button("Clear drawing")))
+                : ImGui::Button(Lang::t("Clear drawing"))))
         {
           push_draw_snapshot(f.name);
           g_folder_drawings[f.name].clear();
           stroke_in_progress = false;
           g_drawings_dirty = true;
         }
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Clear drawing";
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = Lang::t("Clear drawing");
         ImGui::EndDisabled();
         ImGui::SameLine();
         if(show_icon
                ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(drawings_visible ? "Hide draw" : "Show draw"))
+               : ImGui::Button(drawings_visible ? Lang::t("Hide") : Lang::t("Show")))
         {
           drawings_visible = !drawings_visible;
           stroke_in_progress = false;
@@ -5006,16 +5013,16 @@ __CURSOR__)MD");
           }
         }
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          topbar_tooltip_text = drawings_visible ? "Hide drawings" : "Show drawings";
+          topbar_tooltip_text = drawings_visible ? Lang::t("Hide drawings") : Lang::t("Show drawings");
         ImGui::SameLine();
         if(grid_icon
                ? ImGui::ImageButton("##toggle_grid_visibility_icon", grid_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(grid_visible ? "Hide grid" : "Show grid"))
+               : ImGui::Button(grid_visible ? Lang::t("Hide grid") : Lang::t("Show grid")))
         {
           grid_visible = !grid_visible;
         }
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          topbar_tooltip_text = grid_visible ? "Hide grid" : "Show grid";
+          topbar_tooltip_text = grid_visible ? Lang::t("Hide grid") : Lang::t("Show grid");
         ImGui::SameLine();
         {
           const float icon_slot_w = 16.0f + ImGui::GetStyle().ItemSpacing.x;
@@ -5024,33 +5031,33 @@ __CURSOR__)MD");
         ImGui::SameLine();
         if(lock_icon
                ? ImGui::ImageButton("##lock_layout_icon", lock_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(layout_locked_ ? "Unlock" : "Lock"))
+               : ImGui::Button(layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving")))
         {
           push_sidebar_snapshot();
           layout_locked_ = !layout_locked_;
           save_index();
         }
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          topbar_tooltip_text = layout_locked_ ? "Unlock note moving" : "Lock note moving";
+          topbar_tooltip_text = layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving");
         ImGui::SameLine();
         if((reset_icon
                 ? ImGui::ImageButton("##reset_positions_icon", reset_icon, ImVec2(16.0f, 16.0f), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                : ImGui::Button("Reset pos")) &&
+                : ImGui::Button(Lang::t("Reset positions"))) &&
            !f.notes.empty())
         {
           push_selection_snapshot();
           reset_note_positions();
         }
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = "Reset positions";
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = Lang::t("Reset positions");
         ImGui::SameLine();
 
         if(mode_button(
                "##toggle_detach_note_windows_icon",
                detach_icon,
-               "Detach",
+               Lang::t("Detach"),
                detached_note_windows_enabled_
-                   ? "Detach notes outside app window (enabled)"
-                   : "Detach notes outside app window (disabled)",
+                   ? Lang::t("Detach_enabled")
+                   : Lang::t("Detach_disabled"),
                detached_note_windows_enabled_))
         {
           push_sidebar_snapshot();
@@ -5077,6 +5084,59 @@ __CURSOR__)MD");
         const char *ver = "v" NOTEPP_VERSION;
         const ImVec2 ver_sz = ImGui::CalcTextSize(ver);
         const float right_margin = ImGui::GetStyle().WindowPadding.x;
+
+        // Language selector button (left of version)
+        const Lang::LanguageInfo *lang_info = Lang::current_language();
+        const char *lang_flag_file = (lang_info && !lang_info->flag_icon.empty()) ? lang_info->flag_icon.c_str() : "";
+        const char *lang_short = (lang_info && !lang_info->short_code.empty()) ? lang_info->short_code.c_str() : "EN";
+        const ImTextureID lang_flag_tex = (*lang_flag_file) ? get_toolbar_icon_texture(lang_flag_file) : static_cast<ImTextureID>(0);
+        constexpr float flag_w = 20.0f;
+        constexpr float flag_h = 13.0f;
+        const float lang_btn_w = lang_flag_tex ? (flag_w + 6.0f) : (ImGui::CalcTextSize(lang_short).x + 10.0f);
+        const float lang_btn_h = lang_flag_tex ? (flag_h + 6.0f) : 18.0f;
+        constexpr float gap = 6.0f;
+        const float lang_x = ImGui::GetWindowWidth() - ver_sz.x - right_margin - gap - lang_btn_w;
+        ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.22f));
+        bool lang_clicked = false;
+        if(lang_flag_tex)
+          lang_clicked = ImGui::ImageButton("##lang_btn", lang_flag_tex, ImVec2(flag_w, flag_h), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.88f));
+        else
+          lang_clicked = ImGui::SmallButton(lang_short);
+        ImGui::PopStyleColor(3);
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("%s", Lang::t("Language"));
+        if(lang_clicked) ImGui::OpenPopup("##lang_select");
+        const ImVec2 lang_btn_br = ImGui::GetItemRectMax();
+        ImGui::SetNextWindowPos(ImVec2(lang_btn_br.x - 120.0f, lang_btn_br.y + 2.0f));
+        if(ImGui::BeginPopup("##lang_select"))
+        {
+          for(const auto &lang : Lang::languages())
+          {
+            const bool selected = (lang.code == Lang::current_language_code());
+            const ImTextureID ftex = lang.flag_icon.empty() ? static_cast<ImTextureID>(0) : get_toolbar_icon_texture(lang.flag_icon);
+            ImGui::PushID(lang.code.c_str());
+            if(ftex)
+            {
+              ImGui::Image(ftex, ImVec2(flag_w, flag_h));
+              ImGui::SameLine();
+            }
+            if(ImGui::MenuItem(lang.name.c_str(), nullptr, selected))
+            {
+              if(lang.code != Lang::current_language_code())
+              {
+                Lang::set_language(lang.code);
+                save_index();
+              }
+            }
+            ImGui::PopID();
+          }
+          ImGui::EndPopup();
+        }
+
+        // Version label
         ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ver_sz.x - right_margin, (bar_h - ver_sz.y) * 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.58f, 0.65f, 1.0f));
         ImGui::TextUnformatted(ver);
@@ -5425,12 +5485,12 @@ __CURSOR__)MD");
     }
     if(ImGui::BeginPopup("##notes_bg_ctx"))
     {
-      if(ImGui::MenuItem("New note"))
+      if(ImGui::MenuItem(Lang::t("New note")))
       {
         new_note_target_folder_idx = active_folder_idx_;
         open_new_note_popup = true;
       }
-      if(ImGui::MenuItem("Paste note", nullptr, false, g_has_copied_note))
+      if(ImGui::MenuItem(Lang::t("Paste note"), nullptr, false, g_has_copied_note))
       {
         paste_target_folder_idx = active_folder_idx_;
         std::snprintf(paste_note_buf, sizeof(paste_note_buf), "%s", g_copied_note_title.c_str());
@@ -5509,7 +5569,7 @@ __CURSOR__)MD");
       }
       ImGui::SetNextItemWidth(240.0f);
       if(ImGui::InputText(
-             "Name",
+             Lang::t("Name"),
              rename_win_buf,
              sizeof(rename_win_buf),
              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
@@ -5650,7 +5710,7 @@ __CURSOR__)MD");
           }
           copy_notes_to_internal_clipboard(active_folder_idx_, to_copy);
         }
-        if(ImGui::MenuItem("Rename"))
+        if(ImGui::MenuItem(Lang::t("Rename")))
         {
           rename_win_folder_idx = active_folder_idx_;
           rename_win_note_idx = ni;
@@ -5658,7 +5718,7 @@ __CURSOR__)MD");
           focus_rename_win_input = true;
           open_rename_win_popup = true;
         }
-        if(ImGui::MenuItem("Edit"))
+        if(ImGui::MenuItem(Lang::t("Edit")))
         {
           if(editing_mode_ && !is_editing_this)
           {
@@ -5679,7 +5739,7 @@ __CURSOR__)MD");
             save_index();
           }
         }
-        if(ImGui::MenuItem("Set note color..."))
+        if(ImGui::MenuItem(Lang::t("Set note color...")))
         {
           color_note_folder_idx = active_folder_idx_;
           color_note_idx = ni;
@@ -5689,14 +5749,14 @@ __CURSOR__)MD");
           note_color_buf[2] = n.color_b;
           open_note_color_popup = true;
         }
-        if(ImGui::MenuItem("Reset note color", nullptr, false, n.use_custom_color))
+        if(ImGui::MenuItem(Lang::t("Reset note color"), nullptr, false, n.use_custom_color))
         {
           push_sidebar_snapshot();
           n.use_custom_color = false;
           flash_mark_note(n.path, ImVec4(0.86f, 0.25f, 0.25f, 1.0f));
           save_index();
         }
-        if(ImGui::MenuItem(note_is_collapsed ? "Expand" : "Compact"))
+        if(ImGui::MenuItem(note_is_collapsed ? Lang::t("Expand") : Lang::t("Compact")))
         {
           ImGui::SetWindowCollapsed(window_id.c_str(), !note_is_collapsed, ImGuiCond_Always);
         }
@@ -5722,19 +5782,19 @@ __CURSOR__)MD");
 
           if(header_summary.has_headers && !header_summary.any_expanded)
           {
-            if(ImGui::MenuItem("Expand all")) apply_header_toggle(true);
+            if(ImGui::MenuItem(Lang::t("Expand all"))) apply_header_toggle(true);
           }
           else if(header_summary.has_headers && !header_summary.any_collapsed)
           {
-            if(ImGui::MenuItem("Collapse all")) apply_header_toggle(false);
+            if(ImGui::MenuItem(Lang::t("Collapse all"))) apply_header_toggle(false);
           }
           else if(header_summary.has_headers)
           {
-            if(ImGui::MenuItem("Expand all")) apply_header_toggle(true);
-            if(ImGui::MenuItem("Collapse all")) apply_header_toggle(false);
+            if(ImGui::MenuItem(Lang::t("Expand all"))) apply_header_toggle(true);
+            if(ImGui::MenuItem(Lang::t("Collapse all"))) apply_header_toggle(false);
           }
         }
-        if(!n.font_path.empty() && ImGui::MenuItem("Remove custom font"))
+        if(!n.font_path.empty() && ImGui::MenuItem(Lang::t("Remove custom font")))
         {
           n.font_path.clear();
           save_index();
@@ -5744,31 +5804,31 @@ __CURSOR__)MD");
           constexpr float kMinSize = 8.0f;
           constexpr float kMaxSize = 48.0f;
           const float cur = n.font_size > 0.0f ? n.font_size : kDefaultSize;
-          if(ImGui::MenuItem("Increase font size", nullptr, false, cur < kMaxSize))
+          if(ImGui::MenuItem(Lang::t("Increase font size"), nullptr, false, cur < kMaxSize))
           {
             const float next = std::min(kMaxSize, cur + 1.0f);
             n.font_size = (std::fabs(next - kDefaultSize) < 0.5f) ? 0.0f : next;
             save_index();
           }
-          if(ImGui::MenuItem("Decrease font size", nullptr, false, cur > kMinSize))
+          if(ImGui::MenuItem(Lang::t("Decrease font size"), nullptr, false, cur > kMinSize))
           {
             const float next = std::max(kMinSize, cur - 1.0f);
             n.font_size = (std::fabs(next - kDefaultSize) < 0.5f) ? 0.0f : next;
             save_index();
           }
-          if(n.font_size > 0.0f && ImGui::MenuItem("Reset font size"))
+          if(n.font_size > 0.0f && ImGui::MenuItem(Lang::t("Reset font size")))
           {
             n.font_size = 0.0f;
             save_index();
           }
         }
-        if(note_is_detached && ImGui::MenuItem("Pin above OS windows", nullptr, n.always_on_top))
+        if(note_is_detached && ImGui::MenuItem(Lang::t("Pin above OS windows"), nullptr, n.always_on_top))
         {
           push_sidebar_snapshot();
           n.always_on_top = !n.always_on_top;
           save_index();
         }
-        if(ImGui::MenuItem("Hide"))
+        if(ImGui::MenuItem(Lang::t("Hide")))
         {
           push_sidebar_snapshot();
           n.hidden = true;
@@ -5780,7 +5840,7 @@ __CURSOR__)MD");
           }
           save_index();
         }
-        if(ImGui::MenuItem(multi_selected_here ? "Remove selected notes" : "Remove note"))
+        if(ImGui::MenuItem(multi_selected_here ? Lang::t("Remove selected notes") : Lang::t("Remove note")))
         {
           pending_delete_note_folder_idx = active_folder_idx_;
           pending_delete_note_indices.clear();
@@ -5986,7 +6046,7 @@ __CURSOR__)MD");
       }
       if(!is_editing_this && ImGui::BeginPopup(body_popup_id.c_str()))
       {
-        if(ImGui::MenuItem("Copy all"))
+        if(ImGui::MenuItem(Lang::t("Copy all")))
         {
           ImGui::SetClipboardText(preview_text.c_str());
         }
@@ -6384,8 +6444,8 @@ __CURSOR__)MD");
         "Note###NoteWindowEmpty",
         nullptr,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("This folder has no notes.");
-    ImGui::TextUnformatted("Right click in Explorer or Notes background to create one.");
+    ImGui::TextUnformatted(Lang::t("This folder has no notes."));
+    ImGui::TextUnformatted(Lang::t("Right click to create a note."));
     ImGui::End();
 
     if(!deferred_sidebar_snapshot_before.empty())
@@ -6471,7 +6531,7 @@ __CURSOR__)MD");
   }
   if(ImGui::BeginPopup(active_note_actions_popup_id.c_str()))
   {
-    if(ImGui::MenuItem("Rename"))
+    if(ImGui::MenuItem(Lang::t("Rename")))
     {
       std::snprintf(rename_buf, sizeof(rename_buf), "%s", note_title_.c_str());
       open_rename_popup = true;
@@ -6497,7 +6557,7 @@ __CURSOR__)MD");
   }
   if(ImGui::BeginPopup("Rename Note"))
   {
-    ImGui::TextUnformatted("Nom de la finestra:");
+    ImGui::TextUnformatted(Lang::t("Name"));
     ImGui::SetNextItemWidth(260.0f);
     if(ImGui::InputText("##rename_note_title", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue))
     {
@@ -6764,28 +6824,28 @@ __CURSOR__)MD");
 
       bool applied = false;
 
-      if(ImGui::Button("Italic"))
+      if(ImGui::Button(Lang::t("Italic")))
       {
         push_undo_snapshot();
         apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
         applied = true;
       }
       ImGui::SameLine();
-      if(ImGui::Button("Bold"))
+      if(ImGui::Button(Lang::t("Bold")))
       {
         push_undo_snapshot();
         apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
         applied = true;
       }
       ImGui::SameLine();
-      if(ImGui::Button("Strike"))
+      if(ImGui::Button(Lang::t("Strike")))
       {
         push_undo_snapshot();
         apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
         applied = true;
       }
       ImGui::SameLine();
-      if(ImGui::Button("Note"))
+      if(ImGui::Button(Lang::t("Note_format")))
       {
         push_undo_snapshot();
         apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
@@ -6794,9 +6854,9 @@ __CURSOR__)MD");
 
       ImGui::Separator();
 
-      ImGui::ColorEdit3("Color", (float *)&fmt.color, ImGuiColorEditFlags_NoInputs);
+      ImGui::ColorEdit3(Lang::t("Color"), (float *)&fmt.color, ImGuiColorEditFlags_NoInputs);
       ImGui::SameLine();
-      if(ImGui::Button("Apply"))
+      if(ImGui::Button(Lang::t("Apply")))
       {
         push_undo_snapshot();
         const std::string hex = rgba_to_hex(fmt.color);

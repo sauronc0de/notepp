@@ -22,7 +22,13 @@ ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, 
 
 namespace
 {
-std::unordered_map<std::string, GLuint> g_toolbar_icon_cache;
+struct IconEntry
+{
+  GLuint tex = 0;
+  int w = 0;
+  int h = 0;
+};
+std::unordered_map<std::string, IconEntry> g_toolbar_icon_cache;
 } // namespace
 
 ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
@@ -97,13 +103,10 @@ int push_folder_imgui_theme(const NoteTheme &nt, const ImGuiStyle &style)
   return 20;
 }
 
-ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
+static const IconEntry *load_icon_entry(const std::string &key)
 {
-  if(icon_name.empty()) return static_cast<ImTextureID>(0);
-
-  const std::string key(icon_name);
   const auto it = g_toolbar_icon_cache.find(key);
-  if(it != g_toolbar_icon_cache.end()) return (ImTextureID)(uintptr_t)it->second;
+  if(it != g_toolbar_icon_cache.end()) return &it->second;
 
   static const bool img_ready = []() {
     IMG_Init(IMG_INIT_PNG);
@@ -113,18 +116,18 @@ ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
 
   const std::filesystem::path p = std::filesystem::path(ASSETS_PATH) / "icons" / key;
   SDL_Surface *loaded = IMG_Load(p.string().c_str());
-  if(!loaded) return static_cast<ImTextureID>(0);
+  if(!loaded) return nullptr;
 
   SDL_Surface *rgba = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
   SDL_FreeSurface(loaded);
-  if(!rgba) return static_cast<ImTextureID>(0);
+  if(!rgba) return nullptr;
 
   GLuint tex = 0;
   glGenTextures(1, &tex);
   if(tex == 0)
   {
     SDL_FreeSurface(rgba);
-    return static_cast<ImTextureID>(0);
+    return nullptr;
   }
 
   glBindTexture(GL_TEXTURE_2D, tex);
@@ -135,19 +138,40 @@ ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
   glBindTexture(GL_TEXTURE_2D, 0);
+
+  IconEntry entry;
+  entry.tex = tex;
+  entry.w = rgba->w;
+  entry.h = rgba->h;
   SDL_FreeSurface(rgba);
 
-  g_toolbar_icon_cache.emplace(key, tex);
-  return (ImTextureID)(uintptr_t)tex;
+  auto [ins, _ok] = g_toolbar_icon_cache.emplace(key, entry);
+  return &ins->second;
+}
+
+ImTextureID get_toolbar_icon_texture(std::string_view icon_name)
+{
+  if(icon_name.empty()) return static_cast<ImTextureID>(0);
+  const IconEntry *e = load_icon_entry(std::string(icon_name));
+  if(!e || e->tex == 0) return static_cast<ImTextureID>(0);
+  return (ImTextureID)(uintptr_t)e->tex;
+}
+
+ImVec2 get_toolbar_icon_size(std::string_view icon_name)
+{
+  if(icon_name.empty()) return ImVec2(0, 0);
+  const IconEntry *e = load_icon_entry(std::string(icon_name));
+  if(!e) return ImVec2(0, 0);
+  return ImVec2((float)e->w, (float)e->h);
 }
 
 void clear_toolbar_icon_cache()
 {
-  for(auto &[name, texture] : g_toolbar_icon_cache)
+  for(auto &[name, entry] : g_toolbar_icon_cache)
   {
     (void)name;
-    if(texture == 0) continue;
-    GLuint tex = texture;
+    if(entry.tex == 0) continue;
+    GLuint tex = entry.tex;
     glDeleteTextures(1, &tex);
   }
   g_toolbar_icon_cache.clear();
