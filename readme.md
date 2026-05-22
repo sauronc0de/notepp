@@ -36,6 +36,10 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
     - [Conditionals](#135-conditionals)
     - [Label Color Syntax](#136-label-color-syntax)
     - [Full Examples](#137-full-examples)
+14. [Mermaid Diagrams](#14-mermaid-diagrams)
+    - [Flowchart / Graph](#141-flowchart--graph)
+    - [Pie Chart](#142-pie-chart)
+    - [Recognized Types (Placeholder)](#143-recognized-types-placeholder)
 
 ---
 
@@ -803,6 +807,576 @@ if(role == "admin") {
 if(role == "guest") {
   text("[color=#888888]Read-only access[/color]")
 }
+```
+````
+
+---
+
+## 14. Mermaid Diagrams
+
+Embed diagrams in any note with a `mermaid` fenced code block, or use the diagram keyword directly as the fence language. All diagram types listed below are **fully rendered** as interactive graphics inside the note preview.
+
+````markdown
+```mermaid
+flowchart LR
+  A --> B --> C
+```
+````
+
+---
+
+### 14.1 Flowchart / Graph
+
+**Keywords:** `flowchart`, `graph`
+
+**Directions:** `TB` / `TD` (top-bottom, default) · `BT` · `LR` · `RL`
+
+**Node shapes:** `id[Label]` rectangle · `id(Label)` rounded · `id{Label}` diamond
+
+**Edge types:** `-->` arrow · `<-->` bidirectional · `<--` reverse · `-.->` dotted · `---` line · `==>` thick
+
+**Edge labels:** `A -->|text| B`
+
+````markdown
+```mermaid
+flowchart LR
+  A[Request] --> B{Authenticated?}
+  B -->|yes| C(Process)
+  B -->|no| D[Reject]
+  C --> E[Response]
+```
+````
+
+````markdown
+```mermaid
+graph LR
+  A --> B
+  B <--> C
+  C -.-> D
+  D --- E
+  E ==> F
+```
+````
+
+---
+
+### 14.2 Pie Chart
+
+**Keyword:** `pie`  · `title` is optional.
+
+````markdown
+```mermaid
+pie title Browser Share
+  "Chrome"  : 65
+  "Firefox" : 20
+  "Safari"  : 10
+  "Other"   : 5
+```
+````
+
+---
+
+### 14.3 Sequence Diagram
+
+**Keyword:** `sequenceDiagram`
+
+Supported: `participant`, `actor`, `->>` / `-->` / `-->>` arrows, `Note over`, `activate` / `deactivate`, `loop` / `alt` / `opt` / `par` groups.
+
+````markdown
+```mermaid
+sequenceDiagram
+  participant A as Alice
+  participant B as Bob
+  A->>B: Hello Bob
+  activate B
+  B-->>A: Hi Alice!
+  deactivate B
+  Note over A,B: End of chat
+```
+````
+
+---
+
+### 14.4 Class Diagram
+
+**Keyword:** `classDiagram`
+
+````markdown
+```mermaid
+classDiagram
+  class Animal {
+    +String name
+    +eat() void
+  }
+  class Dog {
+    +bark() void
+  }
+  Animal <|-- Dog
+  Animal *-- Heart
+```
+````
+
+---
+
+### 14.5 State Diagram
+
+**Keywords:** `stateDiagram`, `stateDiagram-v2`  · `[*]` = start / end state.
+
+````markdown
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Active : start
+  Active --> Idle : stop
+  Active --> [*] : shutdown
+```
+````
+
+---
+
+### 14.6 Entity Relationship Diagram
+
+**Keyword:** `erDiagram`
+
+````markdown
+```mermaid
+erDiagram
+  CUSTOMER {
+    int id PK
+    string name
+    string email
+  }
+  ORDER {
+    int id PK
+    date placed
+  }
+  CUSTOMER ||--o{ ORDER : places
+```
+````
+
+---
+
+### 14.7 User Journey
+
+**Keyword:** `journey`
+
+````markdown
+```mermaid
+journey
+  title My Working Day
+  section Morning
+    Make tea: 5: Me
+    Check email: 3: Me, Cat
+  section Afternoon
+    Code review: 4: Me
+    Deploy: 2: Me
+```
+````
+
+---
+
+### 14.8 Gantt Chart
+
+**Keyword:** `gantt`  · Duration units: `d` (days), `w` (weeks), `h` (hours).
+
+````markdown
+```mermaid
+gantt
+  title Project Plan
+  section Design
+    Wireframes :a1, 0, 3d
+    Mockups    :a2, after a1, 4d
+  section Development
+    Backend  :crit, b1, after a2, 7d
+    Frontend :b2, after a2, 5d
+  section QA
+    Testing  :milestone, after b1, 2d
+```
+````
+
+---
+
+### 14.9 Quadrant Chart
+
+**Keyword:** `quadrantChart`
+
+````markdown
+```mermaid
+quadrantChart
+  title Feature Prioritization
+  x-axis Low Effort --> High Effort
+  y-axis Low Impact --> High Impact
+  quadrant-1 Quick Wins
+  quadrant-2 Major Projects
+  quadrant-3 Fill-ins
+  quadrant-4 Hard Slogs
+  Auth redesign: [0.7, 0.8]
+  Dark mode: [0.2, 0.6]
+  Onboarding: [0.5, 0.9]
+  Log viewer: [0.8, 0.3]
+```
+````
+
+---
+
+### 14.10 Requirement Diagram
+
+**Keyword:** `requirementDiagram`
+
+````markdown
+```mermaid
+requirementDiagram
+  requirement auth_req {
+    id: REQ-1
+    text: Users must authenticate
+    risk: high
+    verifymethod: test
+  }
+  element login_page {
+    type: UI
+    docref: docs/login
+  }
+  login_page - satisfies -> auth_req
+```
+````
+
+---
+
+### 14.11 Git Graph
+
+**Keyword:** `gitgraph`
+
+````markdown
+```mermaid
+gitgraph
+  commit id: "Initial"
+  branch develop
+  commit id: "Feature A"
+  commit id: "Feature B"
+  checkout main
+  merge develop
+  commit id: "Release" tag: "v1.0"
+```
+````
+
+---
+
+### 14.12 Mindmap
+
+**Keyword:** `mindmap`  · Indentation defines hierarchy. Shape wrappers: `((text))` circle · `(text)` rounded · `[text]` square · `{{text}}` hexagon.
+
+````markdown
+```mermaid
+mindmap
+  root((Project))
+    Planning
+      Requirements
+      Timeline
+    Development
+      Backend
+      Frontend
+    Testing
+      Unit tests
+      E2E tests
+```
+````
+
+---
+
+### 14.13 Timeline
+
+**Keyword:** `timeline`  · Format: `period : event1 : event2`
+
+````markdown
+```mermaid
+timeline
+  title History of Social Media
+  2002 : LinkedIn
+  2004 : Facebook
+       : Google
+  2005 : YouTube
+  2006 : Twitter
+  2010 : Instagram
+```
+````
+
+---
+
+### 14.14 Sankey Diagram
+
+**Keywords:** `sankey-beta`, `sankey`  · CSV format: `source,target,value`
+
+````markdown
+```mermaid
+sankey-beta
+source,target,value
+Revenue,Salaries,40
+Revenue,Infrastructure,25
+Revenue,Marketing,20
+Revenue,Profit,15
+```
+````
+
+---
+
+### 14.15 XY Chart
+
+**Keywords:** `xychart-beta`, `xychart`
+
+````markdown
+```mermaid
+xychart-beta
+  title "Monthly Sales"
+  x-axis [Jan, Feb, Mar, Apr, May, Jun]
+  y-axis 0 --> 20000
+  bar  [4000, 8000, 12000, 6000, 15000, 18000]
+  line [3000, 7500, 11000, 5500, 14000, 17000]
+```
+````
+
+---
+
+### 14.16 Block Diagram
+
+**Keywords:** `block-beta`, `block`
+
+````markdown
+```mermaid
+block-beta
+  columns 3
+  A[Client]
+  B[API Gateway]
+  C[Database]
+  A --> B
+  B --> C
+```
+````
+
+---
+
+### 14.17 Packet Diagram
+
+**Keywords:** `packet-beta`, `packet`  · Format: `start-end: "Field Name"`
+
+````markdown
+```mermaid
+packet-beta
+  title UDP Packet
+  0-15: "Source Port"
+  16-31: "Destination Port"
+  32-47: "Length"
+  48-63: "Checksum"
+```
+````
+
+---
+
+### 14.18 Kanban Board
+
+**Keyword:** `kanban`  · Columns are top-level items; cards are indented.
+
+````markdown
+```mermaid
+kanban
+  todo[To Do]
+    t1[Write tests]
+    t2[Update docs]
+  inprogress[In Progress]
+    t3[Implement feature]
+  done[Done]
+    t4[Code review]
+    t5[Deploy to staging]
+```
+````
+
+---
+
+### 14.19 Architecture Diagram
+
+**Keywords:** `architecture-beta`, `architecture`
+
+````markdown
+```mermaid
+architecture-beta
+  group cloud(server)[Cloud]
+    service db(database)[Database] in cloud
+    service api(server)[API Server] in cloud
+    service cache(server)[Cache] in cloud
+  db:L -- R:api
+  api:L -- R:cache
+```
+````
+
+---
+
+### 14.20 Radar Chart
+
+**Keywords:** `radar-beta`, `radar`  · Simple syntax: `Axis: value` per line.
+
+````markdown
+```mermaid
+radar-beta
+  title Developer Skills
+  max 100
+  Frontend: 75
+  Backend: 90
+  Database: 70
+  DevOps: 60
+  Testing: 80
+```
+````
+
+Multi-curve syntax:
+
+````markdown
+```mermaid
+radar-beta
+  title Team Comparison
+  axis ["Speed", "Quality", "Cost", "Scope", "Risk"]
+  Alice {
+    data [80, 90, 70, 85, 60]
+  }
+  Bob {
+    data [70, 75, 85, 65, 80]
+  }
+```
+````
+
+---
+
+### 14.21 Treemap
+
+**Keywords:** `treemap-beta`, `treemap`  · Indentation = hierarchy; leaf nodes have a numeric value.
+
+````markdown
+```mermaid
+treemap-beta
+  title Team Budget
+  Engineering
+    Frontend: 30
+    Backend: 40
+    DevOps: 20
+  Marketing: 35
+  Operations: 25
+```
+````
+
+---
+
+### 14.22 ZenUML
+
+**Keyword:** `zenuml`  · Uses `Object.method(Target)` call syntax.
+
+````markdown
+```mermaid
+zenuml
+  @Client
+  @Server
+  @DB
+  Client.request(Server)
+  Server.query(DB)
+  DB.result(Server)
+  Server.response(Client)
+```
+````
+
+---
+
+### 14.23 Event Modeling
+
+**Keyword:** `eventmodeling`
+
+````markdown
+```mermaid
+eventmodeling
+  title Order System
+  command "Place Order"
+  event "Order Placed"
+  readmodel "Order List"
+  policy "Notify on Order"
+  processor "Fulfillment"
+```
+````
+
+---
+
+### 14.24 Venn Diagram
+
+**Keyword:** `venn`
+
+````markdown
+```mermaid
+venn
+  title Programming Skills
+  A "Python"
+  B "JavaScript"
+  C "Rust"
+  A&B "Full-Stack"
+  A&C "Systems+Script"
+  A&B&C "Polyglot"
+```
+````
+
+---
+
+### 14.25 Ishikawa (Fishbone) Diagram
+
+**Keyword:** `ishikawa`
+
+````markdown
+```mermaid
+ishikawa
+  effect "Bug in Production"
+  category "Code"
+    cause Untested edge case
+    cause Missing validation
+  category "Process"
+    cause No code review
+    cause Rushed release
+  category "Environment"
+    cause Config mismatch
+```
+````
+
+---
+
+### 14.26 Wardley Map
+
+**Keyword:** `wardley`  · Components placed at `[visibility, evolution]` (both 0–1).
+
+````markdown
+```mermaid
+wardley
+  title Tea Shop
+  component "Cup of Tea" [0.95, 0.50]
+  component "Tea Leaves" [0.80, 0.60]
+  component "Water"      [0.95, 0.90]
+  component "Kettle"     [0.70, 0.75]
+  "Cup of Tea" -> "Tea Leaves"
+  "Cup of Tea" -> "Water"
+  "Water" -> "Kettle"
+```
+````
+
+---
+
+### 14.27 TreeView
+
+**Keyword:** `treeview`  · Pure indentation hierarchy.
+
+````markdown
+```mermaid
+treeview
+  src
+    components
+      Button
+      Modal
+    pages
+      Home
+      Settings
+  tests
+    unit
+    e2e
 ```
 ````
 

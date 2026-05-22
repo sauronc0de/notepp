@@ -4,6 +4,7 @@
 #include "markdown_view.hpp"
 #include "markdown_ui.hpp"
 #include "mermaid_flowchart.hpp"
+#include "mermaid_diagrams.hpp"
 #include "string_utils.hpp"
 
 #include <algorithm>
@@ -211,14 +212,19 @@ bool is_known_mermaid_type(std::string_view token)
          t == "mindmap" ||
          t == "timeline" ||
          t == "zenuml" ||
-         t == "sankey-beta" ||
-         t == "xychart-beta" ||
-         t == "block-beta" ||
-         t == "packet-beta" ||
+         t == "sankey-beta" || t == "sankey" ||
+         t == "xychart-beta" || t == "xychart" ||
+         t == "block-beta" || t == "block" ||
+         t == "packet-beta" || t == "packet" ||
          t == "kanban" ||
-         t == "architecture-beta" ||
-         t == "radar-beta" ||
-         t == "treemap";
+         t == "architecture-beta" || t == "architecture" ||
+         t == "radar-beta" || t == "radar" ||
+         t == "treemap-beta" || t == "treemap" ||
+         t == "eventmodeling" ||
+         t == "venn" ||
+         t == "ishikawa" ||
+         t == "wardley" ||
+         t == "treeview";
 }
 
 bool detect_mermaid_type(std::string_view body, std::string &type_out)
@@ -317,25 +323,61 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
 void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
 {
   const std::string mt = NoteCore::to_lower_copy(mermaid_type);
+
+  // ── already-rendered types ──────────────────────────────────────────────
   if(mt == "pie")
   {
     MermaidPieChart pie;
-    if(parse_mermaid_pie(body, pie))
-      render_mermaid_pie_chart(pie, id);
-    else
-      render_mermaid_placeholder(mermaid_type, body, id);
+    if(parse_mermaid_pie(body, pie))   render_mermaid_pie_chart(pie, id);
+    else                               render_mermaid_placeholder(mermaid_type, body, id);
     return;
   }
-
   if(mt == "flowchart" || mt == "graph")
   {
     MermaidFlowchart::Graph g;
-    if(MermaidFlowchart::parse(body, g))
-      MermaidFlowchart::render(g, id);
-    else
-      render_mermaid_placeholder(mermaid_type, body, id);
+    if(MermaidFlowchart::parse(body, g)) MermaidFlowchart::render(g, id);
+    else                                 render_mermaid_placeholder(mermaid_type, body, id);
     return;
   }
+
+// helper macro: parse + render or fall back to placeholder
+#define MERMAID_DISPATCH(parse_fn, render_fn, DiagramType) \
+  { MermaidDiagrams::DiagramType d; \
+    if(MermaidDiagrams::parse_fn(body, d)) MermaidDiagrams::render_fn(d, id); \
+    else render_mermaid_placeholder(mermaid_type, body, id); return; }
+
+  if(mt == "sequencediagram")                      MERMAID_DISPATCH(parse_sequence,     render_sequence,     SequenceDiagram)
+  if(mt == "classdiagram")                         MERMAID_DISPATCH(parse_class,        render_class,        ClassDiagram)
+  if(mt == "statediagram" || mt == "statediagram-v2") MERMAID_DISPATCH(parse_state,     render_state,        StateDiagram)
+  if(mt == "erdiagram")                            MERMAID_DISPATCH(parse_er,           render_er,           ERDiagram)
+  if(mt == "journey")                              MERMAID_DISPATCH(parse_journey,      render_journey,      JourneyDiagram)
+  if(mt == "gantt")                                MERMAID_DISPATCH(parse_gantt,        render_gantt,        GanttDiagram)
+  if(mt == "quadrantchart")                        MERMAID_DISPATCH(parse_quadrant,     render_quadrant,     QuadrantDiagram)
+  if(mt == "requirementdiagram")                   MERMAID_DISPATCH(parse_requirement,  render_requirement,  RequirementDiagram)
+  if(mt == "gitgraph")                             MERMAID_DISPATCH(parse_git,          render_git,          GitDiagram)
+  if(mt == "mindmap")                              MERMAID_DISPATCH(parse_mindmap,      render_mindmap,      MindmapDiagram)
+  if(mt == "timeline")                             MERMAID_DISPATCH(parse_timeline,     render_timeline,     TimelineDiagram)
+  if(mt == "sankey-beta" || mt == "sankey")        MERMAID_DISPATCH(parse_sankey,       render_sankey,       SankeyDiagram)
+  if(mt == "xychart-beta" || mt == "xychart")      MERMAID_DISPATCH(parse_xychart,      render_xychart,      XYDiagram)
+  if(mt == "block-beta"   || mt == "block")        MERMAID_DISPATCH(parse_block,        render_block,        BlockDiagram)
+  if(mt == "packet-beta"  || mt == "packet")       MERMAID_DISPATCH(parse_packet,       render_packet,       PacketDiagram)
+  if(mt == "kanban")                               MERMAID_DISPATCH(parse_kanban,       render_kanban,       KanbanDiagram)
+  if(mt == "architecture-beta" || mt == "architecture") MERMAID_DISPATCH(parse_architecture, render_architecture, ArchDiagram)
+  if(mt == "radar-beta"   || mt == "radar")        MERMAID_DISPATCH(parse_radar,        render_radar,        RadarDiagram)
+  if(mt == "treemap-beta" || mt == "treemap")      MERMAID_DISPATCH(parse_treemap,      render_treemap,      TreemapDiagram)
+  if(mt == "eventmodeling")                        MERMAID_DISPATCH(parse_eventmodeling,render_eventmodeling,EventModelingDiagram)
+  if(mt == "venn")                                 MERMAID_DISPATCH(parse_venn,         render_venn,         VennDiagram)
+  if(mt == "ishikawa")                             MERMAID_DISPATCH(parse_ishikawa,     render_ishikawa,     IshikawaDiagram)
+  if(mt == "wardley")                              MERMAID_DISPATCH(parse_wardley,      render_wardley,      WardleyDiagram)
+  if(mt == "treeview")                             MERMAID_DISPATCH(parse_treeview,     render_treeview,     TreeViewDiagram)
+  if(mt == "zenuml")
+  {
+    MermaidDiagrams::SequenceDiagram d;
+    if(MermaidDiagrams::parse_zenuml(body, d)) MermaidDiagrams::render_zenuml(d, id);
+    else render_mermaid_placeholder(mermaid_type, body, id);
+    return;
+  }
+#undef MERMAID_DISPATCH
 
   render_mermaid_placeholder(mermaid_type, body, id);
 }
