@@ -85,6 +85,16 @@
         "Insert Markdown Table": "Txertatu Markdown taula",
         "Insert Inventory Widget": "Txertatu inbentario widget-a",
         "Rows": "Errenkadak",
-        "Cols": "Zutabeak"
+        "Cols": "Zutabeak",
+        "Note quote": "Ohar aipua",
+        "Apply color": "Aplikatu kolorea",
+        "Task list": "Zereginen zerrenda",
+        "Insert markdown table": "Txertatu Markdown taula",
+        "Insert UI widget example": "Txertatu widget adibidea",
+        "Find (Ctrl+F)": "Bilatu (Ctrl+F)",
+        "Emoji picker (Ctrl+.)": "Emoji hautatzailea (Ctrl+.)",
+        "Mouse": "Sagua",
+        "Draw": "Marraztu",
+        "Draw (right click for color)": "Marraztu (eskuineko klik kolorea aldatzeko)"
     }
 }

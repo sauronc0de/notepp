@@ -4659,7 +4659,7 @@ void App::frame_ui()
           return pressed;
         };
         ImGui::BeginDisabled(!has_anchor_selection);
-        if(tool_button("##tb_italic", ic_italic, sz_italic, "Italic", "Italic"))
+        if(tool_button("##tb_italic", ic_italic, sz_italic, "Italic", Lang::t("Italic")))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
@@ -4667,7 +4667,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_bold", ic_bold, sz_bold, "Bold", "Bold"))
+        if(tool_button("##tb_bold", ic_bold, sz_bold, "Bold", Lang::t("Bold")))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
@@ -4675,7 +4675,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_strike", ic_strike, sz_strike, "Strike", "Strike"))
+        if(tool_button("##tb_strike", ic_strike, sz_strike, "Strike", Lang::t("Strike")))
         {
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
@@ -4683,7 +4683,7 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_note", ic_note, sz_note, "Note", "Note quote"))
+        if(tool_button("##tb_note", ic_note, sz_note, "Note", Lang::t("Note quote")))
         {
           push_undo_snapshot();
           apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
@@ -4693,7 +4693,7 @@ void App::frame_ui()
         ImGui::SameLine();
         ImGui::ColorEdit3("##top_color", (float *)&fmt_folder.color, ImGuiColorEditFlags_NoInputs);
         ImGui::SameLine();
-        if(tool_button("##tb_color_apply", ic_color, sz_color, "Color", "Apply color"))
+        if(tool_button("##tb_color_apply", ic_color, sz_color, "Color", Lang::t("Apply color")))
         {
           push_undo_snapshot();
           const std::string hex = rgba_to_hex(fmt_folder.color);
@@ -4703,7 +4703,7 @@ void App::frame_ui()
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if(tool_button("##tb_task", ic_task, sz_task, "Task", "Task list"))
+        if(tool_button("##tb_task", ic_task, sz_task, "Task", Lang::t("Task list")))
         {
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
@@ -4711,12 +4711,12 @@ void App::frame_ui()
           save_state();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_table", ic_table, sz_table, "Table", "Insert markdown table"))
+        if(tool_button("##tb_table", ic_table, sz_table, "Table", Lang::t("Insert markdown table")))
         {
           ImGui::OpenPopup("##tb_table_builder_popup");
         }
         ImGui::SameLine();
-        if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", "Insert UI widget example"))
+        if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", Lang::t("Insert UI widget example")))
         {
           ImGui::OpenPopup("##tb_ui_widgets_popup");
         }
@@ -4893,13 +4893,13 @@ __CURSOR__)MD");
           ImGui::EndPopup();
         }
         ImGui::SameLine();
-        if(tool_button("##tb_find", ic_find, sz_find, "Find", "Find (Ctrl+F)"))
+        if(tool_button("##tb_find", ic_find, sz_find, "Find", Lang::t("Find (Ctrl+F)")))
         {
           request_open_search_ = true;
         }
 #if !defined(_WIN32)
         ImGui::SameLine();
-        if(tool_button("##tb_emoji", (ImTextureID)0, ImVec2(kIconH, kIconH), "😀", "Emoji picker (Ctrl+.)"))
+        if(tool_button("##tb_emoji", (ImTextureID)0, ImVec2(kIconH, kIconH), "😀", Lang::t("Emoji picker (Ctrl+.)")))
         {
           emoji_picker_.reset_search();
           ImGui::OpenPopup("##emoji_picker_modal");
@@ -4982,7 +4982,7 @@ __CURSOR__)MD");
         };
 
         const bool mouse_mode = !draw_mode && !erase_mode;
-        if(mode_button("##mode_mouse_icon", mouse_icon, sz_mouse, "Mouse", "Mouse", mouse_mode))
+        if(mode_button("##mode_mouse_icon", mouse_icon, sz_mouse, Lang::t("Mouse"), Lang::t("Mouse"), mouse_mode))
         {
           draw_mode = false;
           erase_mode = false;
@@ -4994,8 +4994,8 @@ __CURSOR__)MD");
             "##mode_draw_icon",
             draw_icon,
             sz_draw,
-            "Draw",
-            "Draw (right click for color)",
+            Lang::t("Draw"),
+            Lang::t("Draw (right click for color)"),
             draw_mode);
         const bool draw_button_right_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
         if(draw_button_pressed)

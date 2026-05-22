@@ -85,6 +85,16 @@
     "Insert Markdown Table": "Insereix taula Markdown",
     "Insert Inventory Widget": "Insereix inventari",
     "Rows": "Files",
-    "Cols": "Columnes"
+    "Cols": "Columnes",
+    "Note quote": "Cita de nota",
+    "Apply color": "Aplica el color",
+    "Task list": "Llista de tasques",
+    "Insert markdown table": "Insereix taula Markdown",
+    "Insert UI widget example": "Insereix exemple de widget",
+    "Find (Ctrl+F)": "Cerca (Ctrl+F)",
+    "Emoji picker (Ctrl+.)": "Selector d'emojis (Ctrl+.)",
+    "Mouse": "Ratolí",
+    "Draw": "Dibuixa",
+    "Draw (right click for color)": "Dibuixa (clic dret per al color)"
   }
 }

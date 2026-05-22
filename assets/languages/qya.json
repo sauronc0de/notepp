@@ -85,6 +85,16 @@
         "Insert Markdown Table": "Panya Markdown Talan",
         "Insert Inventory Widget": "Panya Nat-lista Tanwa",
         "Rows": "Ranyar",
-        "Cols": "Tarmar"
+        "Cols": "Tarmar",
+        "Note quote": "Tengwa Quenta",
+        "Apply color": "Apta Quilë",
+        "Task list": "Carë Nótë",
+        "Insert markdown table": "Panya Markdown Talan",
+        "Insert UI widget example": "Panya Tanwa Nótë",
+        "Find (Ctrl+F)": "Hirë (Ctrl+F)",
+        "Emoji picker (Ctrl+.)": "Píco-emma Mapa (Ctrl+.)",
+        "Mouse": "Nirmë",
+        "Draw": "Tehta",
+        "Draw (right click for color)": "Tehta (mára-nappa quilë)"
     }
 }

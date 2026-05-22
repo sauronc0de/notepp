@@ -85,6 +85,16 @@
         "Insert Markdown Table": "Tharâk Bund",
         "Insert Inventory Widget": "Tharâk Felak Narag",
         "Rows": "Rukhs",
-        "Cols": "Bundar"
+        "Cols": "Bundar",
+        "Note quote": "Tamar Quoth",
+        "Apply color": "Menkh Zirak",
+        "Task list": "Khatûr Felak",
+        "Insert markdown table": "Tharâk Bund",
+        "Insert UI widget example": "Tharâk Narag Tanwa",
+        "Find (Ctrl+F)": "Fund (Ctrl+F)",
+        "Emoji picker (Ctrl+.)": "Kheled Fund (Ctrl+.)",
+        "Mouse": "Nala-fund",
+        "Draw": "Baruk",
+        "Draw (right click for color)": "Baruk (bund nappa zirak)"
     }
 }

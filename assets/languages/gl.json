@@ -85,6 +85,16 @@
         "Insert Markdown Table": "Inserir táboa Markdown",
         "Insert Inventory Widget": "Inserir widget de inventario",
         "Rows": "Filas",
-        "Cols": "Columnas"
+        "Cols": "Columnas",
+        "Note quote": "Cita de nota",
+        "Apply color": "Aplicar cor",
+        "Task list": "Lista de tarefas",
+        "Insert markdown table": "Inserir táboa Markdown",
+        "Insert UI widget example": "Inserir exemplo de widget",
+        "Find (Ctrl+F)": "Buscar (Ctrl+F)",
+        "Emoji picker (Ctrl+.)": "Selector de emojis (Ctrl+.)",
+        "Mouse": "Rato",
+        "Draw": "Debuxar",
+        "Draw (right click for color)": "Debuxar (clic dereito para a cor)"
     }
 }

@@ -85,6 +85,16 @@
     "Insert Markdown Table": "Insert Markdown Table",
     "Insert Inventory Widget": "Insert Inventory Widget",
     "Rows": "Rows",
-    "Cols": "Cols"
+    "Cols": "Cols",
+    "Note quote": "Note quote",
+    "Apply color": "Apply color",
+    "Task list": "Task list",
+    "Insert markdown table": "Insert markdown table",
+    "Insert UI widget example": "Insert UI widget example",
+    "Find (Ctrl+F)": "Find (Ctrl+F)",
+    "Emoji picker (Ctrl+.)": "Emoji picker (Ctrl+.)",
+    "Mouse": "Mouse",
+    "Draw": "Draw",
+    "Draw (right click for color)": "Draw (right click for color)"
   }
 }
