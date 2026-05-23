@@ -3482,7 +3482,9 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
       if(renders && any_rendered) ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
       if(renders || !stmt.error.empty())
       {
+        ImGui::BeginGroup();
         render_statement(ctx, block, stmt, replacements, runtime_errors);
+        ImGui::EndGroup();
         any_rendered = any_rendered || renders || !stmt.error.empty();
       }
     }
