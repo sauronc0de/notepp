@@ -180,10 +180,12 @@ elseif(ENABLE_DEB_PACKAGE)
     COMPONENT notepp
   )
 
-  install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/"
-    DESTINATION "share/notepp/data"
-    COMPONENT notepp
-  )
+  if(NOT USE_PORTABLE_PATHS)
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/data/"
+      DESTINATION "share/notepp/data"
+      COMPONENT notepp
+    )
+  endif()
 
   install(FILES "${CMAKE_SOURCE_DIR}/readme.md"
     DESTINATION "share/doc/notepp"
