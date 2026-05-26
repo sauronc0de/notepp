@@ -209,7 +209,7 @@ std::vector<std::pair<size_t, size_t>> split_lines(std::string_view source)
 {
   std::vector<std::pair<size_t, size_t>> lines;
   size_t start = 0;
-  while(start <= source.size())
+  while(start < source.size())
   {
     const size_t end = source.find('\n', start);
     if(end == std::string_view::npos)
@@ -219,7 +219,6 @@ std::vector<std::pair<size_t, size_t>> split_lines(std::string_view source)
     }
     lines.push_back({start, end});
     start = end + 1;
-    if(start == source.size()) lines.push_back({start, start});
   }
   if(lines.empty()) lines.push_back({0, 0});
   return lines;
@@ -456,7 +455,8 @@ void render_code_block(std::string_view fence_info, std::string_view source, int
   }
 
   ImGui::EndChildFrame();
-  if(ImGui::BeginPopupContextItem("##code_block_popup", ImGuiPopupFlags_MouseButtonRight))
+  const std::string popup_id = "##code_block_popup_" + std::to_string(imgui_id);
+  if(ImGui::BeginPopupContextItem(popup_id.c_str(), ImGuiPopupFlags_MouseButtonRight))
   {
     if(ImGui::MenuItem("Copy code"))
     {
