@@ -101,6 +101,13 @@ struct CopiedNoteItem
 {
   std::string title;
   std::string content;
+  std::string font_path;
+  float font_size = 0.0f;
+  bool use_custom_color = false;
+  float color_r = 0.0f, color_g = 0.0f, color_b = 0.0f;
+  float width = 520.0f, height = 260.0f;
+  bool has_layout = false;
+  bool always_on_top = false;
 };
 
 struct CopiedFolderEntry
@@ -530,7 +537,20 @@ void load_note_clipboard()
   g_copied_note_content = json_find_string(doc, "content");
   if(!g_copied_note_content.empty())
   {
-    g_copied_notes_batch.push_back(CopiedNoteItem{g_copied_note_title, g_copied_note_content});
+    CopiedNoteItem ci;
+    ci.title = g_copied_note_title;
+    ci.content = g_copied_note_content;
+    ci.font_path = json_find_string(doc, "font_path");
+    ci.font_size = (float)json_find_int(doc, "font_size", 0);
+    ci.use_custom_color = json_find_bool(doc, "use_custom_color", false);
+    ci.color_r = (float)json_find_int(doc, "color_r", 0) / 255.0f;
+    ci.color_g = (float)json_find_int(doc, "color_g", 0) / 255.0f;
+    ci.color_b = (float)json_find_int(doc, "color_b", 0) / 255.0f;
+    ci.width = (float)json_find_int(doc, "w", 520);
+    ci.height = (float)json_find_int(doc, "h", 260);
+    ci.has_layout = json_find_bool(doc, "has_layout", false);
+    ci.always_on_top = json_find_bool(doc, "always_on_top", false);
+    g_copied_notes_batch.push_back(std::move(ci));
   }
   if(g_copied_notes_batch.empty()) g_has_copied_note = false;
   g_clipboard_dirty = false;
@@ -545,8 +565,24 @@ void App::save_note_clipboard()
   out << "{\n";
   out << "  \"has_note\": " << (g_has_copied_note ? "true" : "false") << ",\n";
   out << "  \"title\": \"" << json_escape(g_copied_note_title) << "\",\n";
-  out << "  \"content\": \"" << json_escape(g_copied_note_content) << "\"\n";
-  out << "}\n";
+  out << "  \"content\": \"" << json_escape(g_copied_note_content) << "\"";
+  if(!g_copied_notes_batch.empty())
+  {
+    const CopiedNoteItem &ci = g_copied_notes_batch.front();
+    out << ",\n  \"use_custom_color\": " << (ci.use_custom_color ? "true" : "false");
+    out << ",\n  \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_r)) * 255.0f);
+    out << ",\n  \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_g)) * 255.0f);
+    out << ",\n  \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_b)) * 255.0f);
+    out << ",\n  \"w\": " << (int)std::lround(ci.width);
+    out << ",\n  \"h\": " << (int)std::lround(ci.height);
+    out << ",\n  \"has_layout\": " << (ci.has_layout ? "true" : "false");
+    out << ",\n  \"always_on_top\": " << (ci.always_on_top ? "true" : "false");
+    if(!ci.font_path.empty())
+      out << ",\n  \"font_path\": \"" << json_escape(ci.font_path) << "\"";
+    if(ci.font_size > 0.0f)
+      out << ",\n  \"font_size\": " << (int)std::lround(ci.font_size);
+  }
+  out << "\n}\n";
   g_clipboard_dirty = false;
 }
 
@@ -3238,7 +3274,20 @@ void App::frame_ui()
       const NoteMeta &n = cf.notes[(size_t)idx];
       std::ifstream in_note(n.path, std::ios::binary);
       std::string content((std::istreambuf_iterator<char>(in_note)), std::istreambuf_iterator<char>());
-      g_copied_notes_batch.push_back(CopiedNoteItem{n.title, std::move(content)});
+      CopiedNoteItem ci;
+      ci.title = n.title;
+      ci.content = std::move(content);
+      ci.font_path = n.font_path;
+      ci.font_size = n.font_size;
+      ci.use_custom_color = n.use_custom_color;
+      ci.color_r = n.color_r;
+      ci.color_g = n.color_g;
+      ci.color_b = n.color_b;
+      ci.width = n.width;
+      ci.height = n.height;
+      ci.has_layout = n.has_layout;
+      ci.always_on_top = n.always_on_top;
+      g_copied_notes_batch.push_back(std::move(ci));
     }
 
     g_has_copied_note = !g_copied_notes_batch.empty();
@@ -3289,7 +3338,20 @@ void App::frame_ui()
       {
         std::ifstream in_note(n.path, std::ios::binary);
         std::string content((std::istreambuf_iterator<char>(in_note)), std::istreambuf_iterator<char>());
-        e.notes.push_back(CopiedNoteItem{n.title, std::move(content)});
+        CopiedNoteItem ci;
+        ci.title = n.title;
+        ci.content = std::move(content);
+        ci.font_path = n.font_path;
+        ci.font_size = n.font_size;
+        ci.use_custom_color = n.use_custom_color;
+        ci.color_r = n.color_r;
+        ci.color_g = n.color_g;
+        ci.color_b = n.color_b;
+        ci.width = n.width;
+        ci.height = n.height;
+        ci.has_layout = n.has_layout;
+        ci.always_on_top = n.always_on_top;
+        e.notes.push_back(std::move(ci));
       }
       g_copied_folder_entries.push_back(std::move(e));
     }
@@ -3349,6 +3411,16 @@ void App::frame_ui()
               used_titles.insert(candidate);
               nn.title = candidate;
               nn.path = make_note_path(nf.name, nn.title);
+              nn.font_path = cn.font_path;
+              nn.font_size = cn.font_size;
+              nn.use_custom_color = cn.use_custom_color;
+              nn.color_r = cn.color_r;
+              nn.color_g = cn.color_g;
+              nn.color_b = cn.color_b;
+              nn.width = cn.width;
+              nn.height = cn.height;
+              nn.has_layout = cn.has_layout;
+              nn.always_on_top = cn.always_on_top;
               remove_pending_delete_path(nn.path);
               std::filesystem::create_directories(std::filesystem::path(nn.path).parent_path());
               std::ofstream out_note(nn.path, std::ios::binary | std::ios::trunc);
@@ -4119,6 +4191,16 @@ void App::frame_ui()
       NoteMeta new_note;
       new_note.title = candidate;
       new_note.path = make_note_path(pf.name, candidate);
+      new_note.font_path = items.front().font_path;
+      new_note.font_size = items.front().font_size;
+      new_note.use_custom_color = items.front().use_custom_color;
+      new_note.color_r = items.front().color_r;
+      new_note.color_g = items.front().color_g;
+      new_note.color_b = items.front().color_b;
+      new_note.width = items.front().width;
+      new_note.height = items.front().height;
+      new_note.has_layout = items.front().has_layout;
+      new_note.always_on_top = items.front().always_on_top;
       remove_pending_delete_path(new_note.path);
       pf.notes.push_back(new_note);
       flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
@@ -4135,6 +4217,16 @@ void App::frame_ui()
         NoteMeta new_note;
         new_note.title = candidate;
         new_note.path = make_note_path(pf.name, candidate);
+        new_note.font_path = ci.font_path;
+        new_note.font_size = ci.font_size;
+        new_note.use_custom_color = ci.use_custom_color;
+        new_note.color_r = ci.color_r;
+        new_note.color_g = ci.color_g;
+        new_note.color_b = ci.color_b;
+        new_note.width = ci.width;
+        new_note.height = ci.height;
+        new_note.has_layout = ci.has_layout;
+        new_note.always_on_top = ci.always_on_top;
         remove_pending_delete_path(new_note.path);
         pf.notes.push_back(new_note);
         flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
@@ -6664,12 +6756,34 @@ __CURSOR__)MD");
     const std::string preview_state_before = capture_preview_state_snapshot();
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
     MarkdownView::set_render_width(preview_w);
+
+    // If last frame's content was taller than the space available below this window
+    // on its viewport, switch to a scrollable child region sized to fit exactly.
+    // Normal/small notes are unaffected: needs_scroll stays false until content overflows.
+    static float preview_last_content_h = 0.0f;
+    const float viewport_bottom = active_note_viewport->Pos.y + active_note_viewport->Size.y;
+    const float available_h = viewport_bottom - win_pos.y - title_bar_h - ImGui::GetStyle().WindowPadding.y * 2.0f;
+    const bool needs_scroll = (available_h > 60.0f) && (preview_last_content_h > available_h);
+    if(needs_scroll)
+      ImGui::BeginChild("##preview_scroll", ImVec2(0.0f, available_h), false, 0);
+
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     set_preview_document_path(state_file_path_);
     const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
     const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;
     const bool table_double_click_consumed = preview_result.consumed_double_click;
     ImGui::PopTextWrapPos();
+
+    // Record actual content height for overflow detection on the next frame.
+    // Inside a child window cursor Y is child-relative (starts at 0), so it gives
+    // the content height directly; outside, subtract start_y to get the delta.
+    preview_last_content_h = needs_scroll
+        ? ImGui::GetCursorPosY()
+        : (ImGui::GetCursorPosY() - start_y);
+
+    if(needs_scroll)
+      ImGui::EndChild();
+
     if(preview_changed)
     {
       const std::string preview_state_after = capture_preview_state_snapshot();
@@ -6691,7 +6805,6 @@ __CURSOR__)MD");
       request_undo_draw_ = false;
       request_redo_draw_ = false;
     }
-    (void)start_y;
 
     // Enter edit mode only on double click (single click does nothing)
     if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
