@@ -2099,6 +2099,9 @@ void App::render_debug_history_window() const
   ImGui::TextUnformatted("Debug-only history inspector");
   ImGui::TextDisabled("Top item is the next action that Ctrl+Z / Ctrl+Y will use.");
   ImGui::Spacing();
+  const ImGuiIO &io = ImGui::GetIO();
+  ImGui::Text("FPS: %.1f  (%.2f ms/frame)", io.Framerate, 1000.0f / io.Framerate);
+  ImGui::Spacing();
   ImGui::Text("Undo: %d", (int)undo_entries.size());
   ImGui::SameLine();
   ImGui::Text("Redo: %d", (int)redo_entries.size());
