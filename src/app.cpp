@@ -12,6 +12,7 @@
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
 #include "note_ui.hpp"
+#include "icon_shader.hpp"
 #include "string_utils.hpp"
 #include "tiny_json.hpp"
 
@@ -69,6 +70,7 @@ using NoteCore::clamp01f;
 using NoteCore::sanitize_note_filename;
 
 using NoteUi::clear_toolbar_icon_cache;
+using NoteUi::shaded_icon_button;
 using NoteUi::folder_accent_color;
 using NoteUi::get_toolbar_icon_size;
 using NoteUi::get_toolbar_icon_texture;
@@ -139,6 +141,13 @@ bool g_has_copied_folder = false;
 std::string g_copied_folder_root_name;
 std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
+
+#ifdef NOTEPP_DEBUG_UI
+static float g_dbg_swap_ms  = 0.f;
+static float g_dbg_begin_ms = 0.f;
+static float g_dbg_ui_ms    = 0.f;
+static float g_dbg_end_ms   = 0.f;
+#endif
 
 struct ExplorerImageEntry
 {
@@ -661,11 +670,51 @@ int App::run()
     init_imgui();
     load_state();
 
+    // Extra frames to render after the last event or interaction, so hover effects
+    // and frame-delayed state (popup close, tooltip fade) settle cleanly.
+    int keep_alive_frames = 2;
+
     while(running_)
     {
-      frame_begin();
-      frame_ui();
-      frame_end();
+#ifdef NOTEPP_DEBUG_UI
+      const Uint64 dbg_t0 = SDL_GetPerformanceCounter();
+#endif
+      const bool had_event = frame_begin();
+#ifdef NOTEPP_DEBUG_UI
+      const Uint64 dbg_t1 = SDL_GetPerformanceCounter();
+      g_dbg_begin_ms = (dbg_t1 - dbg_t0) * 1000.f / (float)SDL_GetPerformanceFrequency();
+#endif
+
+      // SDL fires SDL_MOUSEMOTION for every mouse move, so had_event already covers hover updates.
+      // WantCaptureMouse would force a frame whenever the mouse is anywhere over the app — even
+      // stationary — burning 323ms for nothing. Only keep keyboard to sustain cursor blink / IME.
+      const bool imgui_active = ImGui::GetIO().WantCaptureKeyboard;
+      // Keep rendering while the history indicator fade animation is running.
+      const bool animation_active =
+          !history_indicator_.text.empty() && history_indicator_.until > ImGui::GetTime();
+
+      if(had_event || imgui_active || animation_active || keep_alive_frames > 0)
+      {
+        keep_alive_frames = (had_event || imgui_active || animation_active) ? 2
+                                                                            : keep_alive_frames - 1;
+        frame_ui();
+#ifdef NOTEPP_DEBUG_UI
+        const Uint64 dbg_t2 = SDL_GetPerformanceCounter();
+#endif
+        frame_end();
+#ifdef NOTEPP_DEBUG_UI
+        const Uint64 dbg_t3 = SDL_GetPerformanceCounter();
+        const float dbg_freq = (float)SDL_GetPerformanceFrequency();
+        g_dbg_ui_ms  = (dbg_t2 - dbg_t1) * 1000.f / dbg_freq;
+        g_dbg_end_ms = (dbg_t3 - dbg_t2) * 1000.f / dbg_freq;
+#endif
+      }
+      else
+      {
+        // Nothing to render — discard the ImGui frame and yield the CPU.
+        ImGui::EndFrame();
+        SDL_Delay(8);
+      }
     }
 
     save_state();
@@ -709,7 +758,24 @@ void App::init_sdl_gl()
     throw std::runtime_error(std::string("SDL_GL_CreateContext failed: ") + SDL_GetError());
 
   SDL_GL_MakeCurrent(window_, gl_context_);
-  SDL_GL_SetSwapInterval(1); // vsync
+
+  // Disable VSync for software renderers (Mesa LLVMpipe/softpipe in Docker, D3D12 CPU-fallback).
+  // Without a GPU, SDL_GL_SwapWindow blocks waiting for a sync signal that never arrives properly,
+  // causing ~3 FPS. If glGetString returns null (GLEW not yet loaded), we default to VSync off.
+  const char *gl_renderer = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+  const char *gl_vendor   = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
+  const bool software_gl = !gl_renderer ||
+      strstr(gl_renderer, "llvmpipe")  || strstr(gl_renderer, "softpipe")  ||
+      strstr(gl_renderer, "Software")  || strstr(gl_renderer, "software")  ||
+      strstr(gl_renderer, "Microsoft") || strstr(gl_renderer, "D3D12")     ||
+      strstr(gl_renderer, "d3d12")     || strstr(gl_renderer, "SVGA")      ||
+      strstr(gl_renderer, "VMware");
+  SDL_GL_SetSwapInterval(software_gl ? 0 : 1);
+  std::fprintf(stderr, "[notepp] GL Renderer : %s\n", gl_renderer ? gl_renderer : "(null — GLEW not yet init)");
+  std::fprintf(stderr, "[notepp] GL Vendor   : %s\n", gl_vendor   ? gl_vendor   : "(null)");
+  std::fprintf(stderr, "[notepp] Software GL : %s\n", software_gl ? "YES" : "NO");
+  std::fprintf(stderr, "[notepp] VSync       : %s  (SDL_GL_SetSwapInterval -> %d)\n",
+               SDL_GL_GetSwapInterval() == 0 ? "OFF" : "ON", SDL_GL_GetSwapInterval());
 }
 
 void App::init_imgui()
@@ -799,6 +865,8 @@ void App::init_imgui()
   if(!ImGui_ImplOpenGL3_Init(kGlslVersion))
     throw std::runtime_error("ImGui_ImplOpenGL3_Init failed");
 
+  NoteUi::init_icon_shader();
+
   font_regular_ = font_regular;
   font_italic_ = font_italic;
   font_bold_ = font_bold;
@@ -833,6 +901,7 @@ void App::shutdown()
   {
     auto iniPath = imgui_ini_file_.string();
     ImGui::SaveIniSettingsToDisk(iniPath.c_str());
+    NoteUi::destroy_icon_shader();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -2102,6 +2171,12 @@ void App::render_debug_history_window() const
   const ImGuiIO &io = ImGui::GetIO();
   ImGui::Text("FPS: %.1f  (%.2f ms/frame)", io.Framerate, 1000.0f / io.Framerate);
   ImGui::Spacing();
+  ImGui::SeparatorText("Frame budget (ms)");
+  ImGui::Text("  begin : %6.2f ms", g_dbg_begin_ms);
+  ImGui::Text("  ui    : %6.2f ms", g_dbg_ui_ms);
+  ImGui::Text("  end   : %6.2f ms", g_dbg_end_ms);
+  ImGui::Text("  swap  : %6.2f ms  <--", g_dbg_swap_ms);
+  ImGui::Spacing();
   ImGui::Text("Undo: %d", (int)undo_entries.size());
   ImGui::SameLine();
   ImGui::Text("Redo: %d", (int)redo_entries.size());
@@ -2146,18 +2221,41 @@ void App::render_debug_history_window() const
 
   render_entries("Undo Stack", undo_entries, ImVec4(0.93f, 0.58f, 0.24f, 1.0f));
   render_entries("Redo Stack", redo_entries, ImVec4(0.22f, 0.74f, 0.58f, 1.0f));
+
+  if(ImGui::BeginPopupContextWindow("##debug_ctx", ImGuiPopupFlags_MouseButtonRight))
+  {
+    if(ImGui::MenuItem("Copy debug info"))
+    {
+      char buf[512];
+      std::snprintf(buf, sizeof(buf),
+          "FPS: %.1f  (%.2f ms/frame)\n"
+          "begin : %6.2f ms\n"
+          "ui    : %6.2f ms\n"
+          "end   : %6.2f ms\n"
+          "swap  : %6.2f ms\n"
+          "Undo: %d  Redo: %d",
+          io.Framerate, 1000.0f / io.Framerate,
+          g_dbg_begin_ms, g_dbg_ui_ms, g_dbg_end_ms, g_dbg_swap_ms,
+          (int)undo_entries.size(), (int)redo_entries.size());
+      ImGui::SetClipboardText(buf);
+    }
+    ImGui::EndPopup();
+  }
+
   ImGui::End();
 #endif
 }
 
-void App::frame_begin()
+bool App::frame_begin()
 {
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
   pinned_topmost_viewports_.clear();
 
+  bool had_event = false;
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
+    had_event = true;
     if(event.type == SDL_DROPFILE && event.drop.file)
     {
       int mx = 0, my = 0;
@@ -2340,6 +2438,7 @@ void App::frame_begin()
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+  return had_event;
 }
 void App::frame_ui()
 {
@@ -2406,16 +2505,10 @@ void App::frame_ui()
     ImGui::TextUnformatted(Lang::t("Explorer"));
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz - right_margin);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.12f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.24f));
-    if(refresh_icon
-           ? ImGui::ImageButton("##explorer_refresh", refresh_icon, ImVec2(btn_sz, btn_sz), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.75f))
-           : ImGui::SmallButton("R##explorer_refresh"))
+    if(shaded_icon_button("##explorer_refresh", refresh_icon, ImVec2(btn_sz, btn_sz), "R##explorer_refresh"))
     {
       request_sync_files = true;
     }
-    ImGui::PopStyleColor(3);
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("refresh_tooltip"));
     ImGui::Separator();
@@ -4582,11 +4675,7 @@ void App::frame_ui()
       ImGui::SetNextWindowSize(ImVec2(std::max(200.0f, vp->Size.x - explorer_w), bar_h), ImGuiCond_Always);
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 3.0f));
-      const ImVec4 topbar_bg(
-          clamp01(explorer_bg.x + 0.25f),
-          clamp01(explorer_bg.y + 0.25f),
-          clamp01(explorer_bg.z + 0.25f),
-          explorer_bg.w);
+      const ImVec4 topbar_bg = explorer_bg;
       ImGui::PushStyleColor(ImGuiCol_WindowBg, topbar_bg);
       ImGui::Begin(
           "##FormatTopBar",
@@ -4745,11 +4834,7 @@ void App::frame_ui()
         const ImVec2 sz_widget = icon_sz("widgets.png");
         const ImVec2 sz_find = icon_sz("find.png");
         auto tool_button = [&](const char *id, ImTextureID tex, ImVec2 disp_sz, const char *fallback, const char *tooltip) -> bool {
-          bool pressed = false;
-          if(tex)
-            pressed = ImGui::ImageButton(id, tex, disp_sz, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1));
-          else
-            pressed = ImGui::Button(fallback);
+          const bool pressed = shaded_icon_button(id, tex, disp_sz, fallback);
           if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = tooltip;
           return pressed;
         };
@@ -5059,20 +5144,9 @@ __CURSOR__)MD");
         const ImVec2 sz_show = icon_sz(drawings_visible ? "hide.png" : "show.png");
         const ImVec2 sz_grid = icon_sz(grid_visible ? "hide-grid.png" : "show-grid.png");
         auto mode_button = [&](const char *id, ImTextureID icon, ImVec2 disp_sz, const char *fallback, const char *tooltip, bool active) -> bool {
-          if(active)
-          {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.47f, 0.49f, 0.53f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.56f, 0.58f, 0.62f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.63f, 0.65f, 0.69f, 1.0f));
-          }
-          const bool pressed = icon
-                                   ? ImGui::ImageButton(id, icon, disp_sz, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                                   : ImGui::Button(fallback);
+          const bool pressed = shaded_icon_button(id, icon, disp_sz, fallback, active);
           if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          {
             topbar_tooltip_text = tooltip;
-          }
-          if(active) ImGui::PopStyleColor(3);
           return pressed;
         };
 
@@ -5136,9 +5210,7 @@ __CURSOR__)MD");
           stroke_in_progress = false;
         }
         ImGui::SameLine();
-        if((clear_icon
-                ? ImGui::ImageButton("##clear_draw_icon", clear_icon, sz_clear, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                : ImGui::Button(Lang::t("Clear drawing"))))
+        if(shaded_icon_button("##clear_draw_icon", clear_icon, sz_clear, Lang::t("Clear drawing")))
         {
           push_draw_snapshot(f.name);
           g_folder_drawings[f.name].clear();
@@ -5148,9 +5220,8 @@ __CURSOR__)MD");
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = Lang::t("Clear drawing");
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if(show_icon
-               ? ImGui::ImageButton("##toggle_draw_visibility_icon", show_icon, sz_show, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(drawings_visible ? Lang::t("Hide") : Lang::t("Show")))
+        if(shaded_icon_button("##toggle_draw_visibility_icon", show_icon, sz_show,
+                              drawings_visible ? Lang::t("Hide") : Lang::t("Show")))
         {
           drawings_visible = !drawings_visible;
           stroke_in_progress = false;
@@ -5164,9 +5235,8 @@ __CURSOR__)MD");
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           topbar_tooltip_text = drawings_visible ? Lang::t("Hide drawings") : Lang::t("Show drawings");
         ImGui::SameLine();
-        if(grid_icon
-               ? ImGui::ImageButton("##toggle_grid_visibility_icon", grid_icon, sz_grid, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(grid_visible ? Lang::t("Hide grid") : Lang::t("Show grid")))
+        if(shaded_icon_button("##toggle_grid_visibility_icon", grid_icon, sz_grid,
+                              grid_visible ? Lang::t("Hide grid") : Lang::t("Show grid")))
         {
           grid_visible = !grid_visible;
         }
@@ -5178,9 +5248,8 @@ __CURSOR__)MD");
           ImGui::Dummy(ImVec2(icon_slot_w * 1.0f, 16.0f));
         }
         ImGui::SameLine();
-        if(lock_icon
-               ? ImGui::ImageButton("##lock_layout_icon", lock_icon, sz_lock, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-               : ImGui::Button(layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving")))
+        if(shaded_icon_button("##lock_layout_icon", lock_icon, sz_lock,
+                              layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving")))
         {
           push_sidebar_snapshot();
           layout_locked_ = !layout_locked_;
@@ -5189,9 +5258,8 @@ __CURSOR__)MD");
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           topbar_tooltip_text = layout_locked_ ? Lang::t("Unlock note moving") : Lang::t("Lock note moving");
         ImGui::SameLine();
-        if((reset_icon
-                ? ImGui::ImageButton("##reset_positions_icon", reset_icon, sz_reset, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 1))
-                : ImGui::Button(Lang::t("Reset positions"))) &&
+        if(shaded_icon_button("##reset_positions_icon", reset_icon, sz_reset,
+                              Lang::t("Reset positions")) &&
            !f.notes.empty())
         {
           push_selection_snapshot();
@@ -5221,7 +5289,6 @@ __CURSOR__)MD");
           const ImVec2 dot_pos = ImGui::GetCursorScreenPos();
           const ImVec2 dot_center(dot_pos.x - 9.0f, dot_pos.y + 6.0f);
           ImDrawList *dl = ImGui::GetWindowDrawList();
-          const ImU32 ring_col = ImGui::GetColorU32(ImVec4(0.82f, 0.86f, 0.94f, 0.95f));
           const ImU32 fill_col = detached_note_windows_enabled_
                                      ? ImGui::GetColorU32(ImVec4(0.30f, 0.83f, 0.56f, 1.0f))
                                      : ImGui::GetColorU32(ImVec4(0.15f, 0.18f, 0.22f, 1.0f));
@@ -5242,22 +5309,12 @@ __CURSOR__)MD");
         const ImTextureID lang_flag_tex = (*lang_flag_file) ? get_toolbar_icon_texture(lang_flag_file) : static_cast<ImTextureID>(0);
         // Compute display size preserving the image aspect ratio at kIconH.
         const ImVec2 lang_flag_display = lang_flag_tex ? icon_sz(lang_flag_file) : ImVec2(0, 0);
-        const float frame_pad_x = ImGui::GetStyle().FramePadding.x;
-        const float frame_pad_y = ImGui::GetStyle().FramePadding.y;
-        const float lang_btn_w = lang_flag_tex ? (lang_flag_display.x + 2.0f * frame_pad_x) : (ImGui::CalcTextSize(lang_short).x + 10.0f);
-        const float lang_btn_h = lang_flag_tex ? (lang_flag_display.y + 2.0f * frame_pad_y) : 18.0f;
+        const float lang_btn_w = lang_flag_tex ? lang_flag_display.x : (ImGui::CalcTextSize(lang_short).x + 10.0f);
+        const float lang_btn_h = lang_flag_tex ? lang_flag_display.y : 18.0f;
         constexpr float gap = 6.0f;
         const float lang_x = ImGui::GetWindowWidth() - ver_sz.x - right_margin - gap - lang_btn_w;
         ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.22f));
-        bool lang_clicked = false;
-        if(lang_flag_tex)
-          lang_clicked = ImGui::ImageButton("##lang_btn", lang_flag_tex, lang_flag_display, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, 0.88f));
-        else
-          lang_clicked = ImGui::SmallButton(lang_short);
-        ImGui::PopStyleColor(3);
+        bool lang_clicked = shaded_icon_button("##lang_btn", lang_flag_tex, ImVec2(lang_btn_w, lang_btn_h), lang_short);
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           ImGui::SetTooltip("%s", Lang::t("Language"));
         if(lang_clicked) ImGui::OpenPopup("##lang_select");
@@ -6636,9 +6693,11 @@ __CURSOR__)MD");
     ImGui::SetNextWindowSize(ImVec2(520.0f, note_window_height), ImGuiCond_FirstUseEver);
   }
 
+  const float pre_viewport_h = ImGui::GetMainViewport()->Size.y;
+
   ImGui::SetNextWindowSizeConstraints(
       ImVec2(320.0f, 140.0f),
-      ImVec2(FLT_MAX, FLT_MAX));
+      ImVec2(FLT_MAX, pre_viewport_h));
   if(search_request_window_focus_) ImGui::SetNextWindowFocus();
 
   std::string note_window_label = note_title_ + "###NoteWindow";
@@ -6653,9 +6712,7 @@ __CURSOR__)MD");
   ImGui::Begin(
       note_window_label.c_str(),
       nullptr,
-      ImGuiWindowFlags_NoScrollbar |
-          ImGuiWindowFlags_NoScrollWithMouse |
-          (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
+      (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
   if(search_request_window_focus_) search_request_window_focus_ = false;
 
   // Right click on title bar for note window actions.
@@ -6760,16 +6817,6 @@ __CURSOR__)MD");
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
     MarkdownView::set_render_width(preview_w);
 
-    // If last frame's content was taller than the space available below this window
-    // on its viewport, switch to a scrollable child region sized to fit exactly.
-    // Normal/small notes are unaffected: needs_scroll stays false until content overflows.
-    static float preview_last_content_h = 0.0f;
-    const float viewport_bottom = active_note_viewport->Pos.y + active_note_viewport->Size.y;
-    const float available_h = viewport_bottom - win_pos.y - title_bar_h - ImGui::GetStyle().WindowPadding.y * 2.0f;
-    const bool needs_scroll = (available_h > 60.0f) && (preview_last_content_h > available_h);
-    if(needs_scroll)
-      ImGui::BeginChild("##preview_scroll", ImVec2(0.0f, available_h), false, 0);
-
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
     set_preview_document_path(state_file_path_);
     const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
@@ -6777,15 +6824,6 @@ __CURSOR__)MD");
     const bool table_double_click_consumed = preview_result.consumed_double_click;
     ImGui::PopTextWrapPos();
 
-    // Record actual content height for overflow detection on the next frame.
-    // Inside a child window cursor Y is child-relative (starts at 0), so it gives
-    // the content height directly; outside, subtract start_y to get the delta.
-    preview_last_content_h = needs_scroll
-        ? ImGui::GetCursorPosY()
-        : (ImGui::GetCursorPosY() - start_y);
-
-    if(needs_scroll)
-      ImGui::EndChild();
 
     if(preview_changed)
     {
@@ -7151,5 +7189,11 @@ void App::frame_end()
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
   }
+#ifdef NOTEPP_DEBUG_UI
+  const Uint64 t_swap = SDL_GetPerformanceCounter();
+#endif
   SDL_GL_SwapWindow(window_);
+#ifdef NOTEPP_DEBUG_UI
+  g_dbg_swap_ms = (float)(SDL_GetPerformanceCounter() - t_swap) * 1000.f / (float)SDL_GetPerformanceFrequency();
+#endif
 }
