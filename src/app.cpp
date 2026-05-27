@@ -5824,8 +5824,7 @@ __CURSOR__)MD");
       }
 
       bool note_window_open = true;
-      ImGuiWindowFlags note_flags =
-          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+      ImGuiWindowFlags note_flags = 0;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
       if(layout_locked_) note_flags |= ImGuiWindowFlags_NoMove;
       if(search_request_window_focus_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
@@ -6313,7 +6312,7 @@ __CURSOR__)MD");
         }
       }
 
-      const float max_preview_h = note_viewport ? note_viewport->Size.y * 0.8f : FLT_MAX;
+      const float max_preview_h = note_viewport ? note_viewport->Size.y * 0.95f : FLT_MAX;
       const float auto_h = std::max(140.0f, std::min(max_preview_h, ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y));
       const ImVec2 pos = ImGui::GetWindowPos();
       const ImVec2 size = ImGui::GetWindowSize();
