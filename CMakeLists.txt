@@ -5,7 +5,7 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
 endif()
 
 set(ProjectName "Notepp")
-project(${ProjectName} VERSION 0.0.2 LANGUAGES C CXX)
+project(${ProjectName} VERSION 0.0.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

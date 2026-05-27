@@ -128,6 +128,43 @@ static ImVec4 draw_box(ImDrawList *dl, ImVec2 p, ImVec2 sz, ImU32 fill,
   return ImVec4(p.x, p.y, p2.x, p2.y);
 }
 
+// like Lines but preserves raw indentation; returns trimmed text + indent count
+struct IndentLines {
+  std::string_view src; size_t pos=0;
+  bool next(std::string_view &out, int &indent) {
+    while(pos < src.size()) {
+      size_t e=src.find('\n',pos);
+      if(e==std::string_view::npos) e=src.size();
+      std::string_view raw=src.substr(pos,e-pos);
+      pos=(e<src.size())?e+1:e;
+      std::string_view t=tr(raw);
+      if(t.empty()||sw(t,"%%")) continue;
+      indent=0; for(char c:raw){if(c==' ')indent++;else if(c=='\t')indent+=2;else break;}
+      out=t; return true;
+    }
+    return false;
+  }
+};
+
+// point on box boundary (half-extents hw,hh) in direction of 'other'
+static ImVec2 rect_edge(ImVec2 cen, float hw, float hh, ImVec2 other)
+{
+  float dx=other.x-cen.x, dy=other.y-cen.y;
+  if(std::abs(dx)<0.001f&&std::abs(dy)<0.001f) return cen;
+  float tx=hw/std::abs(dx), ty=hh/std::abs(dy);
+  float t=std::min(tx,ty);
+  return ImVec2(cen.x+dx*t, cen.y+dy*t);
+}
+
+// point on circle boundary of radius r toward 'other'
+static ImVec2 circ_edge(ImVec2 cen, float r, ImVec2 other)
+{
+  float dx=other.x-cen.x, dy=other.y-cen.y;
+  float len=std::sqrt(dx*dx+dy*dy);
+  if(len<0.001f) return cen;
+  return ImVec2(cen.x+dx/len*r, cen.y+dy/len*r);
+}
+
 } // anonymous namespace
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -417,13 +454,15 @@ void render_class(const ClassDiagram &d, int id)
   const ImU32 hfill=ImGui::GetColorU32(ImGuiCol_TitleBg);
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
 
-  // store center positions for relation drawing
+  // store center positions and half-heights for relation drawing
   std::vector<ImVec2> centers(nc);
+  std::vector<float> half_h(nc);
   for(int i=0;i<nc;++i){
     auto [col,row]=grid_pos(i,cols);
     float x=orig.x+gap+col*(cw+gap), y=orig.y+gap+row*(heights[i]+gap);
     float h=heights[i];
     centers[i]=ImVec2(x+cw*0.5f,y+h*0.5f);
+    half_h[i]=h*0.5f;
     // outer border
     dl->AddRectFilled(ImVec2(x,y),ImVec2(x+cw,y+h),fill,4);
     dl->AddRect(ImVec2(x,y),ImVec2(x+cw,y+h),bord,4);
@@ -447,12 +486,13 @@ void render_class(const ClassDiagram &d, int id)
       hy+=row_h;
     }
   }
-  // relations
+  // relations — connect to box edges, not centers
   for(auto &r:d.relations){
     int fi=-1,ti=-1;
     for(int i=0;i<nc;++i){ if(d.classes[i].name==r.from) fi=i; if(d.classes[i].name==r.to) ti=i; }
     if(fi<0||ti<0) continue;
-    ImVec2 a=centers[fi],b=centers[ti];
+    ImVec2 a=rect_edge(centers[fi],cw*0.5f,half_h[fi],centers[ti]);
+    ImVec2 b=rect_edge(centers[ti],cw*0.5f,half_h[ti],centers[fi]);
     ImU32 lc2=ImGui::GetColorU32(ImGuiCol_TextDisabled);
     dl->AddLine(a,b,lc2,1.5f);
     float dx=b.x-a.x,dy=b.y-a.y,len=std::sqrt(dx*dx+dy*dy);
@@ -542,15 +582,19 @@ void render_state(const StateDiagram &d, int id)
       dl->AddText(ImVec2(x+(sw2-ts.x)*0.5f,y+(sh-ts.y)*0.5f),tcol,s.label.c_str());
     }
   }
-  // transitions
+  // transitions — connect to shape edges
   auto find_idx=[&](const std::string &sid)->int{
     for(int i=0;i<n;++i) if(d.states[i].id==sid) return i;
     return -1;
   };
+  auto state_edge=[&](int i, ImVec2 other)->ImVec2{
+    if(d.states[i].is_start||d.states[i].is_end) return circ_edge(centers[i],10.0f,other);
+    return rect_edge(centers[i],sw2*0.5f,sh*0.5f,other);
+  };
   for(auto &t:d.transitions){
     int fi=find_idx(t.from),ti=find_idx(t.to);
     if(fi<0||ti<0) continue;
-    ImVec2 a=centers[fi],b=centers[ti];
+    ImVec2 a=state_edge(fi,centers[ti]), b=state_edge(ti,centers[fi]);
     float dx=b.x-a.x,dy=b.y-a.y,len=std::sqrt(dx*dx+dy*dy);
     if(len>1){dx/=len;dy/=len;}
     dl->AddLine(a,b,lcol,1.5f);
@@ -664,11 +708,13 @@ void render_er(const ERDiagram &d, int id)
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
 
   std::vector<ImVec2> centers(n);
+  std::vector<float> er_half_h(n);
   for(int i=0;i<n;++i){
     auto [col,row]=grid_pos(i,cols);
     float x=orig.x+hgap+col*(ew+hgap), y=orig.y+vgap+row*(maxh+vgap);
     float h=heights[i];
     centers[i]=ImVec2(x+ew*0.5f,y+h*0.5f);
+    er_half_h[i]=h*0.5f;
     dl->AddRectFilled(ImVec2(x,y),ImVec2(x+ew,y+h),fill,3);
     dl->AddRect(ImVec2(x,y),ImVec2(x+ew,y+h),bord,3);
     // header
@@ -684,14 +730,15 @@ void render_er(const ERDiagram &d, int id)
       dl->AddText(ImVec2(x+4,ay+2),ac,buf); ay+=row_h;
     }
   }
-  // relations
+  // relations — connect to box edges
   auto find_idx=[&](const std::string &name)->int{
     for(int i=0;i<n;++i) if(d.entities[i].name==name) return i; return -1;
   };
   for(auto &r:d.relations){
     int fi=find_idx(r.e1),ti=find_idx(r.e2);
     if(fi<0||ti<0) continue;
-    ImVec2 a=centers[fi],b=centers[ti];
+    ImVec2 a=rect_edge(centers[fi],ew*0.5f,er_half_h[fi],centers[ti]);
+    ImVec2 b=rect_edge(centers[ti],ew*0.5f,er_half_h[ti],centers[fi]);
     dl->AddLine(a,b,lcol,1.5f);
     if(!r.label.empty()){
       ImVec2 ts=ImGui::CalcTextSize(r.label.c_str());
@@ -1071,7 +1118,8 @@ void render_requirement(const RequirementDiagram &d, int id)
   for(auto &r:d.relations){
     int fi=find_node(r.from),ti=find_node(r.to);
     if(fi<0||ti<0) continue;
-    ImVec2 a=centers[fi],b=centers[ti];
+    ImVec2 a=rect_edge(centers[fi],bw*0.5f,bh*0.5f,centers[ti]);
+    ImVec2 b=rect_edge(centers[ti],bw*0.5f,bh*0.5f,centers[fi]);
     dl->AddLine(a,b,lcol,1.5f);
     float dx=b.x-a.x,dy=b.y-a.y,len=std::sqrt(dx*dx+dy*dy);
     if(len>1){dx/=len;dy/=len;}
@@ -1208,12 +1256,10 @@ void render_git(const GitDiagram &d, int id)
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_mindmap(std::string_view src, MindmapDiagram &out)
 {
-  out=MindmapDiagram{}; Lines L{src}; std::string_view line; bool header=false;
-  while(L.next(line)){
+  out=MindmapDiagram{}; IndentLines L{src}; std::string_view line; bool header=false; int indent=0;
+  while(L.next(line,indent)){
     std::string ll=lc(line);
     if(!header){if(sw(ll,"mindmap")){header=true;continue;} continue;}
-    // count leading spaces for level
-    int indent=0; for(char c:line){ if(c==' ')indent++; else if(c=='\t')indent+=2; else break; }
     int level=indent/2;
     std::string_view lbl=tr(line);
     // strip shape markers: ((text)), (text), [text], {{text}}, )text(
@@ -1353,8 +1399,8 @@ void render_timeline(const TimelineDiagram &d, int id)
     ImU32 pc=series_color(i,0.8f);
     // period box
     draw_box(dl,ImVec2(x,orig.y+pad+20),ImVec2(period_w,period_h),ImGui::GetColorU32(ImGuiCol_FrameBg),pc,d.periods[i].label);
-    // dot on axis
-    dl->AddCircleFilled(ImVec2(x+period_w*0.5f,axis_y),5,pc);
+    // connector tick from box bottom to axis
+    dl->AddLine(ImVec2(x+period_w*0.5f,orig.y+pad+20+period_h),ImVec2(x+period_w*0.5f,axis_y),pc,1.5f);
     // events below
     float ey=orig.y+pad+20+period_h+4;
     for(auto &ev:d.periods[i].events){
@@ -1649,7 +1695,8 @@ void render_block(const BlockDiagram &d, int id)
   for(auto &e:d.edges){
     int fi=find_idx(e.from),ti=find_idx(e.to);
     if(fi<0||ti<0) continue;
-    ImVec2 a=centers[fi],b=centers[ti];
+    ImVec2 a=rect_edge(centers[fi],nw*0.5f,nh*0.5f,centers[ti]);
+    ImVec2 b=rect_edge(centers[ti],nw*0.5f,nh*0.5f,centers[fi]);
     dl->AddLine(a,b,lcol,1.5f);
     float dx=b.x-a.x,dy=b.y-a.y,len=std::sqrt(dx*dx+dy*dy);
     if(len>1){dx/=len;dy/=len;}
@@ -1729,31 +1776,27 @@ void render_packet(const PacketDiagram &d, int id)
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_kanban(std::string_view src, KanbanDiagram &out)
 {
-  out=KanbanDiagram{}; Lines L{src}; std::string_view line; bool header=false;
-  while(L.next(line)){
+  out=KanbanDiagram{}; IndentLines L{src}; std::string_view line; bool header=false;
+  int indent=0, col_indent=-1;
+  while(L.next(line,indent)){
     std::string ll=lc(line);
     if(!header){if(sw(ll,"kanban")){header=true;continue;} continue;}
-    if(line=="{") continue;
-    // column: id[Title]  or  bare id
-    // card: id2[Card Title] inside a column context
-    // heuristic: lines not starting with spaces = column; indented = card
-    int indent=0; for(char c:line){if(c==' ')indent++;else if(c=='\t')indent+=2;else break;}
-    std::string_view l=tr(line);
-    if(l.empty()) continue;
-    // skip @{...} metadata lines
-    if(l.front()=='@') continue;
-    size_t b1=l.find('['),b2=l.find(']');
+    if(line=="{"||line=="}") continue;
+    if(!line.empty()&&line.front()=='@') continue;
+    size_t b1=line.find('['),b2=line.find(']');
     std::string id2,lbl;
     if(b1!=std::string_view::npos&&b2!=std::string_view::npos){
-      id2=std::string(tr(l.substr(0,b1))); lbl=std::string(tr(l.substr(b1+1,b2-b1-1)));
+      id2=std::string(tr(line.substr(0,b1))); lbl=std::string(tr(line.substr(b1+1,b2-b1-1)));
     } else {
-      id2=std::string(l); lbl=id2;
+      id2=std::string(line); lbl=id2;
     }
     if(id2.empty()) continue;
-    if(indent==0||out.columns.empty()){
+    // First item establishes the column indent level
+    if(col_indent<0) col_indent=indent;
+    if(indent<=col_indent) {
       out.columns.push_back({id2,lbl,{}});
     } else {
-      out.columns.back().cards.push_back({id2,lbl});
+      if(!out.columns.empty()) out.columns.back().cards.push_back({id2,lbl});
     }
   }
   return header && !out.columns.empty();
@@ -2224,36 +2267,70 @@ void render_venn(const VennDiagram &d, int id)
 {
   ImGui::PushID(id);
   int ns=(int)d.sets.size(); if(ns<2){ ImGui::Text("Need >= 2 sets for Venn"); ImGui::PopID(); return; }
-  const float r=70.0f,pad=30.0f;
-  float cw=(ns+1)*r*1.2f+pad*2, ch=r*2+pad*2+20;
+  const float r=58.0f, pad=20.0f, title_h=20.0f;
+
+  // Compute canvas size
+  float cw, ch;
+  if(ns==3){
+    cw = r*3.8f + pad*2;
+    ch = r*3.2f + pad*2 + title_h;
+  } else {
+    float overlap=r*0.38f;
+    cw = ns*r*2-(ns-1)*overlap + pad*2;
+    ch = r*2 + pad*2 + title_h + 20.0f;
+  }
+
   const ImVec2 orig=ImGui::GetCursorScreenPos();
   ImGui::InvisibleButton("##venn",ImVec2(cw,ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
+
+  // Compute circle centers relative to orig
+  std::vector<ImVec2> set_centers(ns);
+  if(ns==3){
+    // Triangular layout: A top-center, B bottom-left, C bottom-right
+    float cx=orig.x+cw*0.5f, cy=orig.y+title_h+pad+r*1.15f;
+    float ox=r*0.78f, oy=r*0.45f;
+    set_centers[0]=ImVec2(cx,    cy-oy);   // A: top
+    set_centers[1]=ImVec2(cx-ox, cy+oy);   // B: bottom-left
+    set_centers[2]=ImVec2(cx+ox, cy+oy);   // C: bottom-right
+  } else {
+    float overlap=r*0.38f;
+    float start_x=orig.x+pad+r;
+    float cy=orig.y+title_h+pad+r;
+    for(int i=0;i<ns;++i) set_centers[i]=ImVec2(start_x+i*(r*2-overlap),cy);
+  }
+
   if(!d.title.empty()){ImVec2 ts=ImGui::CalcTextSize(d.title.c_str());dl->AddText(ImVec2(orig.x+(cw-ts.x)*0.5f,orig.y),tcol,d.title.c_str());}
-  ImVec2 center(orig.x+cw*0.5f, orig.y+20+pad+r);
-  // place circles in a row with overlap
-  float overlap=r*0.4f;
-  float total_w=ns*r*2-(ns-1)*overlap;
-  float start_x=center.x-total_w*0.5f+r;
-  std::vector<ImVec2> centers(ns);
+
+  // Draw circles
   for(int i=0;i<ns;++i){
-    centers[i]=ImVec2(start_x+i*(r*2-overlap),center.y);
     float rr,gg,bb; ImGui::ColorConvertHSVtoRGB((float)i/ns,0.55f,0.9f,rr,gg,bb);
-    dl->AddCircleFilled(centers[i],r,ImGui::GetColorU32(ImVec4(rr,gg,bb,0.25f)));
-    dl->AddCircle(centers[i],r,ImGui::GetColorU32(ImVec4(rr,gg,bb,0.8f)),0,2.0f);
-    // label
+    dl->AddCircleFilled(set_centers[i],r,ImGui::GetColorU32(ImVec4(rr,gg,bb,0.22f)));
+    dl->AddCircle(set_centers[i],r,ImGui::GetColorU32(ImVec4(rr,gg,bb,0.8f)),0,2.0f);
+  }
+
+  // Set labels — placed outside each circle's overlap direction
+  for(int i=0;i<ns;++i){
     std::string lbl=d.sets[i].label;
     ImVec2 ts=ImGui::CalcTextSize(lbl.c_str());
-    dl->AddText(ImVec2(centers[i].x-ts.x*0.5f,centers[i].y+r+4),tcol,lbl.c_str());
+    ImVec2 lp;
+    if(ns==3){
+      if(i==0) lp=ImVec2(set_centers[0].x-ts.x*0.5f, set_centers[0].y-r-ts.y-2); // above A
+      else if(i==1) lp=ImVec2(set_centers[1].x-ts.x-r*0.15f, set_centers[1].y+r*0.55f);  // below-left of B
+      else          lp=ImVec2(set_centers[2].x+r*0.15f,       set_centers[2].y+r*0.55f);  // below-right of C
+    } else {
+      lp=ImVec2(set_centers[i].x-ts.x*0.5f, set_centers[i].y+r+4);
+    }
+    dl->AddText(lp, tcol, lbl.c_str());
   }
-  // intersection labels
+
+  // Intersection labels at the centroid of the referenced set centers
   for(auto &vi:d.intersections){
     if(vi.label.empty()||vi.set_ids.size()<2) continue;
-    // find center between referenced sets
     float ix=0,iy=0; int cnt=0;
     for(auto &sid:vi.set_ids){
-      for(int i=0;i<ns;++i){ if(d.sets[i].id==sid){ix+=centers[i].x;iy+=centers[i].y;cnt++;break;} }
+      for(int i=0;i<ns;++i){ if(d.sets[i].id==sid){ix+=set_centers[i].x;iy+=set_centers[i].y;cnt++;break;} }
     }
     if(cnt>0){ ix/=cnt; iy/=cnt; ImVec2 ts=ImGui::CalcTextSize(vi.label.c_str()); dl->AddText(ImVec2(ix-ts.x*0.5f,iy-ts.y*0.5f),tcol,vi.label.c_str()); }
   }
@@ -2411,12 +2488,12 @@ void render_wardley(const WardleyDiagram &d, int id)
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_treeview(std::string_view src, TreeViewDiagram &out)
 {
-  out=TreeViewDiagram{}; Lines L{src}; std::string_view line; bool header=false;
+  out=TreeViewDiagram{}; bool header=false;
   std::vector<int> parent_at_level(20,-1);
-  while(L.next(line)){
+  IndentLines L{src}; std::string_view line; int indent=0;
+  while(L.next(line,indent)){
     std::string ll=lc(line);
     if(!header){if(sw(ll,"treeview")){header=true;continue;} continue;}
-    int indent=0; for(char c:line){if(c==' ')indent++;else if(c=='\t')indent+=2;else break;}
     int level=indent/2;
     std::string_view l=tr(line); if(l.empty()) continue;
     // strip tree drawing chars: ├─, └─, │, etc.

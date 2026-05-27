@@ -6313,7 +6313,8 @@ __CURSOR__)MD");
         }
       }
 
-      const float auto_h = std::max(140.0f, ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y);
+      const float max_preview_h = note_viewport ? note_viewport->Size.y * 0.8f : FLT_MAX;
+      const float auto_h = std::max(140.0f, std::min(max_preview_h, ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y));
       const ImVec2 pos = ImGui::GetWindowPos();
       const ImVec2 size = ImGui::GetWindowSize();
       note_rects.push_back(NoteRectInfo{ni, pos, ImVec2(pos.x + size.x, pos.y + size.y)});

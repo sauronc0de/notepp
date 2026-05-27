@@ -2027,7 +2027,24 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
 
   auto flush_chunk = [&]() {
     if(normal_chunk.empty()) return;
-    MarkdownView::render(normal_chunk);
+
+    const float cur_y      = ImGui::GetCursorScreenPos().y;
+    const float win_top    = ImGui::GetWindowPos().y;
+    const float win_bottom = win_top + ImGui::GetWindowHeight();
+    const float margin     = 64.f; // px buffer around the fold
+
+    if(cur_y > win_bottom + margin || cur_y < win_top - margin)
+    {
+      // Chunk is off-screen: skip expensive text layout, advance cursor by estimated height.
+      // Line count × line height is a conservative approximation; scroll position stays sane.
+      int lines = 1;
+      for(char c : normal_chunk) if(c == '\n') ++lines;
+      ImGui::Dummy(ImVec2(1.f, static_cast<float>(lines) * ImGui::GetTextLineHeightWithSpacing()));
+    }
+    else
+    {
+      MarkdownView::render(normal_chunk);
+    }
     normal_chunk.clear();
   };
 

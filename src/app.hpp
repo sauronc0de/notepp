@@ -77,7 +77,7 @@ private:
   void render_debug_history_window() const;
   void shutdown();
 
-  void frame_begin();
+  bool frame_begin();
   void frame_ui();
   void frame_end();
   void save_note_clipboard();
