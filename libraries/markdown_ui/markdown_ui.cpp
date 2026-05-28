@@ -2205,7 +2205,7 @@ Value make_inventory_slot_value(
     std::string title,
     std::string image,
     std::string tooltip,
-    std::optional<int> quantity = std::nullopt,
+    std::optional<std::string> quantity = std::nullopt,
     std::string mark_color = {},
     bool enabled = true)
 {
@@ -2214,13 +2214,8 @@ Value make_inventory_slot_value(
   if(!title.empty()) upsert_object_field(slot, "name", make_string_value(std::move(title)));
   if(!image.empty()) upsert_object_field(slot, "image", make_string_value(std::move(image)));
   if(!tooltip.empty()) upsert_object_field(slot, "tooltip", make_string_value(std::move(tooltip)));
-  if(quantity && *quantity > 0)
-  {
-    Value quantity_value;
-    quantity_value.kind = ValueKind::Number;
-    quantity_value.number = static_cast<double>(*quantity);
-    upsert_object_field(slot, "quantity", std::move(quantity_value));
-  }
+  if(quantity && !quantity->empty())
+    upsert_object_field(slot, "quantity", make_string_value(*quantity));
   if(!mark_color.empty()) upsert_object_field(slot, "color", make_string_value(std::move(mark_color)));
   if(!enabled)
   {
@@ -2717,7 +2712,7 @@ struct InventorySlotInfo
   std::string image;
   std::string tooltip;
   std::string color_text;
-  std::optional<int> quantity;
+  std::optional<std::string> quantity;
   std::optional<int> position;
   bool enabled = true;
   bool has_mark_color = false;
@@ -2771,13 +2766,21 @@ bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, st
     slot.tooltip = display_value(*tooltip_value);
   if(const Value *quantity_value = find_object_field(slot_value, "quantity"); quantity_value)
   {
-    if(quantity_value->kind != ValueKind::Number)
+    if(quantity_value->kind == ValueKind::String)
     {
-      error = "inventory quantity must be numeric";
+      const std::string_view q = trim(quantity_value->str);
+      if(!q.empty()) slot.quantity = std::string(q);
+    }
+    else if(quantity_value->kind == ValueKind::Number)
+    {
+      const int q = static_cast<int>(std::llround(quantity_value->number));
+      if(q > 0) slot.quantity = std::to_string(q);
+    }
+    else
+    {
+      error = "inventory quantity must be a string or number";
       return false;
     }
-    const int quantity = static_cast<int>(std::llround(quantity_value->number));
-    if(quantity > 0) slot.quantity = quantity;
   }
   if(const Value *position_value = find_object_field(slot_value, "position"); position_value)
   {
@@ -2829,6 +2832,7 @@ bool inventory_slot_has_content(const Value &slot_value)
   {
     if(field_name == "quantity")
     {
+      if(field_value.kind == ValueKind::String && !trim(field_value.str).empty()) return true;
       if(field_value.kind == ValueKind::Number && std::llround(field_value.number) > 0) return true;
       continue;
     }
@@ -2867,7 +2871,7 @@ void trim_inventory_slots(Value &items_value)
     items_value.array.pop_back();
 }
 
-bool parse_inventory_quantity(const char *text, std::optional<int> &quantity)
+bool parse_inventory_quantity(const char *text, std::optional<std::string> &quantity)
 {
   const std::string trimmed_text(trim(text ? std::string(text) : std::string()));
   if(trimmed_text.empty())
@@ -2875,17 +2879,7 @@ bool parse_inventory_quantity(const char *text, std::optional<int> &quantity)
     quantity.reset();
     return true;
   }
-
-  char *end = nullptr;
-  const long parsed = std::strtol(trimmed_text.c_str(), &end, 10);
-  if(end == trimmed_text.c_str() || (end && *end != '\0')) return false;
-  if(parsed <= 0)
-  {
-    quantity.reset();
-    return true;
-  }
-
-  quantity = static_cast<int>(parsed);
+  quantity = trimmed_text;
   return true;
 }
 
@@ -2980,16 +2974,18 @@ void render_inventory_hover_popup(const std::string &popup_id, const InventorySl
     }
     if(!slot.title.empty())
     {
+      if(slot.has_mark_color) ImGui::PushStyleColor(ImGuiCol_Text, slot.mark_color);
       ImGui::TextUnformatted(slot.title.c_str());
+      if(slot.has_mark_color) ImGui::PopStyleColor();
       if(slot.quantity)
       {
         ImGui::SameLine();
-        ImGui::TextDisabled("x%d", *slot.quantity);
+        ImGui::TextDisabled("%s", slot.quantity->c_str());
       }
     }
     else if(slot.quantity)
     {
-      ImGui::TextDisabled("x%d", *slot.quantity);
+      ImGui::TextDisabled("%s", slot.quantity->c_str());
     }
     if(!slot.enabled)
     {
@@ -2999,9 +2995,8 @@ void render_inventory_hover_popup(const std::string &popup_id, const InventorySl
     if((!slot.title.empty() || slot.quantity || !slot.enabled) && !slot.tooltip.empty()) ImGui::Separator();
     if(!slot.tooltip.empty())
     {
-      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 320.0f);
-      ImGui::TextUnformatted(slot.tooltip.c_str());
-      ImGui::PopTextWrapPos();
+      MarkdownView::set_render_width(320.0f);
+      MarkdownView::render(slot.tooltip);
     }
     ImGui::PopID();
   }
@@ -3052,9 +3047,9 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
       }
     }
 
-    if(slot.quantity && *slot.quantity > 1)
+    if(slot.quantity && !slot.quantity->empty())
     {
-      const std::string qty = std::to_string(*slot.quantity);
+      const std::string &qty = *slot.quantity;
       const ImVec2 qty_size = ImGui::CalcTextSize(qty.c_str());
       const ImVec2 badge_min(max.x - qty_size.x - 14.0f, max.y - qty_size.y - 10.0f);
       const ImVec2 badge_max(max.x - 4.0f, max.y - 4.0f);
@@ -3302,7 +3297,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
             std::snprintf(state.title, sizeof(state.title), "%s", slot.title.c_str());
             std::snprintf(state.image, sizeof(state.image), "%s", slot.image.c_str());
             std::snprintf(state.tooltip, sizeof(state.tooltip), "%s", slot.tooltip.c_str());
-            std::snprintf(state.quantity, sizeof(state.quantity), "%s", slot.quantity ? std::to_string(*slot.quantity).c_str() : "");
+            std::snprintf(state.quantity, sizeof(state.quantity), "%s", slot.quantity ? slot.quantity->c_str() : "");
             std::snprintf(state.color, sizeof(state.color), "%s", slot.color_text.c_str());
             state.enabled = slot.enabled;
             state.error.clear();
@@ -3339,10 +3334,10 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
           if(ImGui::Button("Apply"))
           {
-            std::optional<int> quantity;
+            std::optional<std::string> quantity;
             if(!parse_inventory_quantity(state.quantity, quantity))
             {
-              state.error = "Quantity must be a whole number.";
+              state.error = "Quantity is invalid.";
             }
             else
             {
