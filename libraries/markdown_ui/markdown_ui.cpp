@@ -1667,6 +1667,18 @@ void render_error_inline(const std::string &message)
   ImGui::PopStyleColor();
 }
 
+const VariableDecl *find_declaration(const EvalContext &ctx, const ParsedBlock &block, const std::string &name)
+{
+  const auto it = block.declarations.find(name);
+  if(it != block.declarations.end()) return &it->second;
+  if(ctx.global_declarations)
+  {
+    const auto git = ctx.global_declarations->find(name);
+    if(git != ctx.global_declarations->end()) return &git->second;
+  }
+  return nullptr;
+}
+
 void set_override(EvalContext &ctx, const ParsedBlock &block, const std::string &name, const Value &value, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
   const auto it = block.declarations.find(name);
@@ -1737,8 +1749,8 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
     render_error_inline("text() input must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -1749,7 +1761,7 @@ void render_text_input(EvalContext &ctx, const ParsedBlock &block, const Stateme
     render_error_inline(value_result.error);
     return;
   }
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
   const std::string widget_id = make_hidden_widget_id("text", stmt);
@@ -1810,8 +1822,8 @@ void render_int_input(EvalContext &ctx, const ParsedBlock &block, const Statemen
     render_error_inline("int() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -1827,7 +1839,7 @@ void render_int_input(EvalContext &ctx, const ParsedBlock &block, const Statemen
     render_error_inline("int() requires a numeric variable");
     return;
   }
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 90.0f);
   ExprResult buttons_result = ctx.evaluate(stmt.args[3]);
@@ -1864,8 +1876,8 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
     render_error_inline("slider() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -1893,7 +1905,7 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
     render_error_inline("slider() requires numeric values");
     return;
   }
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
   if(!label.text.empty())
@@ -1945,8 +1957,8 @@ void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement
     render_error_inline("checkbox() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -1962,7 +1974,7 @@ void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement
     render_error_inline("checkbox() requires a boolean variable");
     return;
   }
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   bool value = value_result.value.boolean;
   ImGui::BeginDisabled(readonly);
@@ -1994,8 +2006,8 @@ void render_enum(EvalContext &ctx, const ParsedBlock &block, const Statement &st
     render_error_inline("enum() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -2006,7 +2018,7 @@ void render_enum(EvalContext &ctx, const ParsedBlock &block, const Statement &st
     render_error_inline(value_result.error);
     return;
   }
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const std::string current = display_value(value_result.value);
   std::string option_error;
   const std::vector<std::string> options = evaluate_options(ctx, stmt.args[3], option_error);
@@ -2056,8 +2068,8 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
     render_error_inline("multicheck() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -2094,7 +2106,7 @@ void render_multicheck(EvalContext &ctx, const ParsedBlock &block, const Stateme
   }
   std::string preview = display_value(value_result.value);
   if(preview.empty()) preview = "(none)";
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   if(!label.text.empty())
   {
     render_styled_label(label);
@@ -2623,8 +2635,8 @@ void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statem
     render_error_inline("list() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -2649,7 +2661,7 @@ void render_list_widget(EvalContext &ctx, const ParsedBlock &block, const Statem
   if(available_width > 1.0f) widget_width = std::min(widget_width, available_width);
   ExprResult children_result = ctx.evaluate(stmt.args[3]);
   const bool allow_children = children_result.error.empty() && is_true(children_result.value);
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const size_t row_count = std::max<size_t>(1, count_list_rows(value_result.value, allow_children));
   const float per_row_height = ImGui::GetTextLineHeightWithSpacing() * 2.2f;
   const float height = std::min(420.0f, std::max(120.0f, 20.0f + static_cast<float>(row_count) * per_row_height));
@@ -3075,8 +3087,8 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     render_error_inline("inventory() must bind to a variable name");
     return;
   }
-  const auto decl_it = block.declarations.find(*var_name);
-  if(decl_it == block.declarations.end())
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
   {
     render_error_inline("unknown variable '" + *var_name + "'");
     return;
@@ -3116,7 +3128,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const int total_cells = rows * cols;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
-  const bool readonly = decl_it->second.computed;
+  const bool readonly = decl->computed;
   const ImGuiStyle &style = ImGui::GetStyle();
   const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
