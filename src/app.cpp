@@ -4837,7 +4837,7 @@ void App::frame_ui()
         return out.str();
       };
 
-      constexpr float kIconH = 16.0f;
+      constexpr float kIconH = 22.0f;
       auto icon_sz = [](const char *name) -> ImVec2 {
         const ImVec2 orig = get_toolbar_icon_size(name);
         if(orig.y <= 0.0f) return ImVec2(kIconH, kIconH);
