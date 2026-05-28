@@ -2382,7 +2382,7 @@ bool App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
-       !imgui_wants_keyboard &&
+       !imgui_wants_text_input &&
        event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_F2)
     {
@@ -2532,6 +2532,7 @@ void App::frame_ui()
   static char rename_note_buf[256] = {};
   static bool open_rename_folder_popup = false;
   static int rename_folder_idx = -1;
+  static bool sidebar_last_selected_was_folder = false;
   static char rename_folder_buf[256] = {};
   static bool open_note_color_popup = false;
   static int color_note_folder_idx = -1;
@@ -3665,6 +3666,7 @@ void App::frame_ui()
       editing_mode_ = false;
       request_exit_edit_mode_ = false;
       request_cancel_draw_tools_ = true;
+      sidebar_last_selected_was_folder = true;
       save_index();
     }
 
@@ -3752,6 +3754,7 @@ void App::frame_ui()
           editing_mode_ = false;
           request_exit_edit_mode_ = false;
           request_cancel_draw_tools_ = true;
+          sidebar_last_selected_was_folder = false;
           load_note_content_for_active();
           save_index();
         }
@@ -4513,6 +4516,34 @@ void App::frame_ui()
     pending_move_folder_target_idx = -1;
   }
   force_open_folder_idx = -1;
+  if(request_rename_selected_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+  {
+    const int fi = active_folder_idx_;
+    if(!sidebar_last_selected_was_folder)
+    {
+      const int ni = active_note_idx_;
+      if(fi >= 0 && fi < (int)folders_.size() &&
+         ni >= 0 && ni < (int)folders_[(size_t)fi].notes.size())
+      {
+        rename_note_folder_idx = fi;
+        rename_note_idx = ni;
+        std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s",
+                      folders_[(size_t)fi].notes[(size_t)ni].title.c_str());
+        open_rename_note_popup = true;
+      }
+    }
+    else
+    {
+      if(fi >= 0 && fi < (int)folders_.size())
+      {
+        rename_folder_idx = fi;
+        std::snprintf(rename_folder_buf, sizeof(rename_folder_buf), "%s",
+                      folder_base_name(folders_[(size_t)fi].name).c_str());
+        open_rename_folder_popup = true;
+      }
+    }
+    request_rename_selected_ = false;
+  }
   ImGui::PopStyleColor(4);
   ImGui::End();
 
@@ -4940,6 +4971,49 @@ __CURSOR__)MD");
             insert_topbar_snippet(R"MD(valueA(10)
 valueB(valueA+5)
 __CURSOR__)MD");
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Global variable"))
+          {
+            if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
+            {
+              perform_workspace_change("Create .globals.md", [&]() {
+                FolderMeta &gf = folders_[(size_t)active_folder_idx_];
+                const std::string globals_title = ".globals";
+                const std::string globals_path = make_note_path(gf.name, globals_title);
+
+                const bool already_in_index = std::any_of(gf.notes.begin(), gf.notes.end(),
+                    [&](const NoteMeta &nm) { return nm.path == globals_path; });
+
+                if(!already_in_index)
+                {
+                  NoteMeta gn;
+                  gn.title = globals_title;
+                  gn.path = globals_path;
+                  std::filesystem::create_directories(std::filesystem::path(globals_path).parent_path());
+                  if(!std::filesystem::exists(globals_path))
+                  {
+                    std::ofstream out(globals_path);
+                    if(out)
+                      out << "```UI\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n";
+                  }
+                  gf.notes.push_back(std::move(gn));
+                  flash_mark_note(gf.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+                  flash_mark_folder(gf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+                  active_note_idx_ = (int)gf.notes.size() - 1;
+                  load_note_content_for_active();
+                  save_index();
+                }
+                else
+                {
+                  const auto it = std::find_if(gf.notes.begin(), gf.notes.end(),
+                      [&](const NoteMeta &nm) { return nm.path == globals_path; });
+                  active_note_idx_ = (int)(it - gf.notes.begin());
+                  load_note_content_for_active();
+                  show_history_indicator("Opened", ".globals.md", ImVec4(0.26f, 0.59f, 0.98f, 1.0f));
+                }
+              });
+            }
             ImGui::CloseCurrentPopup();
           }
           ImGui::Separator();

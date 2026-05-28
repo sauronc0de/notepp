@@ -35,7 +35,8 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
     - [Built-in Functions](#134-built-in-functions)
     - [Conditionals](#135-conditionals)
     - [Label Color Syntax](#136-label-color-syntax)
-    - [Full Examples](#137-full-examples)
+    - [Global Variables](#137-global-variables)
+    - [Full Examples](#138-full-examples)
 14. [Mermaid Diagrams](#14-mermaid-diagrams)
     - [Flowchart / Graph](#141-flowchart--graph)
     - [Pie Chart](#142-pie-chart)
@@ -75,7 +76,7 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 |--------|-----|
 | New folder | Right-click in the sidebar folder area → **New Folder** |
 | New note | Right-click a folder → **New Note**, or use the `+` button |
-| Rename | Right-click the folder or note → **Rename** |
+| Rename | Right-click the folder or note → **Rename**, or select and press **F2** |
 | Delete | Right-click → **Delete** |
 
 ### Organizing
@@ -376,6 +377,7 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 | Ctrl+. | Open emoji picker (Linux) / native emoji panel (Windows) |
 | Ctrl+Scroll | Change font size (hover over note) |
 | Ctrl+Click | Multi-select notes in sidebar |
+| F2 | Rename selected note or folder |
 | Double-click word | Select entire word |
 | Right-click | Context menus everywhere |
 
@@ -674,6 +676,21 @@ if(condition) {
 - Conditions use the full expression syntax from [12.3](#123-expressions--operators).
 - Conditionals can reference any declared variable.
 
+**Conditional assignments** — assign a value to a variable when a condition is true:
+
+```
+lvl(0)
+xp(300)
+if(xp >= 300) {
+  lvl = lvl + 2
+}
+text(lvl)
+```
+
+Compound assignment shorthand: `lvl += 2` equals `lvl = lvl + 2`. Supported: `+=` `-=` `*=` `/=`.
+
+> Assignments inside `if` blocks are **persistent** — every frame the condition is true, the new value is written back to the note. Use this for conditional state transitions, and `button()` for one-shot changes.
+
 **Examples:**
 ```
 level(1)
@@ -714,7 +731,32 @@ Format: `[color=#RRGGBB]text[/color]` or `[color=#RRGGBBAA]text[/color]` for alp
 
 ---
 
-### 13.7 Full Examples
+### 13.7 Global Variables
+
+Place a `.globals.md` file in any folder to declare variables shared across all notes in that folder. Only `UI` blocks inside it are read.
+
+````markdown
+```UI
+campaign("Curse of Strahd")
+party_level(5)
+gold(120)
+```
+````
+
+Any note in the same folder (or a subfolder) can then reference `campaign`, `party_level`, or `gold` directly in its own UI blocks without re-declaring them. Variables declared in the current note override globals with the same name.
+
+**Load order** (closest scope wins):
+
+1. Root-level `.globals.md`
+2. Parent folder `.globals.md`
+3. Current folder `.globals.md`
+4. Current note UI block
+
+`.globals.md` is optional — if the file doesn't exist, nothing changes. Create one via **Insert UI widget example → Global variable**, which creates the file in the current note's folder and opens it for editing.
+
+---
+
+### 13.8 Full Examples
 
 #### Simple counter
 

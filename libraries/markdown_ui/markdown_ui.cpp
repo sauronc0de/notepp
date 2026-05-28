@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
@@ -74,6 +75,7 @@ struct Statement
   enum class Kind
   {
     Declaration,
+    Assignment,
     TextOutput,
     TextInput,
     IntInput,
@@ -634,6 +636,7 @@ struct EvalContext
   std::unordered_map<std::string, Value> cache;
   std::unordered_map<std::string, std::string> cache_errors;
   std::set<std::string> visiting;
+  const std::map<std::string, VariableDecl> *global_declarations = nullptr;
 
   ExprResult evaluate(std::string_view expr)
   {
@@ -652,11 +655,20 @@ struct EvalContext
     if(const auto it = cache_errors.find(name); it != cache_errors.end()) return {{}, it->second};
 
     const auto decl_it = block.declarations.find(name);
-    if(decl_it == block.declarations.end()) return {{}, "unknown variable '" + name + "'"};
+    const bool in_local = decl_it != block.declarations.end();
+    const auto *decl = in_local ? &decl_it->second : nullptr;
+
+    if(!decl && global_declarations)
+    {
+      const auto git = global_declarations->find(name);
+      if(git != global_declarations->end()) decl = &git->second;
+    }
+
+    if(!decl) return {{}, "unknown variable '" + name + "'"};
     if(visiting.count(name) != 0) return {{}, "circular dependency involving '" + name + "'"};
 
     visiting.insert(name);
-    ExprResult result = evaluate(decl_it->second.expr_source);
+    ExprResult result = evaluate(decl->expr_source);
     visiting.erase(name);
     if(result.error.empty())
       cache[name] = result.value;
@@ -1226,7 +1238,43 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
     stmt.name = std::string(line.substr(name_start, pos - name_start));
 
     while(pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
-    if(pos >= line.size() || line[pos] != '(')
+    if(pos < line.size() && line[pos] != '(')
+    {
+      char compound_op = '\0';
+      size_t op_len = 0;
+      if(pos + 1 < line.size() && line[pos + 1] == '=')
+      {
+        if(line[pos] == '+') { compound_op = '+'; op_len = 2; }
+        else if(line[pos] == '-') { compound_op = '-'; op_len = 2; }
+        else if(line[pos] == '*') { compound_op = '*'; op_len = 2; }
+        else if(line[pos] == '/') { compound_op = '/'; op_len = 2; }
+      }
+      if(op_len == 0 && line[pos] == '=' && (pos + 1 >= line.size() || line[pos + 1] != '='))
+        op_len = 1;
+
+      if(op_len > 0)
+      {
+        const std::string rhs_raw(trim(line.substr(pos + op_len)));
+        stmt.kind = Statement::Kind::Assignment;
+        stmt.span = {line_offset + name_start, line_offset + line.size()};
+        if(rhs_raw.empty())
+          stmt.error = "expected expression after assignment operator";
+        else if(compound_op != '\0')
+          stmt.args.push_back(stmt.name + " " + compound_op + " (" + rhs_raw + ")");
+        else
+          stmt.args.push_back(rhs_raw);
+        row.statements.push_back(std::move(stmt));
+        pos = line.size();
+        continue;
+      }
+
+      stmt.kind = Statement::Kind::Error;
+      stmt.error = "expected '('";
+      stmt.span = {line_offset + name_start, line_offset + pos};
+      row.statements.push_back(std::move(stmt));
+      return false;
+    }
+    if(pos >= line.size())
     {
       stmt.kind = Statement::Kind::Error;
       stmt.error = "expected '('";
@@ -1562,9 +1610,19 @@ std::optional<std::pair<std::string, std::string>> parse_assignment(std::string_
       --brace_depth;
     else if(c == '=' && paren_depth == 0 && bracket_depth == 0 && brace_depth == 0)
     {
-      const std::string lhs(trim(expr.substr(0, i)));
+      if(i + 1 < expr.size() && expr[i + 1] == '=') { ++i; continue; } // skip ==
+      std::string_view lhs_raw = trim(expr.substr(0, i));
       const std::string rhs(trim(expr.substr(i + 1)));
+      char compound_op = '\0';
+      if(!lhs_raw.empty() && (lhs_raw.back() == '+' || lhs_raw.back() == '-' || lhs_raw.back() == '*' || lhs_raw.back() == '/'))
+      {
+        compound_op = lhs_raw.back();
+        lhs_raw = trim(lhs_raw.substr(0, lhs_raw.size() - 1));
+      }
+      const std::string lhs(lhs_raw);
       if(lhs.empty() || rhs.empty()) return std::nullopt;
+      if(compound_op != '\0')
+        return std::make_pair(lhs, lhs + " " + compound_op + " (" + rhs + ")");
       return std::make_pair(lhs, rhs);
     }
   }
@@ -3350,6 +3408,15 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
   {
   case Statement::Kind::Declaration:
     break;
+  case Statement::Kind::Assignment:
+  {
+    ExprResult result = ctx.evaluate(stmt.args[0]);
+    if(!result.error.empty())
+      errors.push_back(result.error);
+    else
+      set_override(ctx, block, stmt.name, result.value, replacements, errors);
+    break;
+  }
   case Statement::Kind::TextOutput:
     render_text_output(ctx, stmt);
     break;
@@ -3413,6 +3480,108 @@ void apply_replacements(std::string &markdown, size_t body_start, const ParsedBl
 
 static std::unordered_map<std::string, ParsedBlock> g_block_parse_cache;
 
+struct GlobalsFileCacheEntry
+{
+  std::filesystem::file_time_type mtime;
+  std::string content;
+};
+static std::unordered_map<std::string, GlobalsFileCacheEntry> g_globals_file_cache;
+
+static std::string read_globals_file(const std::filesystem::path &path)
+{
+  const std::string key = path.string();
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(path, ec);
+  if(ec) return {};
+
+  if(auto it = g_globals_file_cache.find(key); it != g_globals_file_cache.end())
+  {
+    if(it->second.mtime == mtime) return it->second.content;
+  }
+
+  std::ifstream in(path, std::ios::binary);
+  if(!in) return {};
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  g_globals_file_cache[key] = {mtime, content};
+  return content;
+}
+
+static std::map<std::string, VariableDecl> load_global_declarations()
+{
+  static std::map<std::string, VariableDecl> s_cache;
+  static int s_cache_frame = -1;
+  static std::filesystem::path s_cache_doc;
+
+  const int cur_frame = ImGui::GetFrameCount();
+  if(cur_frame == s_cache_frame && s_cache_doc == g_widget_document_path)
+    return s_cache;
+
+  s_cache_frame = cur_frame;
+  s_cache_doc = g_widget_document_path;
+  s_cache = {};
+
+  if(g_widget_document_path.empty()) return s_cache;
+
+  std::vector<std::filesystem::path> chain;
+  std::filesystem::path dir = g_widget_document_path.parent_path();
+  while(!dir.empty() && dir != dir.parent_path())
+  {
+    chain.push_back(dir / ".globals.md");
+    dir = dir.parent_path();
+  }
+  std::reverse(chain.begin(), chain.end());
+
+  for(const auto &globals_path : chain)
+  {
+    const std::string content = read_globals_file(globals_path);
+    if(content.empty()) continue;
+
+    // Extract all ```UI ... ``` blocks from the file
+    size_t pos = 0;
+    while(pos < content.size())
+    {
+      const size_t fence_pos = content.find("```UI", pos);
+      if(fence_pos == std::string::npos) break;
+
+      // Skip to end of fence line
+      const size_t after_fence = content.find('\n', fence_pos);
+      if(after_fence == std::string::npos) break;
+      const size_t body_start = after_fence + 1;
+
+      // Find closing fence
+      size_t scan = body_start;
+      size_t block_end = std::string::npos;
+      while(scan < content.size())
+      {
+        const size_t ls = scan;
+        size_t le = content.find('\n', scan);
+        const bool ln = (le != std::string::npos);
+        if(!ln) le = content.size();
+        const std::string_view line(content.data() + ls, le - ls);
+        if(trim(line) == "```")
+        {
+          block_end = ls;
+          break;
+        }
+        scan = ln ? le + 1 : le;
+      }
+      if(block_end == std::string::npos) break;
+
+      const std::string_view body(content.data() + body_start, block_end - body_start);
+      const std::string body_key(body);
+      auto cache_it = g_block_parse_cache.find(body_key);
+      if(cache_it == g_block_parse_cache.end())
+        cache_it = g_block_parse_cache.emplace(body_key, parse_block(body)).first;
+
+      for(const auto &[name, decl] : cache_it->second.declarations)
+        s_cache[name] = decl;
+
+      pos = block_end;
+    }
+  }
+  return s_cache;
+}
+
 } // namespace
 
 std::string capture_ui_state_snapshot()
@@ -3467,7 +3636,10 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
   ImGui::PushID(static_cast<int>(fence_start));
   ImGui::BeginGroup();
 
+  const std::map<std::string, VariableDecl> globals = load_global_declarations();
+
   EvalContext ctx{block};
+  ctx.global_declarations = globals.empty() ? nullptr : &globals;
   std::unordered_map<std::string, std::string> replacements;
   std::vector<std::string> runtime_errors = block.errors;
 
@@ -3478,7 +3650,7 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
     bool any_rendered = false;
     for(const Statement &stmt : row.statements)
     {
-      const bool renders = stmt.kind != Statement::Kind::Declaration;
+      const bool renders = stmt.kind != Statement::Kind::Declaration && stmt.kind != Statement::Kind::Assignment;
       if(renders && any_rendered) ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
       if(renders || !stmt.error.empty())
       {
@@ -3486,6 +3658,10 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
         render_statement(ctx, block, stmt, replacements, runtime_errors);
         ImGui::EndGroup();
         any_rendered = any_rendered || renders || !stmt.error.empty();
+      }
+      else if(stmt.kind == Statement::Kind::Assignment)
+      {
+        render_statement(ctx, block, stmt, replacements, runtime_errors);
       }
     }
     if(any_rendered) ImGui::Dummy(ImVec2(0.0f, 0.0f));
