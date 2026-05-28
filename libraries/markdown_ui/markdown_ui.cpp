@@ -1151,7 +1151,28 @@ ExprResult ExprParser::parse_primary()
     }
     skip_ws();
     if(peek() == '(') return parse_call(ident);
-    return ctx_.resolve_variable(ident);
+    ExprResult result = ctx_.resolve_variable(ident);
+    if(!result.error.empty()) return result;
+    while(true)
+    {
+      skip_ws();
+      if(peek() != '[') break;
+      ++pos_;
+      ExprResult idx = parse_expression();
+      if(!idx.error.empty()) return idx;
+      if(!consume(']')) return {{}, "expected ']' after array index"};
+      if(result.value.kind != ValueKind::Array)
+        return {{}, "cannot index into non-array value"};
+      if(idx.value.kind != ValueKind::Number || !idx.value.is_integer)
+        return {{}, "array index must be an integer"};
+      const int i = static_cast<int>(idx.value.number);
+      const int sz = static_cast<int>(result.value.array.size());
+      const int actual = i < 0 ? sz + i : i;
+      if(actual < 0 || actual >= sz)
+        return {{}, "array index out of bounds"};
+      result = {result.value.array[static_cast<size_t>(actual)], {}};
+    }
+    return result;
   }
 
   return {{}, "unexpected token in expression"};
@@ -1469,6 +1490,13 @@ ParsedBlock parse_block(std::string_view body)
     const bool has_newline = line_end != std::string::npos;
     if(!has_newline) line_end = body.size();
     const std::string_view line(body.data() + line_start, line_end - line_start);
+
+    if(line.size() >= 2 && line[0] == '/' && line[1] == '/')
+    {
+      pos = has_newline ? line_end + 1 : line_end;
+      ++line_number;
+      continue;
+    }
 
     if(pending_statement.empty())
     {

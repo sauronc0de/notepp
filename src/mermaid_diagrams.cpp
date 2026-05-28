@@ -30,7 +30,7 @@ static std::string strip_quotes(std::string_view s)
   return std::string(s);
 }
 
-// iterate lines, trimmed, skipping empty and %% comments
+// iterate lines, trimmed, skipping empty, %% and // comments
 struct Lines {
   std::string_view src;
   size_t pos = 0;
@@ -40,7 +40,7 @@ struct Lines {
       if(e == std::string_view::npos) e = src.size();
       std::string_view line = tr(src.substr(pos, e - pos));
       pos = (e < src.size()) ? e + 1 : e;
-      if(line.empty() || sw(line, "%%")) continue;
+      if(line.empty() || sw(line, "%%") || sw(line, "//")) continue;
       out = line;
       return true;
     }

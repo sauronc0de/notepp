@@ -396,6 +396,8 @@ Embed **interactive widgets** directly inside any note using a fenced code block
 
 Widget state is **persistent** — values survive edits, closing, and reopening. Changing the markdown source resets only the blocks that actually changed.
 
+Lines starting with `//` are treated as comments and ignored.
+
 ---
 
 ### 13.1 Variables
@@ -623,6 +625,7 @@ Expressions are used in variable declarations and `if()` conditions.
 | `\|\|` | Logical OR | `a == 1 \|\| b == 2` |
 | `!` | Logical NOT | `!empty(name)` |
 | `-value` | Negation | `-count` |
+| `array[i]` | Array index (0-based, negative counts from end) | `tags[0]`, `items[-1]` |
 
 **Truthiness rules:**
 - Number: `true` if non-zero
@@ -856,7 +859,7 @@ if(role == "guest") {
 
 ## 14. Mermaid Diagrams
 
-Embed diagrams in any note with a `mermaid` fenced code block, or use the diagram keyword directly as the fence language. All diagram types listed below are **fully rendered** as interactive graphics inside the note preview.
+Embed diagrams in any note with a `mermaid` fenced code block, or use the diagram keyword directly as the fence language. All diagram types listed below are **fully rendered** as interactive graphics inside the note preview. Lines starting with `//` are treated as comments and ignored.
 
 ````markdown
 ```mermaid
