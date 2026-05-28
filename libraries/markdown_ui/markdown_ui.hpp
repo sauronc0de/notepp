@@ -21,4 +21,6 @@ std::string capture_ui_state_snapshot();
 void apply_ui_state_snapshot(std::string_view snapshot);
 
 RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size_t fence_line_end, size_t block_end);
+
+std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::string_view template_body);
 } // namespace MarkdownUi

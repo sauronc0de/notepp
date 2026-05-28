@@ -37,10 +37,11 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
     - [Label Color Syntax](#136-label-color-syntax)
     - [Global Variables](#137-global-variables)
     - [Full Examples](#138-full-examples)
-14. [Mermaid Diagrams](#14-mermaid-diagrams)
-    - [Flowchart / Graph](#141-flowchart--graph)
-    - [Pie Chart](#142-pie-chart)
-    - [Recognized Types (Placeholder)](#143-recognized-types-placeholder)
+14. [Reactive Diagrams (ui-mermaid)](#14-reactive-diagrams-ui-mermaid)
+15. [Mermaid Diagrams](#15-mermaid-diagrams)
+    - [Flowchart / Graph](#151-flowchart--graph)
+    - [Pie Chart](#152-pie-chart)
+    - [Recognized Types (Placeholder)](#153-recognized-types-placeholder)
 
 ---
 
@@ -857,7 +858,69 @@ if(role == "guest") {
 
 ---
 
-## 14. Mermaid Diagrams
+## 14. Reactive Diagrams (ui-mermaid)
+
+A `ui-mermaid` fenced block is a Mermaid diagram template where `${expr}` placeholders are resolved against the current UI variable state before rendering. Any widget, button, slider, or computed value — including variables from `.globals.md` — will update the diagram live as values change.
+
+````markdown
+```ui-mermaid
+xychart-beta
+  title "Monthly Sales"
+  x-axis [Jan, Feb, Mar]
+  y-axis 0 --> 20000
+  bar ${sales}
+```
+````
+
+When `sales` is `[5000, 8000, 12000]` the placeholder expands to `[5000, 8000, 12000]` and the chart renders with those values. Buttons or sliders that modify `sales` will redraw the chart on the next frame.
+
+### Expression syntax
+
+Any expression the UI block system supports is valid inside `${ }`:
+
+| Placeholder | Expands to |
+|-------------|-----------|
+| `${gold}` | current value of variable `gold` |
+| `${sales[0]}` | first element of array `sales` |
+| `${party_level * 10}` | arithmetic on a variable |
+| `${sales}` | full array literal `[v1, v2, v3]` |
+
+### Example — buttons that update a chart
+
+**`.globals.md`** (shared across folder):
+
+````markdown
+```UI
+sales([5000, 8000, 12000])
+
+button("Boost January", 140, sales[0]=15000)
+button("Boost March",   140, sales[2]=18000)
+```
+````
+
+**Any note in the folder:**
+
+````markdown
+```ui-mermaid
+xychart-beta
+  title "Monthly Sales"
+  x-axis [Jan, Feb, Mar]
+  y-axis 0 --> 20000
+  bar ${sales}
+```
+````
+
+Clicking "Boost January" updates `sales[0]` to `15000` and the chart redraws immediately.
+
+### Rules
+
+- Only `UI` blocks and `.globals.md` variables are in scope — no other markdown state.
+- If a `${expr}` fails to evaluate, the placeholder is left as-is in the diagram source.
+- All Mermaid diagram types are supported.
+
+---
+
+## 15. Mermaid Diagrams
 
 Embed diagrams in any note with a `mermaid` fenced code block, or use the diagram keyword directly as the fence language. All diagram types listed below are **fully rendered** as interactive graphics inside the note preview. Lines starting with `//` are treated as comments and ignored.
 
@@ -870,7 +933,7 @@ flowchart LR
 
 ---
 
-### 14.1 Flowchart / Graph
+### 15.1 Flowchart / Graph
 
 **Keywords:** `flowchart`, `graph`
 
@@ -905,7 +968,7 @@ graph LR
 
 ---
 
-### 14.2 Pie Chart
+### 15.2 Pie Chart
 
 **Keyword:** `pie`  · `title` is optional.
 
@@ -921,7 +984,7 @@ pie title Browser Share
 
 ---
 
-### 14.3 Sequence Diagram
+### 15.3 Sequence Diagram
 
 **Keyword:** `sequenceDiagram`
 
@@ -942,7 +1005,7 @@ sequenceDiagram
 
 ---
 
-### 14.4 Class Diagram
+### 15.4 Class Diagram
 
 **Keyword:** `classDiagram`
 
@@ -963,7 +1026,7 @@ classDiagram
 
 ---
 
-### 14.5 State Diagram
+### 15.5 State Diagram
 
 **Keywords:** `stateDiagram`, `stateDiagram-v2`  · `[*]` = start / end state.
 
@@ -979,7 +1042,7 @@ stateDiagram-v2
 
 ---
 
-### 14.6 Entity Relationship Diagram
+### 15.6 Entity Relationship Diagram
 
 **Keyword:** `erDiagram`
 
@@ -1001,7 +1064,7 @@ erDiagram
 
 ---
 
-### 14.7 User Journey
+### 15.7 User Journey
 
 **Keyword:** `journey`
 
@@ -1020,7 +1083,7 @@ journey
 
 ---
 
-### 14.8 Gantt Chart
+### 15.8 Gantt Chart
 
 **Keyword:** `gantt`  · Duration units: `d` (days), `w` (weeks), `h` (hours).
 
@@ -1041,7 +1104,7 @@ gantt
 
 ---
 
-### 14.9 Quadrant Chart
+### 15.9 Quadrant Chart
 
 **Keyword:** `quadrantChart`
 
@@ -1064,7 +1127,7 @@ quadrantChart
 
 ---
 
-### 14.10 Requirement Diagram
+### 15.10 Requirement Diagram
 
 **Keyword:** `requirementDiagram`
 
@@ -1087,7 +1150,7 @@ requirementDiagram
 
 ---
 
-### 14.11 Git Graph
+### 15.11 Git Graph
 
 **Keyword:** `gitgraph`
 
@@ -1106,7 +1169,7 @@ gitgraph
 
 ---
 
-### 14.12 Mindmap
+### 15.12 Mindmap
 
 **Keyword:** `mindmap`  · Indentation defines hierarchy. Shape wrappers: `((text))` circle · `(text)` rounded · `[text]` square · `{{text}}` hexagon.
 
@@ -1128,7 +1191,7 @@ mindmap
 
 ---
 
-### 14.13 Timeline
+### 15.13 Timeline
 
 **Keyword:** `timeline`  · Format: `period : event1 : event2`
 
@@ -1147,7 +1210,7 @@ timeline
 
 ---
 
-### 14.14 Sankey Diagram
+### 15.14 Sankey Diagram
 
 **Keywords:** `sankey-beta`, `sankey`  · CSV format: `source,target,value`
 
@@ -1164,7 +1227,7 @@ Revenue,Profit,15
 
 ---
 
-### 14.15 XY Chart
+### 15.15 XY Chart
 
 **Keywords:** `xychart-beta`, `xychart`
 
@@ -1181,7 +1244,7 @@ xychart-beta
 
 ---
 
-### 14.16 Block Diagram
+### 15.16 Block Diagram
 
 **Keywords:** `block-beta`, `block`
 
@@ -1199,7 +1262,7 @@ block-beta
 
 ---
 
-### 14.17 Packet Diagram
+### 15.17 Packet Diagram
 
 **Keywords:** `packet-beta`, `packet`  · Format: `start-end: "Field Name"`
 
@@ -1216,7 +1279,7 @@ packet-beta
 
 ---
 
-### 14.18 Kanban Board
+### 15.18 Kanban Board
 
 **Keyword:** `kanban`  · Columns are top-level items; cards are indented.
 
@@ -1236,7 +1299,7 @@ kanban
 
 ---
 
-### 14.19 Architecture Diagram
+### 15.19 Architecture Diagram
 
 **Keywords:** `architecture-beta`, `architecture`
 
@@ -1254,7 +1317,7 @@ architecture-beta
 
 ---
 
-### 14.20 Radar Chart
+### 15.20 Radar Chart
 
 **Keywords:** `radar-beta`, `radar`  · Simple syntax: `Axis: value` per line.
 
@@ -1289,7 +1352,7 @@ radar-beta
 
 ---
 
-### 14.21 Treemap
+### 15.21 Treemap
 
 **Keywords:** `treemap-beta`, `treemap`  · Indentation = hierarchy; leaf nodes have a numeric value.
 
@@ -1308,7 +1371,7 @@ treemap-beta
 
 ---
 
-### 14.22 ZenUML
+### 15.22 ZenUML
 
 **Keyword:** `zenuml`  · Uses `Object.method(Target)` call syntax.
 
@@ -1327,7 +1390,7 @@ zenuml
 
 ---
 
-### 14.23 Event Modeling
+### 15.23 Event Modeling
 
 **Keyword:** `eventmodeling`
 
@@ -1345,7 +1408,7 @@ eventmodeling
 
 ---
 
-### 14.24 Venn Diagram
+### 15.24 Venn Diagram
 
 **Keyword:** `venn`
 
@@ -1364,7 +1427,7 @@ venn
 
 ---
 
-### 14.25 Ishikawa (Fishbone) Diagram
+### 15.25 Ishikawa (Fishbone) Diagram
 
 **Keyword:** `ishikawa`
 
@@ -1385,7 +1448,7 @@ ishikawa
 
 ---
 
-### 14.26 Wardley Map
+### 15.26 Wardley Map
 
 **Keyword:** `wardley`  · Components placed at `[visibility, evolution]` (both 0–1).
 
@@ -1405,7 +1468,7 @@ wardley
 
 ---
 
-### 14.27 TreeView
+### 15.27 TreeView
 
 **Keyword:** `treeview`  · Pure indentation hierarchy.
 

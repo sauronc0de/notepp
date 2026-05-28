@@ -2143,6 +2143,46 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       }
     }
 
+    if(tline == "```ui-mermaid")
+    {
+      size_t scan = has_newline ? line_end + 1 : line_end;
+      size_t block_end = markdown.size();
+      std::string body;
+      bool closed = false;
+
+      while(scan < markdown.size())
+      {
+        const size_t ls = scan;
+        size_t le = markdown.find('\n', scan);
+        const bool ln = (le != std::string::npos);
+        if(!ln) le = markdown.size();
+
+        const std::string_view l(markdown.data() + ls, le - ls);
+        if(NoteCore::trim(l) == "```")
+        {
+          block_end = ln ? le + 1 : le;
+          closed = true;
+          break;
+        }
+        body.append(l.data(), l.size());
+        body.push_back('\n');
+        scan = ln ? le + 1 : le;
+      }
+
+      if(closed)
+      {
+        flush_chunk();
+        const std::string resolved = MarkdownUi::resolve_ui_mermaid_template(markdown, body);
+        std::string mermaid_type;
+        if(detect_mermaid_type(resolved, mermaid_type))
+          render_mermaid_block(mermaid_type, resolved, static_cast<int>(line_start));
+        else
+          normal_chunk.append(markdown.data() + line_start, block_end - line_start);
+        pos = block_end;
+        continue;
+      }
+    }
+
     if(tline == "```mermaid")
     {
       size_t scan = has_newline ? line_end + 1 : line_end;

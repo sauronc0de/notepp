@@ -3715,4 +3715,129 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
     g_block_parse_cache.erase(body_key);
   return result;
 }
+
+static std::string format_value_for_mermaid(const Value &v)
+{
+  switch(v.kind)
+  {
+  case ValueKind::Number:
+    if(v.is_integer)
+      return std::to_string(static_cast<long long>(v.number));
+    else
+    {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%g", v.number);
+      return std::string(buf);
+    }
+  case ValueKind::String:
+    return v.str;
+  case ValueKind::Bool:
+    return v.boolean ? "true" : "false";
+  case ValueKind::Array:
+  {
+    std::string out = "[";
+    for(size_t i = 0; i < v.array.size(); ++i)
+    {
+      if(i > 0) out += ", ";
+      out += format_value_for_mermaid(v.array[i]);
+    }
+    out += "]";
+    return out;
+  }
+  default:
+    return "";
+  }
+}
+
+static ParsedBlock collect_note_ui_declarations(std::string_view markdown)
+{
+  ParsedBlock merged;
+  size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const size_t fence_pos = markdown.find("```UI", pos);
+    if(fence_pos == std::string::npos) break;
+
+    const size_t after_fence = markdown.find('\n', fence_pos);
+    if(after_fence == std::string::npos) break;
+
+    const std::string_view fence_line(markdown.data() + fence_pos, after_fence - fence_pos);
+    if(trim(fence_line) != "```UI")
+    {
+      pos = after_fence + 1;
+      continue;
+    }
+
+    const size_t body_start = after_fence + 1;
+    size_t scan = body_start;
+    size_t body_end = std::string::npos;
+    while(scan < markdown.size())
+    {
+      const size_t ls = scan;
+      size_t le = markdown.find('\n', scan);
+      const bool ln = (le != std::string::npos);
+      if(!ln) le = markdown.size();
+      const std::string_view line(markdown.data() + ls, le - ls);
+      if(trim(line) == "```") { body_end = ls; break; }
+      scan = ln ? le + 1 : le;
+    }
+    if(body_end == std::string::npos) break;
+
+    const std::string_view body(markdown.data() + body_start, body_end - body_start);
+    const std::string body_key(body);
+    auto cache_it = g_block_parse_cache.find(body_key);
+    if(cache_it == g_block_parse_cache.end())
+      cache_it = g_block_parse_cache.emplace(body_key, parse_block(body)).first;
+
+    for(const auto &[name, decl] : cache_it->second.declarations)
+      merged.declarations[name] = decl;
+
+    pos = body_end + 1;
+  }
+  return merged;
+}
+
+std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::string_view template_body)
+{
+  ParsedBlock note_decls = collect_note_ui_declarations(note_markdown);
+  const std::map<std::string, VariableDecl> globals = load_global_declarations();
+
+  EvalContext ctx{note_decls};
+  ctx.global_declarations = globals.empty() ? nullptr : &globals;
+
+  std::string result;
+  result.reserve(template_body.size());
+
+  size_t pos = 0;
+  while(pos < template_body.size())
+  {
+    const size_t marker = template_body.find("${", pos);
+    if(marker == std::string_view::npos)
+    {
+      result.append(template_body.data() + pos, template_body.size() - pos);
+      break;
+    }
+
+    result.append(template_body.data() + pos, marker - pos);
+
+    const size_t expr_start = marker + 2;
+    const size_t close = template_body.find('}', expr_start);
+    if(close == std::string_view::npos)
+    {
+      result.append(template_body.data() + marker, template_body.size() - marker);
+      break;
+    }
+
+    const std::string_view expr(template_body.data() + expr_start, close - expr_start);
+    const ExprResult eval_result = ctx.evaluate(expr);
+    if(eval_result.error.empty())
+      result += format_value_for_mermaid(eval_result.value);
+    else
+      result.append(template_body.data() + marker, close - marker + 1);
+
+    pos = close + 1;
+  }
+
+  return result;
+}
 } // namespace MarkdownUi
