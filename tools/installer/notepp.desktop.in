@@ -2,7 +2,7 @@
 Name=Notepp
 Comment=Markdown note-taking application
 Exec=/usr/bin/notepp
-Icon=notepp
+Icon=/usr/share/pixmaps/notepp.ico
 Type=Application
 Categories=Office;TextEditor;
 Terminal=false

@@ -197,6 +197,11 @@ elseif(ENABLE_DEB_PACKAGE)
     COMPONENT notepp
   )
 
+  install(FILES "${CMAKE_SOURCE_DIR}/assets/icon/notepp.ico"
+    DESTINATION "share/pixmaps"
+    COMPONENT notepp
+  )
+
   set(CPACK_GENERATOR "DEB")
   set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_SOURCE_DIR}/dist/${PROJECT_VERSION}")
   set(CPACK_PACKAGE_NAME "notepp")
