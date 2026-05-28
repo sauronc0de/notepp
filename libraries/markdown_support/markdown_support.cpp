@@ -2108,7 +2108,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       continue;
     }
 
-    if(tline == "```UI")
+    if(tline == "```ui")
     {
       size_t scan = has_newline ? line_end + 1 : line_end;
       size_t block_end = markdown.size();

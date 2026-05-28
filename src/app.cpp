@@ -4938,7 +4938,7 @@ void App::frame_ui()
           if(ImGui::MenuItem("Full UI example"))
           {
             insert_topbar_snippet(
-                R"MD(```UI
+                R"MD(```ui
 count(10)
 name("Sauron")
 enabled(true)
@@ -4995,7 +4995,7 @@ __CURSOR__)MD");
                   {
                     std::ofstream out(globals_path);
                     if(out)
-                      out << "```UI\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n";
+                      out << "```ui\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n";
                   }
                   gf.notes.push_back(std::move(gn));
                   flash_mark_note(gf.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));

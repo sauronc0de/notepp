@@ -221,7 +221,7 @@ A **single newline** between images keeps them on the same row. A **blank line**
 | ![color](assets/icons/color-brush.png) | **Color Text** | Opens color picker, wraps selection in `[color=#RRGGBB]…[/color]` |
 | ![todo](assets/icons/to-do-list.png) | **Task List** | Inserts `- [ ] ` task item |
 | ![table](assets/icons/table.png) | **Table** | Opens dialog — choose rows & columns, inserts Markdown table |
-| ![widgets](assets/icons/widgets.png) | **UI Block** | Inserts a new `UI` code fence |
+| ![widgets](assets/icons/widgets.png) | **UI Block** | Inserts a new `ui` code fence |
 | ![find](assets/icons/find.png) | **Find** | Opens search panel (Ctrl+F) |
 
 ### Drawing / Preview mode toolbar
@@ -386,10 +386,10 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 
 ## 13. UI Block System
 
-Embed **interactive widgets** directly inside any note using a fenced code block with the `UI` language tag.
+Embed **interactive widgets** directly inside any note using a fenced code block with the `ui` language tag.
 
 ````markdown
->```UI
+>```ui
 >variableName(initialValue)
 >widget(variable, "Label", width, ...options)
 >```
@@ -737,10 +737,10 @@ Format: `[color=#RRGGBB]text[/color]` or `[color=#RRGGBBAA]text[/color]` for alp
 
 ### 13.7 Global Variables
 
-Place a `.globals.md` file in any folder to declare variables shared across all notes in that folder. Only `UI` blocks inside it are read.
+Place a `.globals.md` file in any folder to declare variables shared across all notes in that folder. Only `ui` blocks inside it are read.
 
 ````markdown
-```UI
+```ui
 campaign("Curse of Strahd")
 party_level(5)
 gold(120)
@@ -765,7 +765,7 @@ Any note in the same folder (or a subfolder) can then reference `campaign`, `par
 #### Simple counter
 
 ````markdown
-```UI
+```ui
 count(0)
 int(count, "Counter", 90, true)
 button("Reset", 80, count=0)
@@ -777,7 +777,7 @@ button("Reset", 80, count=0)
 #### Character sheet
 
 ````markdown
-```UI
+```ui
 name("Hero")
 class_("Warrior")
 hp(100)
@@ -805,7 +805,7 @@ if(level >= 10) {
 #### Task tracker
 
 ````markdown
-```UI
+```ui
 tasks([
   {name:"Write report",   tooltip:"Due Friday"},
   {name:"Review PR",      tooltip:"Urgent"},
@@ -823,7 +823,7 @@ list(tasks, "Tasks", 260, true)
 #### Inventory grid
 
 ````markdown
-```UI
+```ui
 inventory_data({
   rows:2,
   cols:2,
@@ -841,7 +841,7 @@ inventory(inventory_data, "Inventory", 220, 2, 2)
 #### Conditional form
 
 ````markdown
-```UI
+```ui
 role("user")
 enum(role, "Role", 130, ["user", "admin", "guest"])
 
@@ -890,7 +890,7 @@ Any expression the UI block system supports is valid inside `${ }`:
 **`.globals.md`** (shared across folder):
 
 ````markdown
-```UI
+```ui
 sales([5000, 8000, 12000])
 
 button("Boost January", 140, sales[0]=15000)
@@ -914,7 +914,7 @@ Clicking "Boost January" updates `sales[0]` to `15000` and the chart redraws imm
 
 ### Rules
 
-- Only `UI` blocks and `.globals.md` variables are in scope — no other markdown state.
+- Only `ui` blocks and `.globals.md` variables are in scope — no other markdown state.
 - If a `${expr}` fails to evaluate, the placeholder is left as-is in the diagram source.
 - All Mermaid diagram types are supported.
 

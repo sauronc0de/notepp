@@ -3644,7 +3644,7 @@ static const std::map<std::string, VariableDecl> &load_global_declarations()
     size_t pos = 0;
     while(pos < content.size())
     {
-      const size_t fence_pos = content.find("```UI", pos);
+      const size_t fence_pos = content.find("```ui", pos);
       if(fence_pos == std::string::npos) break;
 
       const size_t after_fence = content.find('\n', fence_pos);
@@ -3832,14 +3832,14 @@ static ParsedBlock collect_note_ui_declarations(std::string_view markdown)
   size_t pos = 0;
   while(pos < markdown.size())
   {
-    const size_t fence_pos = markdown.find("```UI", pos);
+    const size_t fence_pos = markdown.find("```ui", pos);
     if(fence_pos == std::string::npos) break;
 
     const size_t after_fence = markdown.find('\n', fence_pos);
     if(after_fence == std::string::npos) break;
 
     const std::string_view fence_line(markdown.data() + fence_pos, after_fence - fence_pos);
-    if(trim(fence_line) != "```UI")
+    if(trim(fence_line) != "```ui")
     {
       pos = after_fence + 1;
       continue;
