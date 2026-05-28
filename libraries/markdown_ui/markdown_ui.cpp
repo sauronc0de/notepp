@@ -2950,12 +2950,22 @@ std::string inventory_slot_fallback_label(const InventorySlotInfo &slot)
 
 void render_inventory_hover_popup(const std::string &popup_id, const InventorySlotInfo &slot)
 {
-  if(slot.title.empty() && slot.tooltip.empty() && !slot.quantity.has_value() && slot.enabled) return;
+  if(slot.title.empty() && slot.tooltip.empty() && slot.image.empty() && !slot.quantity.has_value() && slot.enabled) return;
 
   ImGui::SetNextWindowBgAlpha(0.96f);
   if(ImGui::BeginTooltip())
   {
     ImGui::PushID(popup_id.c_str());
+    if(!slot.image.empty())
+    {
+      const ImTextureID texture = get_widget_image_texture(slot.image);
+      if(texture)
+      {
+        ImGui::Image(texture, ImVec2(200.0f, 200.0f));
+        if(!slot.title.empty() || slot.quantity || !slot.enabled || !slot.tooltip.empty())
+          ImGui::Separator();
+      }
+    }
     if(!slot.title.empty())
     {
       ImGui::TextUnformatted(slot.title.c_str());
