@@ -111,6 +111,8 @@ struct VariableDecl
   SourceSpan expr_span;
   bool computed = false;
   size_t line_number = 0;
+  std::string source_file;       // empty = local note; set = path to .globals.md that owns this decl
+  size_t source_body_start = 0;  // byte offset of the UI block body within source_file
 };
 
 struct ParsedBlock
@@ -637,6 +639,7 @@ struct EvalContext
   std::unordered_map<std::string, std::string> cache_errors;
   std::set<std::string> visiting;
   const std::map<std::string, VariableDecl> *global_declarations = nullptr;
+  std::unordered_map<std::string, std::string> global_replacements;
 
   ExprResult evaluate(std::string_view expr)
   {
@@ -1667,20 +1670,39 @@ void render_error_inline(const std::string &message)
 void set_override(EvalContext &ctx, const ParsedBlock &block, const std::string &name, const Value &value, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
   const auto it = block.declarations.find(name);
-  if(it == block.declarations.end())
+  if(it != block.declarations.end())
   {
-    errors.push_back("unknown variable '" + name + "'");
+    if(it->second.computed)
+    {
+      errors.push_back("variable '" + name + "' is computed and readonly");
+      return;
+    }
+    ctx.overrides[name] = value;
+    ctx.cache.clear();
+    ctx.cache_errors.clear();
+    replacements[name] = serialize_value(value);
     return;
   }
-  if(it->second.computed)
+
+  if(ctx.global_declarations)
   {
-    errors.push_back("variable '" + name + "' is computed and readonly");
-    return;
+    const auto git = ctx.global_declarations->find(name);
+    if(git != ctx.global_declarations->end())
+    {
+      if(git->second.computed)
+      {
+        errors.push_back("global variable '" + name + "' is computed and readonly");
+        return;
+      }
+      ctx.overrides[name] = value;
+      ctx.cache.clear();
+      ctx.cache_errors.clear();
+      ctx.global_replacements[name] = serialize_value(value);
+      return;
+    }
   }
-  ctx.overrides[name] = value;
-  ctx.cache.clear();
-  ctx.cache_errors.clear();
-  replacements[name] = serialize_value(value);
+
+  errors.push_back("unknown variable '" + name + "'");
 }
 
 void render_text_output(EvalContext &ctx, const Statement &stmt)
@@ -3534,21 +3556,76 @@ static std::string read_globals_file(const std::filesystem::path &path)
   return content;
 }
 
-static std::map<std::string, VariableDecl> load_global_declarations()
+static std::map<std::string, VariableDecl> g_globals_decl_cache;
+static int g_globals_decl_cache_frame = -1;
+static std::filesystem::path g_globals_decl_cache_doc;
+
+static void invalidate_globals_decl_cache() { g_globals_decl_cache_frame = -1; }
+
+static void apply_global_replacements_to_disk(
+    const std::unordered_map<std::string, std::string> &global_replacements,
+    const std::map<std::string, VariableDecl> &global_decls)
 {
-  static std::map<std::string, VariableDecl> s_cache;
-  static int s_cache_frame = -1;
-  static std::filesystem::path s_cache_doc;
+  if(global_replacements.empty()) return;
 
+  // Group pending writes by source file
+  using Change = std::pair<const VariableDecl *, std::string>;
+  std::unordered_map<std::string, std::vector<Change>> by_file;
+  for(const auto &[name, value] : global_replacements)
+  {
+    const auto it = global_decls.find(name);
+    if(it == global_decls.end() || it->second.source_file.empty()) continue;
+    by_file[it->second.source_file].emplace_back(&it->second, value);
+  }
+
+  for(auto &[file_path, changes] : by_file)
+  {
+    // Get current content (may already be cached)
+    const std::string cached = read_globals_file(std::filesystem::path(file_path));
+    if(cached.empty()) continue;
+    std::string content = cached;
+
+    // Apply replacements in reverse offset order so earlier spans stay valid
+    std::sort(changes.begin(), changes.end(), [](const Change &a, const Change &b) {
+      return (a.first->source_body_start + a.first->expr_span.start) >
+             (b.first->source_body_start + b.first->expr_span.start);
+    });
+    for(const auto &[decl, value] : changes)
+    {
+      const size_t abs_start = decl->source_body_start + decl->expr_span.start;
+      const size_t abs_end   = decl->source_body_start + decl->expr_span.end;
+      if(abs_end > content.size()) continue;
+      content.replace(abs_start, abs_end - abs_start, value);
+    }
+
+    // Write back to disk
+    std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
+    if(!out) continue;
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    out.close();
+
+    // Update the in-memory file cache with the new content so subsequent
+    // reads in the same frame see the updated values without a false mtime miss
+    std::error_code ec;
+    const auto new_mtime = std::filesystem::last_write_time(file_path, ec);
+    g_globals_file_cache[file_path] = {ec ? std::filesystem::file_time_type{} : new_mtime, content};
+  }
+
+  // Force reload of the merged declarations on the next render call
+  invalidate_globals_decl_cache();
+}
+
+static const std::map<std::string, VariableDecl> &load_global_declarations()
+{
   const int cur_frame = ImGui::GetFrameCount();
-  if(cur_frame == s_cache_frame && s_cache_doc == g_widget_document_path)
-    return s_cache;
+  if(cur_frame == g_globals_decl_cache_frame && g_globals_decl_cache_doc == g_widget_document_path)
+    return g_globals_decl_cache;
 
-  s_cache_frame = cur_frame;
-  s_cache_doc = g_widget_document_path;
-  s_cache = {};
+  g_globals_decl_cache_frame = cur_frame;
+  g_globals_decl_cache_doc = g_widget_document_path;
+  g_globals_decl_cache.clear();
 
-  if(g_widget_document_path.empty()) return s_cache;
+  if(g_widget_document_path.empty()) return g_globals_decl_cache;
 
   std::vector<std::filesystem::path> chain;
   std::filesystem::path dir = g_widget_document_path.parent_path();
@@ -3564,19 +3641,16 @@ static std::map<std::string, VariableDecl> load_global_declarations()
     const std::string content = read_globals_file(globals_path);
     if(content.empty()) continue;
 
-    // Extract all ```UI ... ``` blocks from the file
     size_t pos = 0;
     while(pos < content.size())
     {
       const size_t fence_pos = content.find("```UI", pos);
       if(fence_pos == std::string::npos) break;
 
-      // Skip to end of fence line
       const size_t after_fence = content.find('\n', fence_pos);
       if(after_fence == std::string::npos) break;
       const size_t body_start = after_fence + 1;
 
-      // Find closing fence
       size_t scan = body_start;
       size_t block_end = std::string::npos;
       while(scan < content.size())
@@ -3586,11 +3660,7 @@ static std::map<std::string, VariableDecl> load_global_declarations()
         const bool ln = (le != std::string::npos);
         if(!ln) le = content.size();
         const std::string_view line(content.data() + ls, le - ls);
-        if(trim(line) == "```")
-        {
-          block_end = ls;
-          break;
-        }
+        if(trim(line) == "```") { block_end = ls; break; }
         scan = ln ? le + 1 : le;
       }
       if(block_end == std::string::npos) break;
@@ -3601,13 +3671,18 @@ static std::map<std::string, VariableDecl> load_global_declarations()
       if(cache_it == g_block_parse_cache.end())
         cache_it = g_block_parse_cache.emplace(body_key, parse_block(body)).first;
 
-      for(const auto &[name, decl] : cache_it->second.declarations)
-        s_cache[name] = decl;
+      for(const auto &[name, parsed_decl] : cache_it->second.declarations)
+      {
+        VariableDecl d = parsed_decl;
+        d.source_file = globals_path.string();
+        d.source_body_start = body_start;
+        g_globals_decl_cache[name] = std::move(d);
+      }
 
       pos = block_end;
     }
   }
-  return s_cache;
+  return g_globals_decl_cache;
 }
 
 } // namespace
@@ -3664,7 +3739,7 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
   ImGui::PushID(static_cast<int>(fence_start));
   ImGui::BeginGroup();
 
-  const std::map<std::string, VariableDecl> globals = load_global_declarations();
+  const std::map<std::string, VariableDecl> &globals = load_global_declarations();
 
   EvalContext ctx{block};
   ctx.global_declarations = globals.empty() ? nullptr : &globals;
@@ -3708,6 +3783,8 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
     apply_replacements(markdown, body_start, block, replacements);
     result.markdown_changed = true;
   }
+  if(!ctx.global_replacements.empty())
+    apply_global_replacements_to_disk(ctx.global_replacements, globals);
   result.preview_state_changed = ctx.preview_state_changed;
   result.consumed_right_click = ctx.consumed_right_click;
   // Erase stale cache entry after all reads from block are done
@@ -3800,7 +3877,7 @@ static ParsedBlock collect_note_ui_declarations(std::string_view markdown)
 std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::string_view template_body)
 {
   ParsedBlock note_decls = collect_note_ui_declarations(note_markdown);
-  const std::map<std::string, VariableDecl> globals = load_global_declarations();
+  const std::map<std::string, VariableDecl> &globals = load_global_declarations();
 
   EvalContext ctx{note_decls};
   ctx.global_declarations = globals.empty() ? nullptr : &globals;
