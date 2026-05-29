@@ -656,6 +656,7 @@ public:
   bool eof() const;
 
 private:
+  ExprResult parse_ternary();
   ExprResult parse_logical_or();
   ExprResult parse_logical_and();
   ExprResult parse_comparison();
@@ -793,7 +794,23 @@ ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &
 
 ExprResult ExprParser::parse_expression()
 {
-  return parse_logical_or();
+  return parse_ternary();
+}
+
+ExprResult ExprParser::parse_ternary()
+{
+  ExprResult cond = parse_logical_or();
+  if(!cond.error.empty()) return cond;
+  skip_ws();
+  if(eof() || peek() != '?') return cond;
+  ++pos_;
+  ExprResult true_val = parse_expression();
+  if(!true_val.error.empty()) return true_val;
+  skip_ws();
+  if(!consume(':')) return {{}, "expected ':' in ternary expression"};
+  ExprResult false_val = parse_expression();
+  if(!false_val.error.empty()) return false_val;
+  return is_true(cond.value) ? true_val : false_val;
 }
 
 ExprResult ExprParser::parse_logical_or()

@@ -695,6 +695,21 @@ Compound assignment shorthand: `lvl += 2` equals `lvl = lvl + 2`. Supported: `+=
 
 > Assignments inside `if` blocks are **persistent** — every frame the condition is true, the new value is written back to the note. Use this for conditional state transitions, and `button()` for one-shot changes.
 
+**Ternary expressions** — choose a value inline without a full `if` block:
+
+```
+variable = condition ? expressionTrue : expressionFalse
+```
+
+Works inside any expression, including declarations:
+
+```
+save_charisma(charisma_mod + (has_prof ? proficiency_bonus : 0))
+label(score > 90 ? "Excellent" : "Average")
+```
+
+Ternaries can be nested and are right-associative: `a ? b : c ? d : e` evaluates as `a ? b : (c ? d : e)`.
+
 **Examples:**
 ```
 level(1)
