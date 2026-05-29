@@ -153,7 +153,42 @@ bool is_ident_char(char c)
   return std::isalnum(uc) || c == '_';
 }
 
-bool parse_if_open_line(std::string_view line, std::string &condition_out)
+// Finds the position of the '}' that closes the already-consumed '{'.
+// s is the content that comes after '{'. Handles nested braces and string literals.
+static size_t find_inline_close(std::string_view s)
+{
+  bool in_string = false;
+  bool escape = false;
+  int depth = 0;
+  for(size_t i = 0; i < s.size(); ++i)
+  {
+    const char c = s[i];
+    if(in_string)
+    {
+      if(escape)         escape = false;
+      else if(c == '\\') escape = true;
+      else if(c == '"')  in_string = false;
+    }
+    else
+    {
+      if(c == '"')      in_string = true;
+      else if(c == '{') ++depth;
+      else if(c == '}')
+      {
+        if(depth == 0) return i;
+        --depth;
+      }
+    }
+  }
+  return std::string_view::npos;
+}
+
+// Parses an if-open line in any of these forms:
+//   if(cond) {          -> brace_found=true,  inline_tail empty
+//   if(cond) { body }   -> brace_found=true,  inline_tail contains "body }"
+//   if(cond)            -> brace_found=false, inline_tail empty ('{' expected next line)
+bool parse_if_open_line(std::string_view line, std::string &condition_out,
+                        bool &brace_found, std::string_view &inline_tail)
 {
   const std::string_view t = trim(line);
   if(t.size() < 5 || t.substr(0, 2) != "if") return false;
@@ -200,10 +235,23 @@ bool parse_if_open_line(std::string_view line, std::string &condition_out)
   if(close == std::string_view::npos) return false;
   size_t tail = close + 1;
   while(tail < t.size() && (t[tail] == ' ' || t[tail] == '\t')) ++tail;
-  if(tail >= t.size() || t[tail] != '{') return false;
-  ++tail;
-  while(tail < t.size() && (t[tail] == ' ' || t[tail] == '\t')) ++tail;
-  if(tail != t.size()) return false;
+
+  if(tail >= t.size())
+  {
+    // "if(cond)" with no '{' — brace expected on the next line
+    brace_found = false;
+    inline_tail = {};
+  }
+  else if(t[tail] == '{')
+  {
+    brace_found = true;
+    ++tail; // skip '{'
+    inline_tail = t.substr(tail); // everything after '{', possibly including body and '}'
+  }
+  else
+  {
+    return false;
+  }
 
   condition_out = std::string(trim(t.substr(pos + 1, close - pos - 1)));
   return !condition_out.empty();
@@ -1452,6 +1500,7 @@ ParsedBlock parse_block(std::string_view body)
   size_t pending_offset = 0;
   size_t pending_line_number = 0;
   std::vector<std::string> pending_conditions;
+  std::optional<std::string> pending_if_cond;
 
   auto flush_pending = [&](bool force_error) {
     if(pending_statement.empty()) return;
@@ -1507,10 +1556,54 @@ ParsedBlock parse_block(std::string_view body)
 
     if(pending_statement.empty())
     {
-      std::string condition_expr;
-      if(parse_if_open_line(line, condition_expr))
+      // Handle "if(cond)\n{" — bare open brace expected after a brace-less if(...)
+      if(pending_if_cond.has_value())
       {
+        if(trim(line) == "{")
+        {
+          condition_stack.push_back(std::move(*pending_if_cond));
+          pending_if_cond.reset();
+          pos = has_newline ? line_end + 1 : line_end;
+          ++line_number;
+          continue;
+        }
+        block.errors.push_back("expected '{' after if(...)");
+        pending_if_cond.reset();
+        // fall through to process this line normally
+      }
+
+      std::string condition_expr;
+      bool brace_found = false;
+      std::string_view inline_tail;
+      if(parse_if_open_line(line, condition_expr, brace_found, inline_tail))
+      {
+        if(!brace_found)
+        {
+          // "if(cond)" without '{' — brace expected on the next non-comment line
+          pending_if_cond = std::move(condition_expr);
+          pos = has_newline ? line_end + 1 : line_end;
+          ++line_number;
+          continue;
+        }
+
         condition_stack.push_back(std::move(condition_expr));
+
+        // Check for inline body: "if(cond){ body }"
+        const size_t close_pos = find_inline_close(inline_tail);
+        if(close_pos != std::string_view::npos)
+        {
+          const std::string body_str(trim(inline_tail.substr(0, close_pos)));
+          if(!body_str.empty())
+          {
+            pending_statement = body_str;
+            pending_offset = line_start;
+            pending_line_number = line_number;
+            pending_conditions = condition_stack;
+            flush_pending(false);
+          }
+          condition_stack.pop_back();
+        }
+
         pos = has_newline ? line_end + 1 : line_end;
         ++line_number;
         continue;
