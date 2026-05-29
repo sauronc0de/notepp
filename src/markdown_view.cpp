@@ -1136,6 +1136,7 @@ struct MyMarkdown : public imgui_md
 
   void BLOCK_P(bool e) override
   {
+    if(m_suppress_block_p) return;
     if(!e)
     {
       if(m_suppress_block_p) return;
@@ -1483,6 +1484,7 @@ static void render_sections(const MdSection &s,
 static void render_inline_md_with_color_spans(std::string_view text)
 {
   auto &md = renderer();
+  md.m_suppress_block_p = true;
   auto render_code_chip = [&](std::string_view code, bool colored, ImVec4 color) {
     if(code.empty()) return;
     const ImVec2 pad(4.0f, 1.0f);
@@ -1629,6 +1631,7 @@ static void render_inline_md_with_color_spans(std::string_view text)
       }
     }
   }
+  md.m_suppress_block_p = false;
 }
 
 static std::vector<std::string> split_md_table_cells(std::string_view line)
@@ -1722,6 +1725,8 @@ static void render_markdown_block_with_tables(std::string_view text)
     else
     {
       render_inline_md_with_color_spans(block);
+      ImGui::NewLine();
+      ImGui::Dummy(ImVec2(0.0f, MyMarkdown::k_paragraph_gap));
     }
   };
 
