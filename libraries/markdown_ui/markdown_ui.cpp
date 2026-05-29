@@ -716,7 +716,7 @@ ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &
 
   Value out;
   out.kind = ValueKind::Number;
-  out.is_integer = lhs.value.is_integer && rhs.value.is_integer && op != '/';
+  out.is_integer = lhs.value.is_integer && rhs.value.is_integer && op != '/' && op != '%';
   switch(op)
   {
   case '+':
@@ -732,6 +732,10 @@ ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &
     if(std::fabs(rhs.value.number) < 1e-9) return {{}, "division by zero"};
     out.number = lhs.value.number / rhs.value.number;
     out.is_integer = false;
+    break;
+  case '%':
+    if(std::fabs(rhs.value.number) < 1e-9) return {{}, "division by zero"};
+    out.number = std::fmod(lhs.value.number, rhs.value.number);
     break;
   default:
     return {{}, "unsupported operator"};
@@ -858,7 +862,7 @@ ExprResult ExprParser::parse_multiplicative()
   while(true)
   {
     skip_ws();
-    if(eof() || (peek() != '*' && peek() != '/')) break;
+    if(eof() || (peek() != '*' && peek() != '/' && peek() != '%')) break;
     const char op = source_[pos_++];
     ExprResult rhs = parse_unary();
     lhs = combine_numeric(lhs, rhs, op);
