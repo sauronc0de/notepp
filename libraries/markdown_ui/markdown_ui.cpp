@@ -3003,7 +3003,7 @@ void render_inventory_hover_popup(const std::string &popup_id, const InventorySl
   ImGui::EndTooltip();
 }
 
-void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &min, const ImVec2 &max, bool selected, bool hovered)
+void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &min, const ImVec2 &max, bool selected, bool hovered, float cell_size = 48.0f)
 {
   auto mix = [](const ImVec4 &a, const ImVec4 &b, float t) {
     return ImVec4(
@@ -3050,11 +3050,17 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
     if(slot.quantity && !slot.quantity->empty())
     {
       const std::string &qty = *slot.quantity;
-      const ImVec2 qty_size = ImGui::CalcTextSize(qty.c_str());
-      const ImVec2 badge_min(max.x - qty_size.x - 14.0f, max.y - qty_size.y - 10.0f);
-      const ImVec2 badge_max(max.x - 4.0f, max.y - 4.0f);
-      draw_list->AddRectFilled(badge_min, badge_max, ImGui::GetColorU32(slot.enabled ? ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram) : ImVec4(0.30f, 0.30f, 0.32f, 0.92f)), 9.0f);
-      draw_list->AddText(ImVec2(badge_min.x + 6.0f, badge_min.y + 2.0f), ImGui::GetColorU32(ImGuiCol_Text), qty.c_str());
+      const float scale = std::min(cell_size, 60.0f) / 48.0f;
+      ImFont *font = ImGui::GetFont();
+      const float font_size = std::max(6.0f, ImGui::GetFontSize() * scale * 0.8f);
+      const ImVec2 qty_size = font->CalcTextSizeA(font_size, FLT_MAX, -1.0f, qty.c_str());
+      const float pad_h = 6.0f * scale;
+      const float pad_v = 2.0f * scale;
+      const float margin = 4.0f * scale;
+      const ImVec2 badge_min(max.x - qty_size.x - pad_h * 2.0f - margin, max.y - qty_size.y - pad_v * 2.0f - margin);
+      const ImVec2 badge_max(max.x - margin, max.y - margin);
+      draw_list->AddRectFilled(badge_min, badge_max, ImGui::GetColorU32(slot.enabled ? ImGui::GetStyleColorVec4(ImGuiCol_PlotHistogram) : ImVec4(0.30f, 0.30f, 0.32f, 0.92f)), 9.0f * scale);
+      draw_list->AddText(font, font_size, ImVec2(badge_min.x + pad_h, badge_min.y + pad_v), ImGui::GetColorU32(ImGuiCol_Text), qty.c_str());
     }
   }
 
@@ -3195,7 +3201,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           slot.tooltip = slot_error;
           errors.push_back(slot_error);
         }
-        draw_inventory_slot_preview(slot, min, max, selected_index == index, hovered);
+        draw_inventory_slot_preview(slot, min, max, selected_index == index, hovered, cell_size);
 
         if((inventory_slot_has_visual_content(slot) || !slot.enabled) && hovered && !ImGui::IsPopupOpen("##slot_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot);

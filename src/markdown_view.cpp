@@ -891,6 +891,7 @@ struct MyMarkdown : public imgui_md
 {
   bool m_last_item_was_image = false;
   ImVec2 m_last_rendered_image_sz = {0.0f, 0.0f};
+  bool m_suppress_block_p = false;
 
   static bool fill_image_nfo(const TextureRecord &rec, image_info &nfo)
   {
@@ -1137,6 +1138,7 @@ struct MyMarkdown : public imgui_md
   {
     if(!e)
     {
+      if(m_suppress_block_p) return;
       // If a pending SameLine from inline images is open, cancel it before the paragraph break.
       if(m_last_item_was_image)
       {
@@ -1504,7 +1506,9 @@ static void render_inline_md_with_color_spans(std::string_view text)
     ImGui::PushStyleColor(ImGuiCol_Button, markdown_link_color());
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, markdown_link_hover_color());
     if(colored) ImGui::PushStyleColor(ImGuiCol_Text, color);
+    md.m_suppress_block_p = true;
     md.print(normalized.data(), normalized.data() + normalized.size());
+    md.m_suppress_block_p = false;
     if(colored) ImGui::PopStyleColor();
     ImGui::PopStyleColor(2);
   };
