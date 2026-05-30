@@ -80,6 +80,7 @@ struct Statement
     TextInput,
     IntInput,
     Slider,
+    Bar,
     Checkbox,
     Enum,
     MultiCheck,
@@ -133,6 +134,7 @@ bool is_widget_name(std::string_view name)
   return name == "text" ||
          name == "int" ||
          name == "slider" ||
+         name == "bar" ||
          name == "checkbox" ||
          name == "enum" ||
          name == "multicheck" ||
@@ -1432,6 +1434,8 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
         stmt.kind = Statement::Kind::IntInput;
       else if(stmt.name == "slider")
         stmt.kind = Statement::Kind::Slider;
+      else if(stmt.name == "bar")
+        stmt.kind = Statement::Kind::Bar;
       else if(stmt.name == "checkbox")
         stmt.kind = Statement::Kind::Checkbox;
       else if(stmt.name == "enum")
@@ -2056,6 +2060,70 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
     }
   }
   ImGui::EndDisabled();
+}
+
+void render_progress_bar(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
+{
+  if(stmt.args.size() < 5 || stmt.args.size() > 6)
+  {
+    render_error_inline("bar() expects value, label, width, min, max[, color]");
+    return;
+  }
+  const auto var_name = parse_identifier_arg(stmt.args[0]);
+  if(!var_name)
+  {
+    render_error_inline("bar() must bind to a variable name");
+    return;
+  }
+  ExprResult value_result = ctx.resolve_variable(*var_name);
+  ExprResult min_result = ctx.evaluate(stmt.args[3]);
+  ExprResult max_result = ctx.evaluate(stmt.args[4]);
+  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
+  if(!min_result.error.empty()) { render_error_inline(min_result.error); return; }
+  if(!max_result.error.empty()) { render_error_inline(max_result.error); return; }
+  if(value_result.value.kind != ValueKind::Number || min_result.value.kind != ValueKind::Number || max_result.value.kind != ValueKind::Number)
+  {
+    render_error_inline("bar() requires numeric values");
+    return;
+  }
+
+  ImVec4 bar_color = ImVec4(0.20f, 0.70f, 0.25f, 1.0f);
+  if(stmt.args.size() >= 6)
+  {
+    ExprResult color_result = ctx.evaluate(stmt.args[5]);
+    if(color_result.error.empty() && color_result.value.kind == ValueKind::String)
+    {
+      if(!parse_hex_color_text(color_result.value.str, bar_color))
+      {
+        render_error_inline("bar() color must be #RRGGBB or #RRGGBBAA");
+        return;
+      }
+    }
+    else if(!color_result.error.empty())
+    {
+      render_error_inline("bar() color: " + color_result.error);
+      return;
+    }
+  }
+
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
+  const float width = evaluate_width(ctx, stmt.args[2], 140.0f);
+
+  const double val = value_result.value.number;
+  const double min_v = min_result.value.number;
+  const double max_v = max_result.value.number;
+  const float fraction = (max_v > min_v) ? static_cast<float>((val - min_v) / (max_v - min_v)) : 0.0f;
+  const float clamped = std::max(0.0f, std::min(1.0f, fraction));
+
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+  }
+
+  ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+  ImGui::ProgressBar(clamped, ImVec2(width, 0.0f), "");
+  ImGui::PopStyleColor();
 }
 
 void render_checkbox(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -3615,6 +3683,9 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
     break;
   case Statement::Kind::Slider:
     render_slider(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Bar:
+    render_progress_bar(ctx, block, stmt, replacements, errors);
     break;
   case Statement::Kind::Checkbox:
     render_checkbox(ctx, block, stmt, replacements, errors);

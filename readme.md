@@ -30,7 +30,7 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 12. [Keyboard Shortcuts](#12-keyboard-shortcuts)
 13. [UI Block System](#13-ui-block-system)
     - [Variables](#131-variables)
-    - [Widgets](#132-widgets)
+    - [Widgets](#132-widgets) (`text`, `int`, `slider`, `bar`, `checkbox`, `enum`, `multicheck`, `list`, `inventory`, `button`)
     - [Expressions & Operators](#133-expressions--operators)
     - [Built-in Functions](#134-built-in-functions)
     - [Conditionals](#135-conditionals)
@@ -499,6 +499,32 @@ slider(volume, "Volume", 200, 0, 100)
 
 ---
 
+#### `bar` — Read-only progress bar
+
+```
+bar(variable, "Label", width, min, max)
+bar(variable, "Label", width, min, max, "#RRGGBB")
+```
+
+| Arg | Description |
+|-----|-------------|
+| variable | Numeric variable (display only — never editable) |
+| `"Label"` | Label |
+| width | Width in pixels |
+| min | Minimum value |
+| max | Maximum value |
+| `"#RRGGBB"` | Optional fill color (hex, default green). Supports alpha: `#RRGGBBAA` |
+
+**Example:**
+```
+hp(75)
+mp(40)
+bar(hp, "HP", 200, 0, 100, "#e03030")
+bar(mp, "MP", 200, 0, 100, "#3060e0")
+```
+
+---
+
 #### `checkbox` — Boolean toggle
 
 ```
@@ -795,12 +821,14 @@ button("Reset", 80, count=0)
 ```ui
 name("Hero")
 class_("Warrior")
-hp(100)
+hp(75)
 mp(40)
 level(1)
 alive(true)
 
 text(name,   "Name",  140) text(class_, "Class", 120)
+bar(hp,      "HP",    160, 0, 100, "#e03030")
+bar(mp,      "MP",    160, 0, 100, "#3060e0")
 slider(hp,   "HP",    160, 0, 100)
 slider(mp,   "MP",    160, 0, 100)
 int(level,   "Level",  70, true)
