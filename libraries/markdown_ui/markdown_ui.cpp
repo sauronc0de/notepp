@@ -91,6 +91,7 @@ struct Statement
   } kind = Kind::Error;
 
   std::string name;
+  std::string index_expr;
   std::vector<std::string> args;
   std::string error;
   SourceSpan span;
@@ -1357,6 +1358,36 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
     stmt.name = std::string(line.substr(name_start, pos - name_start));
 
     while(pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+
+    // Parse optional array subscript for assignment target: name[index_expr] op= rhs
+    std::string index_expr;
+    if(pos < line.size() && line[pos] == '[')
+    {
+      const size_t bracket_start = pos + 1;
+      size_t scan = bracket_start;
+      int depth = 1;
+      bool in_str = false, esc = false;
+      while(scan < line.size() && depth > 0)
+      {
+        const char c = line[scan++];
+        if(in_str) { if(esc) esc=false; else if(c=='\\') esc=true; else if(c=='"') in_str=false; }
+        else if(c == '"') in_str = true;
+        else if(c == '[') ++depth;
+        else if(c == ']') { if(--depth == 0) break; }
+      }
+      if(depth != 0)
+      {
+        stmt.kind = Statement::Kind::Error;
+        stmt.error = "unterminated '[' in assignment target";
+        stmt.span = {line_offset + name_start, line_offset + scan};
+        row.statements.push_back(std::move(stmt));
+        return false;
+      }
+      index_expr = std::string(trim(line.substr(bracket_start, scan - bracket_start - 1)));
+      pos = scan;
+      while(pos < line.size() && (line[pos] == ' ' || line[pos] == '\t')) ++pos;
+    }
+
     if(pos < line.size() && line[pos] != '(')
     {
       char compound_op = '\0';
@@ -1375,11 +1406,17 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
       {
         const std::string rhs_raw(trim(line.substr(pos + op_len)));
         stmt.kind = Statement::Kind::Assignment;
+        stmt.index_expr = index_expr;
         stmt.span = {line_offset + name_start, line_offset + line.size()};
         if(rhs_raw.empty())
           stmt.error = "expected expression after assignment operator";
         else if(compound_op != '\0')
-          stmt.args.push_back(stmt.name + " " + compound_op + " (" + rhs_raw + ")");
+        {
+          const std::string lhs_ref = index_expr.empty()
+            ? stmt.name
+            : stmt.name + "[" + index_expr + "]";
+          stmt.args.push_back(lhs_ref + " " + compound_op + " (" + rhs_raw + ")");
+        }
         else
           stmt.args.push_back(rhs_raw);
         row.statements.push_back(std::move(stmt));
@@ -3690,8 +3727,26 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
   case Statement::Kind::Assignment:
   {
     ExprResult result = ctx.evaluate(stmt.args[0]);
-    if(!result.error.empty())
-      errors.push_back(result.error);
+    if(!result.error.empty()) { errors.push_back(result.error); break; }
+    if(!stmt.index_expr.empty())
+    {
+      ExprResult arr = ctx.resolve_variable(stmt.name);
+      if(!arr.error.empty()) { errors.push_back(arr.error); break; }
+      if(arr.value.kind != ValueKind::Array)
+        { errors.push_back("'" + stmt.name + "' is not an array"); break; }
+      ExprResult idx = ctx.evaluate(stmt.index_expr);
+      if(!idx.error.empty()) { errors.push_back(idx.error); break; }
+      if(idx.value.kind != ValueKind::Number || !idx.value.is_integer)
+        { errors.push_back("array index must be an integer"); break; }
+      const int i = static_cast<int>(idx.value.number);
+      const int sz = static_cast<int>(arr.value.array.size());
+      const int actual = i < 0 ? sz + i : i;
+      if(actual < 0 || actual >= sz)
+        { errors.push_back("array index out of bounds"); break; }
+      Value new_arr = arr.value;
+      new_arr.array[static_cast<size_t>(actual)] = result.value;
+      set_override(ctx, block, stmt.name, new_arr, replacements, errors);
+    }
     else
       set_override(ctx, block, stmt.name, result.value, replacements, errors);
     break;
