@@ -5802,12 +5802,8 @@ __CURSOR__)MD");
         if(payload && !mouse_over_note_area)
         {
           const char *img_path_raw = static_cast<const char *>(payload->Data);
-          const std::string img_filename =
-              std::filesystem::path(img_path_raw).filename().string();
-          const std::string img_alt =
-              std::filesystem::path(img_path_raw).stem().string();
-          const std::string content =
-              "![" + img_alt + "](" + img_filename + ")\n";
+          const std::filesystem::path img_path_fs(img_path_raw);
+          const std::string img_alt = img_path_fs.stem().string();
 
           push_sidebar_snapshot();
           ensure_default_index();
@@ -5817,6 +5813,10 @@ __CURSOR__)MD");
           NoteMeta new_note;
           new_note.title = new_title;
           new_note.path = make_note_path(cf.name, new_title);
+          std::string img_rel;
+          try { img_rel = std::filesystem::relative(img_path_fs, std::filesystem::path(new_note.path).parent_path()).string(); }
+          catch(...) { img_rel = img_path_fs.filename().string(); }
+          const std::string content = "![" + img_alt + "](" + img_rel + ")\n";
           const ImVec2 drop_pos = ImGui::GetMousePos();
           new_note.pos_x = drop_pos.x - 60.0f;
           new_note.pos_y = drop_pos.y - 30.0f;
@@ -6456,12 +6456,12 @@ __CURSOR__)MD");
                ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
         {
           const char *img_path_raw = static_cast<const char *>(payload->Data);
-          const std::string img_filename =
-              std::filesystem::path(img_path_raw).filename().string();
-          const std::string img_alt =
-              std::filesystem::path(img_path_raw).stem().string();
-          const std::string img_insert =
-              "\n![" + img_alt + "](" + img_filename + ")\n";
+          const std::filesystem::path img_path_fs(img_path_raw);
+          const std::string img_alt = img_path_fs.stem().string();
+          std::string img_rel;
+          try { img_rel = std::filesystem::relative(img_path_fs, std::filesystem::path(n.path).parent_path()).string(); }
+          catch(...) { img_rel = img_path_fs.filename().string(); }
+          const std::string img_insert = "\n![" + img_alt + "](" + img_rel + ")\n";
 
           if(is_editing_this)
           {
@@ -7011,12 +7011,12 @@ __CURSOR__)MD");
              ImGui::AcceptDragDropPayload("NOTEPP_IMAGE_INSERT"))
       {
         const char *img_path_raw = static_cast<const char *>(payload->Data);
-        const std::string img_filename =
-            std::filesystem::path(img_path_raw).filename().string();
-        const std::string img_alt =
-            std::filesystem::path(img_path_raw).stem().string();
-        const std::string img_insert =
-            "\n![" + img_alt + "](" + img_filename + ")\n";
+        const std::filesystem::path img_path_fs(img_path_raw);
+        const std::string img_alt = img_path_fs.stem().string();
+        std::string img_rel;
+        try { img_rel = std::filesystem::relative(img_path_fs, std::filesystem::path(state_file_path_).parent_path()).string(); }
+        catch(...) { img_rel = img_path_fs.filename().string(); }
+        const std::string img_insert = "\n![" + img_alt + "](" + img_rel + ")\n";
         const int insert_pos =
             (fmt.cursor_pos >= 0 && fmt.cursor_pos <= (int)markdown_text_.size())
                 ? fmt.cursor_pos
