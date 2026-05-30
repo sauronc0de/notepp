@@ -674,6 +674,7 @@ private:
   static ExprResult call_builtin(const std::string &name, const std::vector<Value> &args);
   char peek() const;
   static ExprResult combine_numeric(const ExprResult &lhs, const ExprResult &rhs, char op);
+  static ExprResult combine_string_concat(const ExprResult &lhs, const ExprResult &rhs);
 
   std::string_view source_;
   size_t pos_ = 0;
@@ -756,6 +757,22 @@ bool ExprParser::eof() const
 char ExprParser::peek() const
 {
   return pos_ < source_.size() ? source_[pos_] : '\0';
+}
+
+static std::string value_to_string(const Value &v)
+{
+  if(v.kind == ValueKind::String) return v.str;
+  if(v.kind == ValueKind::Number) return format_number(v.number, v.is_integer);
+  if(v.kind == ValueKind::Bool) return v.boolean ? "true" : "false";
+  return "";
+}
+
+ExprResult ExprParser::combine_string_concat(const ExprResult &lhs, const ExprResult &rhs)
+{
+  Value out;
+  out.kind = ValueKind::String;
+  out.str = value_to_string(lhs.value) + value_to_string(rhs.value);
+  return {out, {}};
 }
 
 ExprResult ExprParser::combine_numeric(const ExprResult &lhs, const ExprResult &rhs, char op)
@@ -918,6 +935,13 @@ ExprResult ExprParser::parse_additive()
     if(eof() || (peek() != '+' && peek() != '-')) break;
     const char op = source_[pos_++];
     ExprResult rhs = parse_multiplicative();
+    if(op == '+' && (lhs.value.kind == ValueKind::String || rhs.value.kind == ValueKind::String))
+    {
+      if(!lhs.error.empty()) { continue; }
+      if(!rhs.error.empty()) { lhs = rhs; continue; }
+      lhs = combine_string_concat(lhs, rhs);
+      continue;
+    }
     lhs = combine_numeric(lhs, rhs, op);
   }
   return lhs;
