@@ -933,6 +933,7 @@ void App::shutdown()
 
 void App::load_state()
 {
+  const bool first_run = !std::filesystem::exists(index_file_);
   discard_pending_text_history();
   history_.clear();
   folders_.clear();
@@ -1060,17 +1061,17 @@ void App::load_state()
       if(std::getline(legacy, p) && !p.empty()) migrated_path = p;
     }
 
-    FolderMeta f;
-    f.name = "General";
     if(!migrated_path.empty())
     {
+      FolderMeta f;
+      f.name = "General";
       NoteMeta n;
       n.path = migrated_path;
       const std::filesystem::path fp(migrated_path);
       n.title = fp.stem().empty() ? "Note" : fp.stem().string();
       f.notes.push_back(std::move(n));
+      folders_.push_back(std::move(f));
     }
-    folders_.push_back(std::move(f));
   }
 
   sync_project_files();
@@ -1084,7 +1085,7 @@ void App::load_state()
         has_any_note = true;
         break;
       }
-    if(!has_any_note)
+    if(first_run && !has_any_note)
       open_or_create_readme();
   }
 
@@ -1202,9 +1203,10 @@ std::string App::make_note_path(const std::string &folder_name, const std::strin
       if(s == fn.size()) break;
       p = s + 1;
     }
-    if(f.empty()) f = "General";
   }
   const std::string n = sanitize_note_filename(note_title);
+  if(f.empty())
+    return (config_.dataPath / (n + ".md")).string();
   std::filesystem::path dir = config_.dataPath / f;
   return (dir / (n + ".md")).string();
 }
@@ -1237,18 +1239,11 @@ std::string App::make_unique_note_title(int folder_idx, const std::string &base_
 
 void App::ensure_default_index()
 {
-  if(folders_.empty()) folders_.push_back(FolderMeta{"General", {}});
-  for(auto &f : folders_)
-  {
-    if(f.name.empty()) f.name = "General";
-  }
   normalize_active_indices();
 }
 
 void App::open_or_create_readme()
 {
-  ensure_default_index();
-
   for(int fi = 0; fi < (int)folders_.size(); ++fi)
   {
     const FolderMeta &f = folders_[(size_t)fi];
@@ -1270,13 +1265,25 @@ void App::open_or_create_readme()
     }
   }
 
-  FolderMeta &f = folders_[0];
+  // Create demo note in the root of the notes directory (folder name ".")
+  int root_fi = -1;
+  for(int i = 0; i < (int)folders_.size(); ++i)
+  {
+    if(folders_[(size_t)i].name == ".") { root_fi = i; break; }
+  }
+  if(root_fi < 0)
+  {
+    folders_.push_back(FolderMeta{".", {}});
+    root_fi = (int)folders_.size() - 1;
+  }
+
+  FolderMeta &f = folders_[(size_t)root_fi];
   NoteMeta n;
   n.title = "demo";
   n.path = make_note_path(f.name, n.title);
   write_text_file(n.path, kDemoNoteContent);
   f.notes.insert(f.notes.begin(), std::move(n));
-  active_folder_idx_ = 0;
+  active_folder_idx_ = root_fi;
   active_note_idx_ = 0;
   editing_mode_ = false;
   request_exit_edit_mode_ = false;
@@ -1286,7 +1293,12 @@ void App::open_or_create_readme()
 
 void App::normalize_active_indices()
 {
-  if(folders_.empty()) folders_.push_back(FolderMeta{"General", {}});
+  if(folders_.empty())
+  {
+    active_folder_idx_ = -1;
+    active_note_idx_ = -1;
+    return;
+  }
   active_folder_idx_ = std::max(0, std::min(active_folder_idx_, (int)folders_.size() - 1));
   const int note_count = (int)folders_[(size_t)active_folder_idx_].notes.size();
   if(note_count <= 0)
@@ -1381,7 +1393,7 @@ void App::sync_project_files()
     }
     const fs::path parent_rel = rel.parent_path();
     if(parent_rel.empty() || parent_rel == fs::path("."))
-      out_folder = "General";
+      out_folder = ".";
     else
       out_folder = parent_rel.generic_string();
     return true;
@@ -1506,7 +1518,7 @@ void App::rename_note_storage_for_title(const std::string &new_title)
 {
   if(!has_active_note()) return;
   const std::string safe_title = make_unique_note_title(active_folder_idx_, new_title, active_note_idx_);
-  const std::string folder_name = folders_.empty() ? "General" : folders_[(size_t)active_folder_idx_].name;
+  const std::string folder_name = folders_.empty() ? "." : folders_[(size_t)active_folder_idx_].name;
   std::filesystem::path new_path = make_note_path(folder_name, safe_title);
 
   if(new_path.string() == state_file_path_)
@@ -2551,6 +2563,13 @@ void App::frame_ui()
   static char rename_note_buf[256] = {};
   static bool open_rename_folder_popup = false;
   static int rename_folder_idx = -1;
+  static bool open_rename_image_popup = false;
+  static int rename_image_folder_idx = -1;
+  static std::string rename_image_current_path;
+  static char rename_image_buf[256] = {};
+  static int pending_move_image_src_fi = -1;
+  static int pending_move_image_dst_fi = -1;
+  static std::string pending_move_image_path;
   static bool sidebar_last_selected_was_folder = false;
   static char rename_folder_buf[256] = {};
   static bool open_note_color_popup = false;
@@ -3089,13 +3108,13 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("New Folder");
     open_new_folder_popup = false;
-    std::snprintf(new_folder_buf, sizeof(new_folder_buf), "Folder");
+    new_folder_buf[0] = '\0';
   }
   if(open_new_note_popup)
   {
     ImGui::OpenPopup("New Note");
     open_new_note_popup = false;
-    std::snprintf(new_note_buf, sizeof(new_note_buf), "Note");
+    new_note_buf[0] = '\0';
     focus_new_note_input = true;
   }
   if(open_rename_note_popup)
@@ -3118,6 +3137,11 @@ void App::frame_ui()
     ImGui::OpenPopup("Paste Note");
     open_paste_note_popup = false;
   }
+  if(open_rename_image_popup)
+  {
+    ImGui::OpenPopup("Rename Image");
+    open_rename_image_popup = false;
+  }
 
   if(ImGui::BeginPopup("New Folder"))
   {
@@ -3125,6 +3149,7 @@ void App::frame_ui()
     if(ImGui::InputText(Lang::t("Name"), new_folder_buf, sizeof(new_folder_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
+      if(new_folder_buf[0] != '\0')
       perform_workspace_change("Create folder", [&]() {
         std::string base_name = sanitize_note_filename(new_folder_buf);
         if(base_name.empty()) base_name = "Folder";
@@ -3173,12 +3198,14 @@ void App::frame_ui()
     if(ImGui::InputText(Lang::t("Title"), new_note_buf, sizeof(new_note_buf),
                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
     {
+      if(new_note_buf[0] != '\0')
       perform_workspace_change("Create note", [&]() {
         ensure_default_index();
+        if(folders_.empty()) return;
         const int target_folder_idx =
             (new_note_target_folder_idx >= 0 && new_note_target_folder_idx < (int)folders_.size())
                 ? new_note_target_folder_idx
-                : active_folder_idx_;
+                : std::max(0, active_folder_idx_);
         FolderMeta &f = folders_[(size_t)target_folder_idx];
         NoteMeta n;
         n.title = make_unique_note_title(target_folder_idx, new_note_buf);
@@ -3286,6 +3313,42 @@ void App::frame_ui()
             }
           }
         });
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  if(ImGui::BeginPopup("Rename Image"))
+  {
+    ImGui::SetNextItemWidth(240.0f);
+    if(ImGui::InputText(Lang::t("Name"), rename_image_buf, sizeof(rename_image_buf),
+                        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+    {
+      if(rename_image_folder_idx >= 0 && rename_image_folder_idx < (int)folders_.size() &&
+         !rename_image_current_path.empty() && rename_image_buf[0] != '\0')
+      {
+        FolderMeta &rf = folders_[(size_t)rename_image_folder_idx];
+        const std::filesystem::path old_path(rename_image_current_path);
+        const std::filesystem::path new_path = old_path.parent_path() / rename_image_buf;
+        if(new_path != old_path)
+        {
+          std::error_code ren_ec;
+          std::filesystem::rename(old_path, new_path, ren_ec);
+          if(!ren_ec)
+          {
+            for(auto &img_path : rf.images)
+            {
+              if(img_path == rename_image_current_path)
+              {
+                img_path = new_path.string();
+                break;
+              }
+            }
+            invalidate_folder_image_cache(rf.name);
+            save_index();
+          }
+        }
       }
       ImGui::CloseCurrentPopup();
     }
@@ -4034,6 +4097,32 @@ void App::frame_ui()
             if(ImGui::MenuItem(Lang::t("Reveal in File Explorer")))
               reveal_in_file_explorer(img.path);
             ImGui::Separator();
+            if(ImGui::MenuItem(Lang::t("Rename")))
+            {
+              rename_image_folder_idx = fi;
+              rename_image_current_path = img.path;
+              std::snprintf(rename_image_buf, sizeof(rename_image_buf), "%s",
+                            std::filesystem::path(img.path).filename().string().c_str());
+              open_rename_image_popup = true;
+            }
+            if(ImGui::BeginMenu(Lang::t("Move to folder")))
+            {
+              for(int dst_fi = 0; dst_fi < (int)folders_.size(); ++dst_fi)
+              {
+                if(dst_fi == fi) continue;
+                const std::string dst_display = folders_[(size_t)dst_fi].name == "."
+                                                    ? "(root)"
+                                                    : folder_base_name(folders_[(size_t)dst_fi].name);
+                if(ImGui::MenuItem(dst_display.c_str()))
+                {
+                  pending_move_image_src_fi = fi;
+                  pending_move_image_dst_fi = dst_fi;
+                  pending_move_image_path = img.path;
+                }
+              }
+              ImGui::EndMenu();
+            }
+            ImGui::Separator();
             if(ImGui::MenuItem(Lang::t("Delete image")))
             {
               const std::string img_path = img.path;
@@ -4136,7 +4225,68 @@ void App::frame_ui()
   auto roots_it = folder_children.find(std::string{});
   if(roots_it != folder_children.end())
   {
-    for(int rfi : roots_it->second) render_folder_node(render_folder_node, rfi);
+    for(int rfi : roots_it->second)
+    {
+      if(folders_[(size_t)rfi].name == ".")
+      {
+        // Root notes live directly in the notes directory — render as flat list, no folder header
+        FolderMeta &rf = folders_[(size_t)rfi];
+        for(int ni = 0; ni < (int)rf.notes.size(); ++ni)
+        {
+          NoteMeta &n = rf.notes[(size_t)ni];
+          const bool note_sel = (rfi == active_folder_idx_) && selected_note_indices.count(ni);
+          const std::string label = n.title + "###RootNote_" + std::to_string(rfi) + "_" + std::to_string(ni);
+          const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
+          ImVec4 note_text_col = ImVec4(0.93f, 0.94f, 0.96f, 1.0f);
+          if(note_flash_col.w > 0.0f) note_text_col = mix_color(note_text_col, note_flash_col, 0.78f);
+          note_text_col.w = 1.0f;
+          ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);
+          if(ImGui::Selectable(label.c_str(), note_sel))
+          {
+            save_state();
+            active_folder_idx_ = rfi;
+            active_note_idx_ = ni;
+            n.hidden = false;
+            selected_note_indices.clear();
+            selected_note_indices.insert(ni);
+            selected_stroke_indices.clear();
+            pending_focus_note_idx = ni;
+            force_open_folder_idx = rfi;
+            editing_mode_ = false;
+            request_exit_edit_mode_ = false;
+            sidebar_last_selected_was_folder = false;
+            load_note_content_for_active();
+            save_index();
+          }
+          ImGui::PopStyleColor();
+          folder_note_row_rects[(size_t)rfi].push_back(
+              SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
+          const std::string root_note_ctx = "RootNoteCtx##" + std::to_string(rfi) + "_" + std::to_string(ni);
+          if(ImGui::BeginPopupContextItem(root_note_ctx.c_str(), ImGuiPopupFlags_MouseButtonRight))
+          {
+            if(ImGui::MenuItem(Lang::t("Rename")))
+            {
+              rename_note_folder_idx = rfi;
+              rename_note_idx = ni;
+              std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
+              open_rename_note_popup = true;
+            }
+            if(ImGui::MenuItem(Lang::t("Remove note")))
+            {
+              pending_delete_note_folder_idx = rfi;
+              pending_delete_note_indices.clear();
+              pending_delete_note_indices.push_back(ni);
+              pending_delete_note_idx = ni;
+            }
+            ImGui::EndPopup();
+          }
+        }
+      }
+      else
+      {
+        render_folder_node(render_folder_node, rfi);
+      }
+    }
   }
 
   // Process OS-level file drops (SDL_DROPFILE) onto the Explorer panel
@@ -4292,6 +4442,8 @@ void App::frame_ui()
   {
     push_sidebar_snapshot();
     ensure_default_index();
+    if(!folders_.empty())
+    {
     const int fi = std::max(0, std::min(pending_paste_note_folder_idx, (int)folders_.size() - 1));
     FolderMeta &pf = folders_[(size_t)fi];
     std::vector<CopiedNoteItem> items = g_copied_notes_batch;
@@ -4363,6 +4515,7 @@ void App::frame_ui()
     request_exit_edit_mode_ = false;
     save_index();
     flash_mark_folder(pf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
+    } // end if(!folders_.empty())
     pending_paste_note_folder_idx = -1;
     paste_target_folder_idx = -1;
   }
@@ -4533,6 +4686,40 @@ void App::frame_ui()
     }
     pending_move_folder_source_idx = -1;
     pending_move_folder_target_idx = -1;
+  }
+  if(pending_move_image_src_fi >= 0 && pending_move_image_dst_fi >= 0 &&
+     !pending_move_image_path.empty())
+  {
+    const int src_fi = pending_move_image_src_fi;
+    const int dst_fi = pending_move_image_dst_fi;
+    if(src_fi >= 0 && src_fi < (int)folders_.size() &&
+       dst_fi >= 0 && dst_fi < (int)folders_.size() &&
+       src_fi != dst_fi)
+    {
+      FolderMeta &src_f = folders_[(size_t)src_fi];
+      FolderMeta &dst_f = folders_[(size_t)dst_fi];
+      const std::filesystem::path src_path(pending_move_image_path);
+      const std::filesystem::path dst_dir = (dst_f.name == ".")
+                                                ? config_.dataPath
+                                                : (config_.dataPath / dst_f.name);
+      std::error_code mv_ec;
+      std::filesystem::create_directories(dst_dir, mv_ec);
+      const std::filesystem::path dst_path = dst_dir / src_path.filename();
+      std::filesystem::rename(src_path, dst_path, mv_ec);
+      if(!mv_ec)
+      {
+        src_f.images.erase(
+            std::remove(src_f.images.begin(), src_f.images.end(), pending_move_image_path),
+            src_f.images.end());
+        dst_f.images.push_back(dst_path.string());
+        invalidate_folder_image_cache(src_f.name);
+        invalidate_folder_image_cache(dst_f.name);
+        save_index();
+      }
+    }
+    pending_move_image_src_fi = -1;
+    pending_move_image_dst_fi = -1;
+    pending_move_image_path.clear();
   }
   force_open_folder_idx = -1;
   if(request_rename_selected_ && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
