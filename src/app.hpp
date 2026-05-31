@@ -17,6 +17,7 @@ struct AppConfig
 {
   std::filesystem::path assetsPath;
   std::filesystem::path dataPath;
+  std::filesystem::path configPath;
 };
 
 class App
@@ -27,6 +28,7 @@ public:
 
 private:
   AppConfig config_;
+  void pre_load_window_state();
   void init_sdl_gl();
   void init_imgui();
   void load_state();
@@ -127,6 +129,24 @@ private:
   bool layout_locked_ = false;
   bool detached_note_windows_enabled_ = true;
   bool dockers_enabled_ = true;
+
+  // Window state persistence
+  int  saved_win_w_         = 1100;
+  int  saved_win_h_         = 700;
+  bool saved_win_maximized_ = true;
+
+  // Canvas bounds tracked each frame; written to the index on save
+  float last_canvas_ox_ = 0.0f;
+  float last_canvas_oy_ = 0.0f;
+  float last_canvas_w_  = 0.0f;
+  float last_canvas_h_  = 0.0f;
+
+  // Canvas bounds loaded from index; drives proportional note rescaling on open
+  float index_canvas_ox_ = 0.0f;
+  float index_canvas_oy_ = 0.0f;
+  float index_canvas_w_  = 0.0f;
+  float index_canvas_h_  = 0.0f;
+  bool  rescale_pending_  = false;
   bool history_replay_in_progress_ = false;
   bool force_note_layout_restore_ = false;
   std::string search_jump_note_path_;
