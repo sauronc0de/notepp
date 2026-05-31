@@ -3973,10 +3973,18 @@ struct MapSettingsEditorState
 
 struct MapPanState
 {
+  // Drag tracking
   bool active = false;
   ImVec2 start_mouse = {0.f, 0.f};
   float start_offset_x = 0.f;
   float start_offset_y = 0.f;
+  // Deferred-write: keeps live zoom/offset without writing markdown every frame.
+  // Written only when the gesture ends (pan release / zoom settle).
+  bool deferred = false;
+  float def_zoom = 1.f;
+  float def_offset_x = 0.f;
+  float def_offset_y = 0.f;
+  int zoom_settle = 0; // frames left before writing after last zoom event
 };
 
 struct MapMarkerDragState
@@ -4169,6 +4177,10 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
   MapDrawState &ds = s_draw_states[child_id];
   int &editing_marker_idx = s_editing_marker.emplace(child_id, -1).first->second;
 
+  // Use live values from a deferred gesture instead of the last-written markdown values.
+  // This prevents reading stale values on the frame after a pan/zoom step.
+  if(pan.deferred) { zoom = pan.def_zoom; offset_x = pan.def_offset_x; offset_y = pan.def_offset_y; }
+
   ImGui::BeginDisabled(readonly);
   const ImGuiWindowFlags child_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
   if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, requested_height), true, child_flags))
@@ -4319,7 +4331,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       render_map_marker_tooltip(hm, "##maptip_" + child_id + "_" + std::to_string(hovered_marker));
     }
 
-    // Scroll zoom (wheel over canvas)
+    // Scroll zoom (wheel over canvas) — deferred write to avoid per-frame markdown rewrites
     if(!readonly && canvas_hovered && ImGui::GetIO().MouseWheel != 0.f)
     {
       const float wheel = ImGui::GetIO().MouseWheel;
@@ -4331,7 +4343,9 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       const float new_uv_cy = cursor_uv_before.y - (frac_y - 0.5f) / zoom;
       offset_x = 0.5f - new_uv_cx;
       offset_y = 0.5f - new_uv_cy;
-      changed = true;
+      pan.deferred = true;
+      pan.def_zoom = zoom; pan.def_offset_x = offset_x; pan.def_offset_y = offset_y;
+      pan.zoom_settle = 4; // write after 4 idle frames
     }
 
     // Marker drag — start on left-click over a marker (not in draw mode)
@@ -4463,15 +4477,27 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
         const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
         offset_x = std::clamp(offset_x, -max_off, max_off);
         offset_y = std::clamp(offset_y, -max_off, max_off);
-        changed = true;
+        // Store live values but DON'T write to markdown mid-gesture
+        pan.deferred = true;
+        pan.def_zoom = zoom; pan.def_offset_x = offset_x; pan.def_offset_y = offset_y;
+        pan.zoom_settle = 0;
       }
-      else { pan.active = false; }
+      else
+      {
+        pan.active = false;
+        changed = true; // write exactly once on release
+      }
     }
     // Clamp after zoom
     {
       const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
       offset_x = std::clamp(offset_x, -max_off, max_off);
       offset_y = std::clamp(offset_y, -max_off, max_off);
+    }
+    // Zoom settle: count down idle frames, then write
+    if(pan.deferred && !pan.active && pan.zoom_settle > 0)
+    {
+      if(--pan.zoom_settle == 0) changed = true;
     }
 
     const std::string marker_popup_id  = "##map_marker_edit_" + child_id;
@@ -4692,6 +4718,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
     { Value v; v.kind = ValueKind::Number; v.number = offset_x; upsert_object_field(updated, "offset_x", std::move(v)); }
     { Value v; v.kind = ValueKind::Number; v.number = offset_y; upsert_object_field(updated, "offset_y", std::move(v)); }
     set_override(ctx, block, *var_name, updated, replacements, errors);
+    pan.deferred = false; // live state is now persisted; future reads go through the variable
   }
 }
 

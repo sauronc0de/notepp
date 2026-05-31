@@ -30,7 +30,7 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 12. [Keyboard Shortcuts](#12-keyboard-shortcuts)
 13. [UI Block System](#13-ui-block-system)
     - [Variables](#131-variables)
-    - [Widgets](#132-widgets) (`text`, `int`, `slider`, `bar`, `checkbox`, `enum`, `multicheck`, `list`, `inventory`, `button`)
+    - [Widgets](#132-widgets) (`text`, `int`, `slider`, `bar`, `checkbox`, `enum`, `multicheck`, `list`, `inventory`, `button`, `map`)
     - [Expressions & Operators](#133-expressions--operators)
     - [Built-in Functions](#134-built-in-functions)
     - [Conditionals](#135-conditionals)
@@ -639,6 +639,127 @@ button("Max",   80, count=100)
 
 ---
 
+---
+
+#### `map` — Interactive annotated map
+
+Displays an image as a zoomable, pannable map canvas. Supports named markers with hover popups, free-hand stroke annotations, and persistent view state — all stored inside the bound variable.
+
+```
+map(variable, width, height)
+```
+
+| Arg | Description |
+|-----|-------------|
+| variable | Object variable that holds the full map state |
+| width | Widget width in pixels |
+| height | Widget height in pixels |
+
+##### Variable fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `image` | string | Path to the map background image (relative to note folder) |
+| `zoom` | number | Zoom level — `1` shows the full image, `2` shows 2× detail (min 1, max 50) |
+| `offset_x` | number | Horizontal pan offset (fraction of image width; 0 = centered) |
+| `offset_y` | number | Vertical pan offset (fraction of image height; 0 = centered) |
+| `markers` | array | Array of marker objects (see below) |
+| `strokes` | array | Array of drawn stroke objects (see below) |
+
+##### Marker fields
+
+Each entry in `markers` is an object:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `x` | number | Horizontal position on the image (0 = left edge, 1 = right edge) |
+| `y` | number | Vertical position on the image (0 = top edge, 1 = bottom edge) |
+| `color` | string `#RRGGBB` | Circle color (default gold when omitted) |
+| `title` | string | Title shown in hover popup and as the initial letter on the pin |
+| `image` | string | Image path shown at the top of the hover popup (200×200 px) |
+| `description` | string | Markdown text shown in the hover popup body |
+
+##### Stroke fields (drawn annotations)
+
+Each entry in `strokes` is written automatically by the draw tool — you rarely need to edit these by hand:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pts` | string | Space-separated `x,y` pairs in image coordinates, e.g. `"0.12,0.34 0.13,0.35 …"` |
+| `color` | string `#RRGGBB` | Stroke color |
+| `t` | number | Stroke thickness (UV fraction; scales with zoom so the line stays proportional to the image) |
+
+##### Mouse & keyboard interactions
+
+| Interaction | Effect |
+|-------------|--------|
+| **Scroll wheel** | Zoom in / out centered on the cursor |
+| **Left-click + drag** on canvas | Pan the map view |
+| **Left-click + drag** on a marker | Move the marker to a new position (released = saved) |
+| **Hover** over marker | Show popup with image, title, and description |
+| **Right-click** on marker | Open marker editor (title, image, description, color, position) |
+| **Right-click** on canvas | Open context menu (image path, zoom controls, draw mode, add marker) |
+| **Escape / click outside** | Close editor popup and discard unsaved changes |
+| **Enter** in marker editor | Apply changes (same as clicking Apply) |
+
+##### Context menu — right-click on canvas
+
+- **Image path** — set or change the background image.
+- **Zoom +** / **Zoom −** / **Reset view** — adjust zoom and pan programmatically.
+- **Draw mode** (checkbox) — enables free-hand stroke drawing; left-click and drag to paint. While active, panning is disabled.
+  - **Stroke color** — color picker for new strokes.
+  - **Size px** — brush width in screen pixels at the current zoom (strokes scale with the image when you zoom).
+  - **Undo last stroke** — removes the most recently drawn stroke.
+  - **Clear strokes** — removes all strokes from the map.
+- **Erase mode** (checkbox) — hold left mouse button and sweep the eraser circle over strokes to remove them. Mutually exclusive with Draw mode.
+  - **Eraser px** — eraser circle radius in screen pixels.
+- **Add marker here** — opens the marker editor pre-filled with the click position.
+
+##### Marker editor fields
+
+| Field | Description |
+|-------|-------------|
+| Title | Short name; first character shown on the pin circle |
+| Image | Path to an image shown in the hover popup |
+| Description | Markdown body text shown in the hover popup |
+| X / Y | Precise image-space position (0–1); editable as floats |
+| Color | Color picker (click the swatch to open the wheel; preset buttons for quick picks) |
+| Delete | Removes the marker |
+
+**Example:**
+
+````markdown
+```ui
+dungeon_map({
+  image: "dungeon.jpg",
+  zoom: 1.0,
+  offset_x: 0.0,
+  offset_y: 0.0,
+  markers: [
+    {
+      x: 0.25, y: 0.40,
+      color: "#FF6B6B",
+      title: "Boss Room",
+      description: "**Lair of the Dragon**\n\nLevel 15 encounter. Treasure hoard nearby."
+    },
+    {
+      x: 0.70, y: 0.20,
+      color: "#57A7FF",
+      title: "Safe Zone",
+      image: "camp.png",
+      description: "Rest here to recover HP."
+    }
+  ],
+  strokes: []
+})
+map(dungeon_map, 700, 450)
+```
+````
+
+The markers, strokes, zoom, and pan offset are all **persisted** in the note. Zoom and pan changes are written after the gesture ends (on mouse release for panning; after a brief settle period for scroll-wheel zoom) to avoid layout flicker.
+
+---
+
 ### 13.3 Expressions & Operators
 
 Expressions are used in variable declarations and `if()` conditions.
@@ -896,6 +1017,38 @@ if(role == "admin") {
 if(role == "guest") {
   text("[color=#888888]Read-only access[/color]")
 }
+```
+````
+
+---
+
+#### Annotated map
+
+````markdown
+```ui
+world_map({
+  image: "world.jpg",
+  zoom: 1.0,
+  offset_x: 0.0,
+  offset_y: 0.0,
+  markers: [
+    {
+      x: 0.48, y: 0.35,
+      color: "#FFB347",
+      title: "HQ",
+      description: "Headquarters — main operations base."
+    },
+    {
+      x: 0.15, y: 0.55,
+      color: "#58C472",
+      title: "Depot A",
+      image: "depot.png",
+      description: "Western supply depot."
+    }
+  ],
+  strokes: []
+})
+map(world_map, 680, 420)
 ```
 ````
 
