@@ -87,6 +87,7 @@ struct Statement
     List,
     Inventory,
     Button,
+    Map,
     Error,
   } kind = Kind::Error;
 
@@ -141,7 +142,8 @@ bool is_widget_name(std::string_view name)
          name == "multicheck" ||
          name == "list" ||
          name == "inventory" ||
-         name == "button";
+         name == "button" ||
+         name == "map";
 }
 
 bool is_ident_start(char c)
@@ -1509,6 +1511,8 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
         stmt.kind = Statement::Kind::Inventory;
       else if(stmt.name == "button")
         stmt.kind = Statement::Kind::Button;
+      else if(stmt.name == "map")
+        stmt.kind = Statement::Kind::Map;
     }
     else
     {
@@ -3007,6 +3011,8 @@ struct InventoryPopupEditorState
   char tooltip[4096]{};
   char quantity[64]{};
   char color[32]{};
+  ImVec4 color_rgba{0.34f, 0.77f, 0.45f, 1.0f};
+  bool has_mark_color = false;
   bool enabled = true;
   std::string error;
 };
@@ -3014,6 +3020,7 @@ struct InventoryPopupEditorState
 struct InventoryGridEditorState
 {
   int cell_size = 48;
+  bool show_selected = false;
 };
 
 bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
@@ -3346,7 +3353,7 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
   }
 
   // Border drawn last so it always appears on top of the image.
-  draw_list->AddRect(min, max, ImGui::GetColorU32(border_color), 6.0f, 0, selected ? 2.0f : 1.0f);
+  draw_list->AddRect(min, max, ImGui::GetColorU32(border_color), 6.0f, 0, selected ? 3.0f : 2.0f);
 
   if(!slot.enabled)
   {
@@ -3423,6 +3430,11 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     const Value *cs = find_object_field(updated, "cell_size");
     if(cs && cs->kind == ValueKind::Number)
       cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
+  }
+  bool show_selected = false;
+  {
+    const Value *ss = find_object_field(updated, "show_selected");
+    if(ss && ss->kind == ValueKind::Bool) show_selected = ss->boolean;
   }
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
@@ -3525,7 +3537,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           slot.tooltip = slot_error;
           errors.push_back(slot_error);
         }
-        draw_inventory_slot_preview(slot, min, max, selected_index == index, hovered, cell_size);
+        draw_inventory_slot_preview(slot, min, max, show_selected && (selected_index == index), hovered, cell_size);
 
         if((inventory_slot_has_visual_content(slot) || !slot.enabled) && hovered && !ImGui::IsPopupOpen("##slot_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot);
@@ -3726,6 +3738,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
             std::snprintf(state.tooltip, sizeof(state.tooltip), "%s", slot.tooltip.c_str());
             std::snprintf(state.quantity, sizeof(state.quantity), "%s", slot.quantity ? slot.quantity->c_str() : "");
             std::snprintf(state.color, sizeof(state.color), "%s", slot.color_text.c_str());
+            state.has_mark_color = !slot.color_text.empty();
+            if(state.has_mark_color)
+              parse_hex_color_text(slot.color_text, state.color_rgba);
             state.enabled = slot.enabled;
             state.error.clear();
           }
@@ -3738,28 +3753,50 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           ImGui::InputText("Image", state.image, sizeof(state.image));
           ImGui::SetNextItemWidth(popup_width);
           ImGui::InputTextMultiline("Description", state.tooltip, sizeof(state.tooltip), ImVec2(popup_width, 96.0f));
+          const bool description_active = ImGui::IsItemActive();
           ImGui::SetNextItemWidth(120.0f);
           ImGui::InputText("Quantity", state.quantity, sizeof(state.quantity));
-          ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputText("Mark color", state.color, sizeof(state.color));
           ImGui::Checkbox("Enabled", &state.enabled);
-          ImGui::TextDisabled("Quick marks");
-          auto preset_mark = [&](const char *button_label, const char *hex) {
-            if(ImGui::SmallButton(button_label)) std::snprintf(state.color, sizeof(state.color), "%s", hex);
-          };
-          preset_mark("Green", "#58C472");
-          ImGui::SameLine();
-          preset_mark("Blue", "#57A7FF");
-          ImGui::SameLine();
-          preset_mark("Amber", "#FFB347");
-          ImGui::SameLine();
-          preset_mark("Red", "#FF6B6B");
-          ImGui::SameLine();
-          if(ImGui::SmallButton("Clear mark")) state.color[0] = '\0';
+          ImGui::Checkbox("Mark color", &state.has_mark_color);
+          if(state.has_mark_color)
+          {
+            const float hex_color_width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x
+                + ImGui::CalcTextSize("#00EDFF").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SetNextItemWidth(hex_color_width);
+            if(ImGui::ColorEdit3("##mark_color_picker", (float*)&state.color_rgba,
+                                 ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_InputRGB))
+            {
+              const int r = (int)std::roundf(state.color_rgba.x * 255.0f);
+              const int g = (int)std::roundf(state.color_rgba.y * 255.0f);
+              const int b = (int)std::roundf(state.color_rgba.z * 255.0f);
+              std::snprintf(state.color, sizeof(state.color), "#%02X%02X%02X", r, g, b);
+            }
+            auto preset_mark = [&](const char *button_label, const char *hex, ImVec4 rgba) {
+              if(ImGui::SmallButton(button_label))
+              {
+                std::snprintf(state.color, sizeof(state.color), "%s", hex);
+                state.color_rgba = rgba;
+              }
+            };
+            preset_mark("Green",  "#58C472", ImVec4(0.345f, 0.769f, 0.447f, 1.0f));
+            ImGui::SameLine();
+            preset_mark("Blue",   "#57A7FF", ImVec4(0.341f, 0.655f, 1.000f, 1.0f));
+            ImGui::SameLine();
+            preset_mark("Amber",  "#FFB347", ImVec4(1.000f, 0.702f, 0.278f, 1.0f));
+            ImGui::SameLine();
+            preset_mark("Red",    "#FF6B6B", ImVec4(1.000f, 0.420f, 0.420f, 1.0f));
+          }
+          else
+          {
+            state.color[0] = '\0';
+          }
           if(!state.error.empty()) ImGui::TextColored(ImVec4(0.92f, 0.38f, 0.38f, 1.0f), "%s", state.error.c_str());
           ImGui::TextDisabled("Apply saves this cell. Hold Ctrl while dragging to copy into an empty slot.");
 
-          if(ImGui::Button("Apply"))
+          const bool enter_apply = !description_active &&
+                                   ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                                   ImGui::IsKeyPressed(ImGuiKey_Enter);
+          if(ImGui::Button("Apply") || enter_apply)
           {
             std::optional<std::string> quantity;
             if(!parse_inventory_quantity(state.quantity, quantity))
@@ -3824,11 +3861,15 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     {
       InventoryGridEditorState &gs = grid_editor_states[child_id];
       if(ImGui::IsWindowAppearing())
+      {
         gs.cell_size = static_cast<int>(cell_size);
+        gs.show_selected = show_selected;
+      }
       ImGui::TextDisabled("Grid settings");
       ImGui::SetNextItemWidth(120.0f);
       ImGui::InputInt("Cell size (px)", &gs.cell_size);
       gs.cell_size = std::clamp(gs.cell_size, 8, 256);
+      ImGui::Checkbox("Show selected cell", &gs.show_selected);
       if(ImGui::Button("Apply"))
       {
         Value cs_val;
@@ -3836,6 +3877,10 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         cs_val.number = static_cast<double>(gs.cell_size);
         cs_val.is_integer = true;
         upsert_object_field(updated, "cell_size", std::move(cs_val));
+        Value ss_val;
+        ss_val.kind = ValueKind::Bool;
+        ss_val.boolean = gs.show_selected;
+        upsert_object_field(updated, "show_selected", std::move(ss_val));
         changed = true;
         ImGui::CloseCurrentPopup();
       }
@@ -3846,6 +3891,527 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   ImGui::EndDisabled();
 
   if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
+}
+
+// ─── Map widget ──────────────────────────────────────────────────────────────
+
+struct MapMarkerInfo
+{
+  int index = -1;
+  float x = 0.5f;
+  float y = 0.5f;
+  std::string color;
+  std::string title;
+  std::string image;
+  std::string description;
+  ImVec4 color_vec = {1.f, 0.85f, 0.1f, 1.f};
+  bool has_color = false;
+};
+
+bool extract_map_marker(const Value &v, MapMarkerInfo &m, int index)
+{
+  if(v.kind != ValueKind::Object) return false;
+  m.index = index;
+  if(const Value *f = find_object_field(v, "x"))
+    if(f->kind == ValueKind::Number) m.x = static_cast<float>(f->number);
+  if(const Value *f = find_object_field(v, "y"))
+    if(f->kind == ValueKind::Number) m.y = static_cast<float>(f->number);
+  if(const Value *f = find_object_field(v, "color"))
+    if(f->kind == ValueKind::String)
+    {
+      std::string dummy;
+      m.has_color = parse_inventory_mark_color(f->str.c_str(), dummy, m.color_vec);
+      if(m.has_color) m.color = f->str;
+    }
+  if(const Value *f = find_object_field(v, "title"))
+    if(f->kind == ValueKind::String) m.title = f->str;
+  if(const Value *f = find_object_field(v, "image"))
+    if(f->kind == ValueKind::String) m.image = f->str;
+  if(const Value *f = find_object_field(v, "description"))
+    if(f->kind == ValueKind::String) m.description = f->str;
+  return true;
+}
+
+Value make_map_marker_value(const MapMarkerInfo &m)
+{
+  Value v;
+  v.kind = ValueKind::Object;
+  auto set_num = [&](const char *key, double num) {
+    Value f; f.kind = ValueKind::Number; f.number = num;
+    upsert_object_field(v, key, std::move(f));
+  };
+  auto set_str = [&](const char *key, const std::string &s) {
+    if(s.empty()) return;
+    Value f; f.kind = ValueKind::String; f.str = s;
+    upsert_object_field(v, key, std::move(f));
+  };
+  set_num("x", m.x);
+  set_num("y", m.y);
+  set_str("color", m.color);
+  set_str("title", m.title);
+  set_str("image", m.image);
+  set_str("description", m.description);
+  return v;
+}
+
+struct MapMarkerEditorState
+{
+  char color[32] = {};
+  float color_f[3] = {1.f, 0.85f, 0.1f};
+  char title[256] = {};
+  char image[512] = {};
+  char description[1024] = {};
+  float x = 0.5f;
+  float y = 0.5f;
+  bool is_new = false;
+};
+
+struct MapSettingsEditorState
+{
+  char image[512] = {};
+};
+
+struct MapPanState
+{
+  bool active = false;
+  ImVec2 start_mouse = {0.f, 0.f};
+  float start_offset_x = 0.f;
+  float start_offset_y = 0.f;
+};
+
+void render_map_marker_tooltip(const MapMarkerInfo &m, const std::string &popup_id)
+{
+  if(m.title.empty() && m.description.empty() && m.image.empty()) return;
+  ImGui::SetNextWindowBgAlpha(0.96f);
+  if(ImGui::BeginTooltip())
+  {
+    ImGui::PushID(popup_id.c_str());
+    if(!m.image.empty())
+    {
+      const ImTextureID tex = get_widget_image_texture(m.image);
+      if(tex)
+      {
+        ImGui::Image(tex, ImVec2(200.f, 200.f));
+        if(!m.title.empty() || !m.description.empty()) ImGui::Separator();
+      }
+    }
+    if(!m.title.empty()) ImGui::TextUnformatted(m.title.c_str());
+    if(!m.title.empty() && !m.description.empty()) ImGui::Separator();
+    if(!m.description.empty())
+    {
+      MarkdownView::set_render_width(320.f);
+      MarkdownView::render(m.description);
+    }
+    ImGui::PopID();
+  }
+  ImGui::EndTooltip();
+}
+
+void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt,
+                       std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
+{
+  if(stmt.args.size() != 3)
+  {
+    render_error_inline("map() expects value, width, height");
+    return;
+  }
+  const auto var_name = parse_identifier_arg(stmt.args[0]);
+  if(!var_name)
+  {
+    render_error_inline("map() must bind to a variable name");
+    return;
+  }
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
+  {
+    render_error_inline("unknown variable '" + *var_name + "'");
+    return;
+  }
+  ExprResult value_result = ctx.resolve_variable(*var_name);
+  if(!value_result.error.empty()) { render_error_inline(value_result.error); return; }
+  if(value_result.value.kind != ValueKind::Object)
+  {
+    render_error_inline("map() requires an object variable");
+    return;
+  }
+  const bool readonly = decl->computed;
+  const float requested_width = evaluate_width(ctx, stmt.args[1], 500.f);
+  const ExprResult height_result = ctx.evaluate(stmt.args[2]);
+  const float requested_height = (height_result.error.empty() && height_result.value.kind == ValueKind::Number)
+      ? std::max(100.f, static_cast<float>(height_result.value.number))
+      : 300.f;
+
+  Value updated = value_result.value;
+
+  std::string map_image;
+  float zoom     = 1.0f;
+  float offset_x = 0.0f;
+  float offset_y = 0.0f;
+
+  if(const Value *f = find_object_field(updated, "image"))
+    if(f->kind == ValueKind::String) map_image = f->str;
+  if(const Value *f = find_object_field(updated, "zoom"))
+    if(f->kind == ValueKind::Number) zoom = std::clamp(static_cast<float>(f->number), 1.0f, 50.f);
+  if(const Value *f = find_object_field(updated, "offset_x"))
+    if(f->kind == ValueKind::Number) offset_x = static_cast<float>(f->number);
+  if(const Value *f = find_object_field(updated, "offset_y"))
+    if(f->kind == ValueKind::Number) offset_y = static_cast<float>(f->number);
+
+  std::vector<MapMarkerInfo> markers;
+  if(Value *items = find_object_field(updated, "markers"))
+  {
+    if(items->kind == ValueKind::Array)
+    {
+      for(int i = 0; i < static_cast<int>(items->array.size()); i++)
+      {
+        MapMarkerInfo m;
+        if(extract_map_marker(items->array[static_cast<size_t>(i)], m, i))
+          markers.push_back(m);
+      }
+    }
+  }
+
+  const std::string child_id = make_hidden_widget_id("map", stmt);
+
+  static std::unordered_map<std::string, MapPanState>           s_pan_states;
+  static std::unordered_map<std::string, MapMarkerEditorState>  s_marker_editors;
+  static std::unordered_map<std::string, int>                   s_editing_marker;
+  static std::unordered_map<std::string, MapSettingsEditorState> s_settings_editors;
+  static std::unordered_map<std::string, ImVec2>                s_right_click_uv;
+
+  const float available_width = std::max(0.f, ImGui::GetContentRegionAvail().x);
+  const float widget_width = available_width > 1.f ? std::min(requested_width, available_width) : requested_width;
+
+  bool changed = false;
+
+  MapPanState &pan = s_pan_states[child_id];
+  int &editing_marker_idx = s_editing_marker.emplace(child_id, -1).first->second;
+
+  ImGui::BeginDisabled(readonly);
+  const ImGuiWindowFlags child_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+  if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, requested_height), true, child_flags))
+  {
+    const ImVec2 canvas_pos  = ImGui::GetWindowPos();
+    const ImVec2 canvas_size = ImGui::GetWindowSize();
+    const ImVec2 canvas_max  = ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y);
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+
+    // UV viewport
+    const float uv_half = 0.5f / zoom;
+    const float uv_cx   = 0.5f - offset_x;
+    const float uv_cy   = 0.5f - offset_y;
+    const float uv_x0   = uv_cx - uv_half;
+    const float uv_y0   = uv_cy - uv_half;
+    const float uv_x1   = uv_cx + uv_half;
+    const float uv_y1   = uv_cy + uv_half;
+
+    auto uv_to_screen = [&](float u, float v) -> ImVec2 {
+      const float span_x = uv_x1 - uv_x0;
+      const float span_y = uv_y1 - uv_y0;
+      if(span_x == 0.f || span_y == 0.f) return canvas_pos;
+      return ImVec2(
+          canvas_pos.x + (u - uv_x0) / span_x * canvas_size.x,
+          canvas_pos.y + (v - uv_y0) / span_y * canvas_size.y);
+    };
+    auto screen_to_uv = [&](ImVec2 screen) -> ImVec2 {
+      const float span_x = uv_x1 - uv_x0;
+      const float span_y = uv_y1 - uv_y0;
+      return ImVec2(
+          uv_x0 + (screen.x - canvas_pos.x) / canvas_size.x * span_x,
+          uv_y0 + (screen.y - canvas_pos.y) / canvas_size.y * span_y);
+    };
+
+    // Background
+    dl->AddRectFilled(canvas_pos, canvas_max, ImGui::GetColorU32(ImGuiCol_FrameBg));
+
+    if(!map_image.empty())
+    {
+      const ImTextureID map_tex = get_widget_image_texture(map_image);
+      if(map_tex)
+        dl->AddImage(map_tex, canvas_pos, canvas_max, ImVec2(uv_x0, uv_y0), ImVec2(uv_x1, uv_y1));
+      else
+        dl->AddText(ImVec2(canvas_pos.x + 8.f, canvas_pos.y + 8.f),
+                   ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                   ("Image not found: " + map_image).c_str());
+    }
+    else
+    {
+      const char *hint = "Right-click to set map image and add markers";
+      const ImVec2 ts  = ImGui::CalcTextSize(hint);
+      dl->AddText(ImVec2(canvas_pos.x + (canvas_size.x - ts.x) * 0.5f,
+                        canvas_pos.y + (canvas_size.y - ts.y) * 0.5f),
+                 ImGui::GetColorU32(ImGuiCol_TextDisabled), hint);
+    }
+
+    // Markers
+    const float marker_r    = 10.f;
+    const ImVec2 mouse_pos  = ImGui::GetMousePos();
+    int hovered_marker = -1;
+
+    for(const MapMarkerInfo &m : markers)
+    {
+      const ImVec2 mpos = uv_to_screen(m.x, m.y);
+      if(mpos.x < canvas_pos.x - marker_r * 2.f || mpos.x > canvas_max.x + marker_r * 2.f ||
+         mpos.y < canvas_pos.y - marker_r * 2.f || mpos.y > canvas_max.y + marker_r * 2.f)
+        continue;
+
+      const float dx = mouse_pos.x - mpos.x;
+      const float dy = mouse_pos.y - mpos.y;
+      const bool is_hov = (dx * dx + dy * dy) <= (marker_r * 1.5f) * (marker_r * 1.5f);
+      if(is_hov) hovered_marker = m.index;
+
+      dl->AddCircleFilled(ImVec2(mpos.x + 1.f, mpos.y + 1.f), marker_r, IM_COL32(0, 0, 0, 80));
+      const ImVec4 base_col = m.has_color ? m.color_vec : ImVec4(1.f, 0.85f, 0.1f, 1.f);
+      const ImVec4 hov_col  = ImVec4(
+          std::min(1.f, base_col.x * 1.15f), std::min(1.f, base_col.y * 1.15f),
+          std::min(1.f, base_col.z * 1.15f), base_col.w);
+      dl->AddCircleFilled(mpos, marker_r, ImGui::GetColorU32(is_hov ? hov_col : base_col));
+      dl->AddCircle(mpos, marker_r, IM_COL32(0, 0, 0, 200), 0, 1.5f);
+
+      if(!m.title.empty())
+      {
+        const char buf[2] = {m.title[0], '\0'};
+        const ImVec2 ts = ImGui::CalcTextSize(buf);
+        dl->AddText(ImVec2(mpos.x - ts.x * 0.5f, mpos.y - ts.y * 0.5f), IM_COL32(0, 0, 0, 230), buf);
+      }
+    }
+
+    // Invisible button for all canvas interactions
+    ImGui::SetCursorPos(ImVec2(0.f, 0.f));
+    ImGui::InvisibleButton(("##map_canvas_" + child_id).c_str(), canvas_size,
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    const bool canvas_hovered = ImGui::IsItemHovered();
+
+    // Hover tooltip
+    if(hovered_marker >= 0 && canvas_hovered && editing_marker_idx == -1)
+    {
+      const MapMarkerInfo &hm = markers[static_cast<size_t>(hovered_marker)];
+      render_map_marker_tooltip(hm, "##maptip_" + child_id + "_" + std::to_string(hovered_marker));
+    }
+
+    // Scroll zoom (wheel over canvas)
+    if(!readonly && canvas_hovered && ImGui::GetIO().MouseWheel != 0.f)
+    {
+      const float wheel = ImGui::GetIO().MouseWheel;
+      const ImVec2 cursor_uv_before = screen_to_uv(mouse_pos);
+      zoom = std::clamp(zoom * std::pow(1.15f, wheel), 1.0f, 50.f);
+      const float frac_x = (mouse_pos.x - canvas_pos.x) / canvas_size.x;
+      const float frac_y = (mouse_pos.y - canvas_pos.y) / canvas_size.y;
+      const float new_uv_cx = cursor_uv_before.x - (frac_x - 0.5f) / zoom;
+      const float new_uv_cy = cursor_uv_before.y - (frac_y - 0.5f) / zoom;
+      offset_x = 0.5f - new_uv_cx;
+      offset_y = 0.5f - new_uv_cy;
+      changed = true;
+    }
+
+    // Left-mouse drag pan (only when not hovering a marker)
+    if(!readonly && canvas_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered_marker < 0)
+    {
+      pan.active         = true;
+      pan.start_mouse    = mouse_pos;
+      pan.start_offset_x = offset_x;
+      pan.start_offset_y = offset_y;
+    }
+    if(pan.active)
+    {
+      if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
+      {
+        // Invert: dragging right moves the image right (camera style)
+        offset_x = pan.start_offset_x + (mouse_pos.x - pan.start_mouse.x) / (canvas_size.x * zoom);
+        offset_y = pan.start_offset_y + (mouse_pos.y - pan.start_mouse.y) / (canvas_size.y * zoom);
+        // Clamp to image bounds
+        const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
+        offset_x = std::clamp(offset_x, -max_off, max_off);
+        offset_y = std::clamp(offset_y, -max_off, max_off);
+        changed = true;
+      }
+      else { pan.active = false; }
+    }
+    // Also clamp after zoom
+    {
+      const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
+      offset_x = std::clamp(offset_x, -max_off, max_off);
+      offset_y = std::clamp(offset_y, -max_off, max_off);
+    }
+
+    const std::string marker_popup_id  = "##map_marker_edit_" + child_id;
+    const std::string map_ctx_popup_id = "##map_ctx_" + child_id;
+
+    // Right-click: open marker editor or map context
+    if(!readonly && canvas_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    {
+      ctx.consumed_right_click = true;
+      s_right_click_uv[child_id] = screen_to_uv(mouse_pos);
+
+      if(hovered_marker >= 0)
+      {
+        editing_marker_idx = hovered_marker;
+        MapMarkerEditorState &ed = s_marker_editors[child_id];
+        const MapMarkerInfo &hm  = markers[static_cast<size_t>(hovered_marker)];
+        std::snprintf(ed.color,       sizeof(ed.color),       "%s", hm.color.c_str());
+        std::snprintf(ed.title,       sizeof(ed.title),       "%s", hm.title.c_str());
+        std::snprintf(ed.image,       sizeof(ed.image),       "%s", hm.image.c_str());
+        std::snprintf(ed.description, sizeof(ed.description), "%s", hm.description.c_str());
+        ed.x      = hm.x;
+        ed.y      = hm.y;
+        ed.is_new = false;
+        ImGui::OpenPopup(marker_popup_id.c_str());
+      }
+      else
+      {
+        ImGui::OpenPopup(map_ctx_popup_id.c_str());
+      }
+    }
+
+    // Deferred open for "Add marker here" (triggered from context popup, same frame)
+    if(editing_marker_idx == -2)
+      ImGui::OpenPopup(marker_popup_id.c_str());
+
+    // ── Marker edit popup ────────────────────────────────────────────────────
+    ImGui::SetNextWindowSizeConstraints(ImVec2(260.f, 0.f), ImVec2(400.f, 600.f));
+    if(ImGui::BeginPopup(marker_popup_id.c_str()))
+    {
+      MapMarkerEditorState &ed = s_marker_editors[child_id];
+      if(ImGui::IsWindowAppearing())
+      {
+        ImVec4 col = ImVec4(1.f, 0.85f, 0.1f, 1.f);
+        std::string dummy;
+        if(ed.color[0]) parse_inventory_mark_color(ed.color, dummy, col);
+        ed.color_f[0] = col.x; ed.color_f[1] = col.y; ed.color_f[2] = col.z;
+      }
+      ImGui::TextDisabled(ed.is_new ? "New marker" : "Edit marker");
+      ImGui::SetNextItemWidth(220.f); ImGui::InputText("Title",       ed.title, sizeof(ed.title));
+      ImGui::SetNextItemWidth(220.f); ImGui::InputText("Image",       ed.image, sizeof(ed.image));
+      ImGui::SetNextItemWidth(220.f);
+      ImGui::InputTextMultiline("Description", ed.description, sizeof(ed.description), ImVec2(220.f, 80.f));
+      const bool desc_active = ImGui::IsItemActive();
+      ImGui::SetNextItemWidth(90.f); ImGui::InputFloat("X", &ed.x, 0.f, 0.f, "%.4f");
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(90.f); ImGui::InputFloat("Y", &ed.y, 0.f, 0.f, "%.4f");
+      ed.x = std::clamp(ed.x, 0.f, 1.f);
+      ed.y = std::clamp(ed.y, 0.f, 1.f);
+
+      ImGui::Separator();
+      ImGui::SetNextItemWidth(140.f);
+      ImGui::ColorEdit3("Color##marker_col", ed.color_f,
+                        ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_InputRGB);
+      auto preset_color = [&](const char *label, float r, float g, float b) {
+        if(ImGui::SmallButton(label)) { ed.color_f[0] = r; ed.color_f[1] = g; ed.color_f[2] = b; }
+      };
+      preset_color("Green",  0x58/255.f, 0xC4/255.f, 0x72/255.f); ImGui::SameLine();
+      preset_color("Blue",   0x57/255.f, 0xA7/255.f, 1.00f);       ImGui::SameLine();
+      preset_color("Amber",  1.00f,      0xB3/255.f, 0x47/255.f);  ImGui::SameLine();
+      preset_color("Red",    1.00f,      0x6B/255.f, 0x6B/255.f);  ImGui::SameLine();
+      preset_color("Purple", 0xC5/255.f, 0x7B/255.f, 1.00f);
+
+      ImGui::Separator();
+      const bool apply_enter = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+                               && ImGui::IsKeyPressed(ImGuiKey_Enter, false)
+                               && !desc_active;
+      if(ImGui::Button("Apply") || apply_enter)
+      {
+        char hex_buf[8];
+        std::snprintf(hex_buf, sizeof(hex_buf), "#%02X%02X%02X",
+            std::clamp(static_cast<int>(ed.color_f[0] * 255.f + 0.5f), 0, 255),
+            std::clamp(static_cast<int>(ed.color_f[1] * 255.f + 0.5f), 0, 255),
+            std::clamp(static_cast<int>(ed.color_f[2] * 255.f + 0.5f), 0, 255));
+        MapMarkerInfo nm;
+        nm.x           = ed.x;
+        nm.y           = ed.y;
+        nm.color       = hex_buf;
+        nm.title       = trim(std::string(ed.title));
+        nm.image       = trim(std::string(ed.image));
+        nm.description = trim(std::string(ed.description));
+
+        Value *items_val = find_object_field(updated, "markers");
+        if(!items_val)
+        {
+          Value arr; arr.kind = ValueKind::Array;
+          upsert_object_field(updated, "markers", std::move(arr));
+          items_val = find_object_field(updated, "markers");
+        }
+        const Value marker_val = make_map_marker_value(nm);
+        if(ed.is_new || editing_marker_idx < 0)
+          items_val->array.push_back(marker_val);
+        else if(editing_marker_idx < static_cast<int>(items_val->array.size()))
+          items_val->array[static_cast<size_t>(editing_marker_idx)] = marker_val;
+
+        changed = true;
+        editing_marker_idx = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if(!ed.is_new && ImGui::Button("Delete"))
+      {
+        Value *items_val = find_object_field(updated, "markers");
+        if(items_val && items_val->kind == ValueKind::Array &&
+           editing_marker_idx >= 0 && editing_marker_idx < static_cast<int>(items_val->array.size()))
+          items_val->array.erase(items_val->array.begin() + editing_marker_idx);
+        changed = true;
+        editing_marker_idx = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Cancel")) { editing_marker_idx = -1; ImGui::CloseCurrentPopup(); }
+      ImGui::EndPopup();
+    }
+    // If the popup was dismissed externally (Escape or click-outside), cancel edit mode
+    if(editing_marker_idx != -1 && !ImGui::IsPopupOpen(marker_popup_id.c_str()))
+      editing_marker_idx = -1;
+
+    // ── Map context popup ────────────────────────────────────────────────────
+    ImGui::SetNextWindowSizeConstraints(ImVec2(280.f, 0.f), ImVec2(400.f, 600.f));
+    if(ImGui::BeginPopup(map_ctx_popup_id.c_str()))
+    {
+      MapSettingsEditorState &ss = s_settings_editors[child_id];
+      if(ImGui::IsWindowAppearing())
+        std::snprintf(ss.image, sizeof(ss.image), "%s", map_image.c_str());
+
+      ImGui::TextDisabled("Map settings");
+      ImGui::SetNextItemWidth(260.f);
+      ImGui::InputText("Image path", ss.image, sizeof(ss.image));
+      if(ImGui::Button("Apply image"))
+      {
+        Value img_val; img_val.kind = ValueKind::String; img_val.str = trim(std::string(ss.image));
+        upsert_object_field(updated, "image", std::move(img_val));
+        changed = true;
+        ImGui::CloseCurrentPopup();
+      }
+
+      ImGui::Separator();
+      ImGui::TextDisabled("Zoom  %.2f\xc3\x97", static_cast<double>(zoom));
+      if(ImGui::Button("Zoom +"))    { zoom = std::clamp(zoom * 1.25f, 1.0f, 50.f); changed = true; }
+      ImGui::SameLine();
+      if(ImGui::Button("Zoom -"))    { zoom = std::clamp(zoom * 0.8f,  1.0f, 50.f); changed = true; }
+      ImGui::SameLine();
+      if(ImGui::Button("Reset view")) { zoom = 1.f; offset_x = 0.f; offset_y = 0.f; changed = true; }
+
+      ImGui::Separator();
+      const ImVec2 click_uv = s_right_click_uv.count(child_id) ? s_right_click_uv.at(child_id) : ImVec2(0.5f, 0.5f);
+      ImGui::TextDisabled("Marker at (%.3f, %.3f)", static_cast<double>(click_uv.x), static_cast<double>(click_uv.y));
+      if(ImGui::Button("Add marker here"))
+      {
+        MapMarkerEditorState &ed = s_marker_editors[child_id];
+        ed          = {};
+        ed.x        = click_uv.x;
+        ed.y        = click_uv.y;
+        ed.is_new   = true;
+        editing_marker_idx = -2;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+  }
+  ImGui::EndChild();
+  ImGui::EndDisabled();
+
+  if(changed)
+  {
+    { Value v; v.kind = ValueKind::Number; v.number = zoom;     upsert_object_field(updated, "zoom",     std::move(v)); }
+    { Value v; v.kind = ValueKind::Number; v.number = offset_x; upsert_object_field(updated, "offset_x", std::move(v)); }
+    { Value v; v.kind = ValueKind::Number; v.number = offset_y; upsert_object_field(updated, "offset_y", std::move(v)); }
+    set_override(ctx, block, *var_name, updated, replacements, errors);
+  }
 }
 
 void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
@@ -3961,6 +4527,9 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
     break;
   case Statement::Kind::Button:
     render_button(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::Map:
+    render_map_widget(ctx, block, stmt, replacements, errors);
     break;
   case Statement::Kind::Error:
     render_error_inline(stmt.error.empty() ? "invalid UI statement" : stmt.error);

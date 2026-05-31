@@ -1515,6 +1515,7 @@ void App::rename_note_storage_for_title(const std::string &new_title)
   state_file_path_ = new_path.string();
   note_title_ = safe_title;
   sync_active_note_meta();
+  force_note_layout_restore_ = true;
   save_state();
 }
 
@@ -1550,6 +1551,7 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
     state_file_path_ = n.path;
     note_title_ = n.title;
   }
+  force_note_layout_restore_ = true;
   save_index();
 }
 
