@@ -11,7 +11,6 @@ struct ProjectInfo
   std::filesystem::path root;
   std::filesystem::path notes;
   std::filesystem::path assets;
-  std::filesystem::path config;
   std::filesystem::path projectFile;
 };
 

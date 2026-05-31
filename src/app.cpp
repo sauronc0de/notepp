@@ -608,31 +608,29 @@ App::App(AppConfig config)
     : config_(std::move(config))
 {
   std::filesystem::create_directories(config_.dataPath);
-  std::filesystem::create_directories(config_.configPath);
 
   default_state_file_ =
-      config_.configPath / "note.md";
+      config_.dataPath / "note.md";
 
   legacy_state_meta_file_ =
-      config_.configPath / "current_note_path.txt";
+      config_.dataPath / "current_note_path.txt";
 
   index_file_ =
-      config_.configPath / "notes_index.json";
+      config_.dataPath / "notes_index.json";
 
   imgui_ini_file_ =
-      config_.configPath / "imgui_layout.ini";
+      config_.dataPath / "imgui_layout.ini";
 
   drawings_file_ =
-      config_.configPath / "drawings_state.txt";
+      config_.dataPath / "drawings_state.txt";
 
   g_clipboard_file =
-      config_.configPath / "note_clipboard.json";
+      config_.dataPath / "note_clipboard.json";
 
   g_drawings_file = drawings_file_;
 
   state_file_path_ = default_state_file_.string();
 
-  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
 
@@ -646,17 +644,15 @@ void App::switch_project(const std::filesystem::path &new_root)
 
   auto project = notepp::project::create_or_open_project(new_root);
   config_.dataPath = project.notes;
-  config_.configPath = project.config;
 
-  default_state_file_ = config_.configPath / "note.md";
-  legacy_state_meta_file_ = config_.configPath / "current_note_path.txt";
-  index_file_ = config_.configPath / "notes_index.json";
-  imgui_ini_file_ = config_.configPath / "imgui_layout.ini";
-  drawings_file_ = config_.configPath / "drawings_state.txt";
-  g_clipboard_file = config_.configPath / "note_clipboard.json";
+  default_state_file_ = config_.dataPath / "note.md";
+  legacy_state_meta_file_ = config_.dataPath / "current_note_path.txt";
+  index_file_ = config_.dataPath / "notes_index.json";
+  imgui_ini_file_ = config_.dataPath / "imgui_layout.ini";
+  drawings_file_ = config_.dataPath / "drawings_state.txt";
+  g_clipboard_file = config_.dataPath / "note_clipboard.json";
   g_drawings_file = drawings_file_;
   state_file_path_ = default_state_file_.string();
-  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
 
   g_folder_drawings.clear();
   g_draw_undo.clear();
@@ -679,7 +675,6 @@ int App::run()
 {
   try
   {
-    pre_load_window_state();
     init_sdl_gl();
     init_imgui();
     load_state();
@@ -743,19 +738,6 @@ int App::run()
   }
 }
 
-void App::pre_load_window_state()
-{
-  if(!std::filesystem::exists(index_file_)) return;
-  std::ifstream in(index_file_);
-  if(!in) return;
-  const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  saved_win_maximized_ = json_find_bool(doc, "win_maximized", true);
-  saved_win_w_         = json_find_int(doc, "win_w", 1100);
-  saved_win_h_         = json_find_int(doc, "win_h", 700);
-  if(saved_win_w_ < 400) saved_win_w_ = 400;
-  if(saved_win_h_ < 300) saved_win_h_ = 300;
-}
-
 void App::init_sdl_gl()
 {
   if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)
@@ -771,14 +753,11 @@ void App::init_sdl_gl()
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-  Uint32 win_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-  if(saved_win_maximized_) win_flags |= SDL_WINDOW_MAXIMIZED;
-
   window_ = SDL_CreateWindow(
       "Notepp",
       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      saved_win_w_, saved_win_h_,
-      win_flags);
+      1100, 700,
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_MAXIMIZED);
 
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
@@ -978,12 +957,6 @@ void App::load_state()
     dockers_enabled_ = json_find_bool(doc, "dockers_enabled", true);
     const std::string saved_lang = json_find_string(doc, "language");
     if(!saved_lang.empty()) Lang::set_language(saved_lang);
-
-    index_canvas_ox_ = (float)json_find_int(doc, "canvas_ox", 0);
-    index_canvas_oy_ = (float)json_find_int(doc, "canvas_oy", 0);
-    index_canvas_w_  = (float)json_find_int(doc, "canvas_w", 0);
-    index_canvas_h_  = (float)json_find_int(doc, "canvas_h", 0);
-    rescale_pending_ = (index_canvas_w_ > 1.0f && index_canvas_h_ > 1.0f);
 
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
@@ -1205,27 +1178,7 @@ void App::save_index() const
     if(fi + 1 < folders_.size()) out << ",";
     out << "\n";
   }
-  out << "  ],\n";
-
-  // Window state — maintained via SDL events in frame_begin(), not SDL_GetWindowFlags()
-  // (SDL_WINDOW_MAXIMIZED flag is not reliably set before the event loop processes it)
-  out << "  \"win_maximized\": " << (saved_win_maximized_ ? "true" : "false") << ",\n";
-  out << "  \"win_w\": " << saved_win_w_ << ",\n";
-  out << "  \"win_h\": " << saved_win_h_ << ",\n";
-
-  // Canvas bounds — used to proportionally rescale notes on next open if the window size changed
-  if(last_canvas_w_ > 0.0f)
-  {
-    out << "  \"canvas_ox\": " << (int)std::lround(last_canvas_ox_) << ",\n";
-    out << "  \"canvas_oy\": " << (int)std::lround(last_canvas_oy_) << ",\n";
-    out << "  \"canvas_w\": "  << (int)std::lround(last_canvas_w_)  << ",\n";
-    out << "  \"canvas_h\": "  << (int)std::lround(last_canvas_h_)  << "\n";
-  }
-  else
-  {
-    out << "  \"canvas_w\": 0\n";
-  }
-
+  out << "  ]\n";
   out << "}\n";
 }
 
@@ -2349,34 +2302,6 @@ bool App::frame_begin()
        event.window.windowID == SDL_GetWindowID(window_))
     {
       running_ = false;
-    }
-
-    // Track window state for persistence and trigger proportional note rescaling
-    if(event.type == SDL_WINDOWEVENT)
-    {
-      if(event.window.event == SDL_WINDOWEVENT_MAXIMIZED)
-        saved_win_maximized_ = true;
-      else if(event.window.event == SDL_WINDOWEVENT_RESTORED)
-      {
-        saved_win_maximized_ = false;
-        SDL_GetWindowSize(window_, &saved_win_w_, &saved_win_h_);
-      }
-      else if(event.window.event == SDL_WINDOWEVENT_RESIZED && !saved_win_maximized_)
-      {
-        saved_win_w_ = event.window.data1;
-        saved_win_h_ = event.window.data2;
-      }
-      // Reuse the load-time rescale path for runtime maximize/restore
-      if((event.window.event == SDL_WINDOWEVENT_MAXIMIZED ||
-          event.window.event == SDL_WINDOWEVENT_RESTORED) &&
-         last_canvas_w_ > 1.0f)
-      {
-        index_canvas_ox_ = last_canvas_ox_;
-        index_canvas_oy_ = last_canvas_oy_;
-        index_canvas_w_  = last_canvas_w_;
-        index_canvas_h_  = last_canvas_h_;
-        rescale_pending_ = true;
-      }
     }
 
     if(event.type == SDL_KEYDOWN &&
@@ -5768,12 +5693,6 @@ __CURSOR__)MD");
     const float bg_w = std::max(1.0f, bg_p1.x - bg_p0.x);
     const float bg_h = std::max(1.0f, bg_p1.y - bg_p0.y);
     const bool notes_bg_hovered = ImGui::IsMouseHoveringRect(bg_p0, bg_p1, true);
-
-    // Track canvas bounds so save_index() can persist them
-    last_canvas_ox_ = bg_p0.x;
-    last_canvas_oy_ = bg_p0.y;
-    last_canvas_w_  = bg_w;
-    last_canvas_h_  = bg_h;
     auto &folder_strokes = g_folder_drawings[f.name];
     if(!g_drawings_legacy_checked.count(f.name))
     {
@@ -6186,32 +6105,6 @@ __CURSOR__)MD");
         ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
-    }
-
-    // Proportional rescale: on first frame after load, if canvas size differs from the
-    // saved canvas, move all notes so they sit in the same relative position as before.
-    if(rescale_pending_ && index_canvas_w_ > 1.0f && index_canvas_h_ > 1.0f &&
-       bg_w > 1.0f && bg_h > 1.0f)
-    {
-      const float sx = bg_w / index_canvas_w_;
-      const float sy = bg_h / index_canvas_h_;
-      if(std::fabs(sx - 1.0f) > 0.01f || std::fabs(sy - 1.0f) > 0.01f)
-      {
-        for(auto &folder : folders_)
-        {
-          for(NoteMeta &note : folder.notes)
-          {
-            if(!note.has_layout) continue;
-            note.pos_x  = bg_p0.x + (note.pos_x - index_canvas_ox_) * sx;
-            note.pos_y  = bg_p0.y + (note.pos_y - index_canvas_oy_) * sy;
-            note.width  = std::max(320.0f, note.width  * sx);
-            note.height = std::max(140.0f, note.height * sy);
-          }
-        }
-        layout_dirty_           = true;
-        force_note_layout_restore_ = true;
-      }
-      rescale_pending_ = false;
     }
 
     for(int ni = 0; ni < (int)f.notes.size(); ++ni)

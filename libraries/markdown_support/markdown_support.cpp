@@ -384,7 +384,7 @@ void render_mermaid_block(std::string_view mermaid_type, std::string_view body, 
 
 using Json = nlohmann::json;
 
-static std::string g_preview_state_file = DATA_PATH "/markdown_preview_state.json";
+constexpr const char *kMarkdownPreviewStateFile = DATA_PATH "/markdown_preview_state.json";
 
 struct TableViewState
 {
@@ -528,7 +528,7 @@ void ensure_preview_state_loaded()
   g_preview_state_loaded = true;
 
   g_preview_state_json = Json::object();
-  std::ifstream in(g_preview_state_file, std::ios::binary);
+  std::ifstream in(kMarkdownPreviewStateFile, std::ios::binary);
   if(in)
   {
     try
@@ -671,7 +671,7 @@ void save_preview_state_if_dirty()
   if(!g_preview_state_dirty) return;
   ensure_preview_state_loaded();
 
-  std::ofstream out(g_preview_state_file, std::ios::binary | std::ios::trunc);
+  std::ofstream out(kMarkdownPreviewStateFile, std::ios::binary | std::ios::trunc);
   if(!out) return;
   out << g_preview_state_json.dump(2);
   g_preview_state_dirty = false;
@@ -792,7 +792,7 @@ void apply_preview_state_snapshot_impl(std::string_view snapshot)
   g_preview_state_json = std::move(preview_state);
   MarkdownUi::apply_ui_state_snapshot(ui_state.dump());
 
-  std::ofstream out(g_preview_state_file, std::ios::binary | std::ios::trunc);
+  std::ofstream out(kMarkdownPreviewStateFile, std::ios::binary | std::ios::trunc);
   if(out) out << g_preview_state_json.dump(2);
 }
 
@@ -2006,11 +2006,6 @@ void set_preview_document_path(std::string_view path)
   g_preview_document_path.assign(path.data(), path.size());
   MarkdownView::set_document_path(path);
   MarkdownUi::set_widget_document_path(std::filesystem::path(path));
-}
-
-void set_preview_state_path(const std::filesystem::path &path)
-{
-  g_preview_state_file = path.string();
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)

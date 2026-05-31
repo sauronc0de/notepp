@@ -155,12 +155,10 @@ ProjectInfo create_or_open_project(const fs::path &root)
   project.root = root;
   project.notes = root / "notes";
   project.assets = root / "assets";
-  project.config = root / "config";
   project.projectFile = root / "notepp.project.json";
 
   fs::create_directories(project.notes);
   fs::create_directories(project.assets);
-  fs::create_directories(project.config);
 
   if(!fs::exists(project.projectFile))
   {
