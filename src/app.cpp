@@ -608,29 +608,31 @@ App::App(AppConfig config)
     : config_(std::move(config))
 {
   std::filesystem::create_directories(config_.dataPath);
+  std::filesystem::create_directories(config_.configPath);
 
   default_state_file_ =
-      config_.dataPath / "note.md";
+      config_.configPath / "note.md";
 
   legacy_state_meta_file_ =
-      config_.dataPath / "current_note_path.txt";
+      config_.configPath / "current_note_path.txt";
 
   index_file_ =
-      config_.dataPath / "notes_index.json";
+      config_.configPath / "notes_index.json";
 
   imgui_ini_file_ =
-      config_.dataPath / "imgui_layout.ini";
+      config_.configPath / "imgui_layout.ini";
 
   drawings_file_ =
-      config_.dataPath / "drawings_state.txt";
+      config_.configPath / "drawings_state.txt";
 
   g_clipboard_file =
-      config_.dataPath / "note_clipboard.json";
+      config_.configPath / "note_clipboard.json";
 
   g_drawings_file = drawings_file_;
 
   state_file_path_ = default_state_file_.string();
 
+  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
 
@@ -644,15 +646,17 @@ void App::switch_project(const std::filesystem::path &new_root)
 
   auto project = notepp::project::create_or_open_project(new_root);
   config_.dataPath = project.notes;
+  config_.configPath = project.config;
 
-  default_state_file_ = config_.dataPath / "note.md";
-  legacy_state_meta_file_ = config_.dataPath / "current_note_path.txt";
-  index_file_ = config_.dataPath / "notes_index.json";
-  imgui_ini_file_ = config_.dataPath / "imgui_layout.ini";
-  drawings_file_ = config_.dataPath / "drawings_state.txt";
-  g_clipboard_file = config_.dataPath / "note_clipboard.json";
+  default_state_file_ = config_.configPath / "note.md";
+  legacy_state_meta_file_ = config_.configPath / "current_note_path.txt";
+  index_file_ = config_.configPath / "notes_index.json";
+  imgui_ini_file_ = config_.configPath / "imgui_layout.ini";
+  drawings_file_ = config_.configPath / "drawings_state.txt";
+  g_clipboard_file = config_.configPath / "note_clipboard.json";
   g_drawings_file = drawings_file_;
   state_file_path_ = default_state_file_.string();
+  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
 
   g_folder_drawings.clear();
   g_draw_undo.clear();

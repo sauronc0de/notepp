@@ -17,6 +17,7 @@ struct AppConfig
 {
   std::filesystem::path assetsPath;
   std::filesystem::path dataPath;
+  std::filesystem::path configPath;
 };
 
 class App

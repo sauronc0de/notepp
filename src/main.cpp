@@ -12,6 +12,7 @@ int main(int, char **)
 
   std::filesystem::path assetsPath = ASSETS_PATH;
   std::filesystem::path dataPath;
+  std::filesystem::path configPath;
 
 #if USE_PORTABLE_PATHS
   auto project = notepp::project::initialize_project();
@@ -20,13 +21,17 @@ int main(int, char **)
     return 0;
 
   dataPath = project->notes;
+  configPath = project->config;
 #else
   dataPath = DATA_PATH;
+  configPath = std::filesystem::path(DATA_PATH).parent_path() / "config";
+  std::filesystem::create_directories(configPath);
 #endif
 
   AppConfig config;
   config.assetsPath = assetsPath;
   config.dataPath = dataPath;
+  config.configPath = configPath;
 
   App app(config);
   return app.run();
