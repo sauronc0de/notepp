@@ -2949,6 +2949,33 @@ struct InventoryDragPayload
   bool copy = false;
 };
 
+// POD payload for cross-inventory drag-and-drop (safe to copy by ImGui)
+struct InventoryXferPayload
+{
+  char source_widget_id[256];
+  int cell_index = -1;
+  bool copy = false;
+};
+
+struct CrossSlotData
+{
+  std::string title;
+  std::string abs_image;
+  std::string tooltip;
+  std::optional<std::string> quantity;
+  std::string color_text;
+  bool enabled = true;
+};
+
+enum class CrossInventoryOpKind { None, Remove, ReplaceWith };
+
+struct PendingCrossInventoryOp
+{
+  CrossInventoryOpKind kind = CrossInventoryOpKind::None;
+  int cell_index = -1;
+  CrossSlotData replace_data;
+};
+
 struct InventorySlotInfo
 {
   std::string title;
@@ -2961,6 +2988,17 @@ struct InventorySlotInfo
   bool has_mark_color = false;
   ImVec4 mark_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
 };
+
+struct InventoryDragSourceState
+{
+  InventorySlotInfo item;
+  std::string abs_image;
+  int cell_index = -1;
+  int item_index = -1;
+};
+
+static std::unordered_map<std::string, InventoryDragSourceState> g_inventory_drag_sources;
+static std::unordered_map<std::string, PendingCrossInventoryOp> g_pending_cross_ops;
 
 struct InventoryPopupEditorState
 {
@@ -3395,7 +3433,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const bool needs_scroll = grid_width > widget_width + 0.5f;
   const float height = rows * cell_size + (rows - 1) * spacing + style.WindowPadding.y * 2.0f;
   const std::string child_id = make_hidden_widget_id("inventory", stmt);
-  const std::string payload_type = "MDUI_INV_" + make_statement_token(stmt);
+  static constexpr const char *kInvXferPayload = "NOTEPP_INV_XFER";
   static std::unordered_map<std::string, int> selected_slot_by_widget;
   static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
 
@@ -3412,6 +3450,49 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   if(selected_index < 0 || selected_index >= total_cells) selected_index = 0;
 
   bool changed = false;
+
+  // Apply any deferred cross-inventory operation from a previous frame
+  {
+    auto op_it = g_pending_cross_ops.find(child_id);
+    if(op_it != g_pending_cross_ops.end())
+    {
+      PendingCrossInventoryOp &op = op_it->second;
+      if(op.kind != CrossInventoryOpKind::None && !readonly)
+      {
+        std::vector<int> pending_lookup = build_inventory_cell_lookup(*items, total_cells);
+        const int op_item_index = (op.cell_index >= 0 && op.cell_index < total_cells)
+            ? pending_lookup[static_cast<size_t>(op.cell_index)] : -1;
+        if(op.kind == CrossInventoryOpKind::Remove)
+        {
+          if(op_item_index >= 0) remove_inventory_item(*items, op_item_index);
+          trim_inventory_slots(*items);
+          changed = true;
+        }
+        else if(op.kind == CrossInventoryOpKind::ReplaceWith)
+        {
+          std::string img = op.replace_data.abs_image;
+          if(!img.empty() && !g_widget_document_path.empty())
+          {
+            std::error_code ec;
+            auto rel = std::filesystem::relative(std::filesystem::path(img),
+                g_widget_document_path.parent_path(), ec);
+            if(!ec && !rel.empty()) img = rel.generic_string();
+          }
+          Value new_slot = make_inventory_slot_value(
+              op.replace_data.title, img, op.replace_data.tooltip,
+              op.replace_data.quantity, op.replace_data.color_text, op.replace_data.enabled);
+          set_inventory_slot_position(new_slot, op.cell_index);
+          if(op_item_index >= 0 && static_cast<size_t>(op_item_index) < items->array.size())
+            items->array[static_cast<size_t>(op_item_index)] = std::move(new_slot);
+          else
+            items->array.push_back(std::move(new_slot));
+          trim_inventory_slots(*items);
+          changed = true;
+        }
+      }
+      g_pending_cross_ops.erase(op_it);
+    }
+  }
   ImGui::BeginDisabled(readonly);
   std::vector<int> cell_lookup = build_inventory_cell_lookup(*items, total_cells);
   bool any_slot_hovered = false;
@@ -3451,48 +3532,145 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         if(has_content && slot.enabled && ImGui::BeginDragDropSource())
         {
-          InventoryDragPayload payload;
-          payload.index = index;
+          InventoryXferPayload payload{};
+          strncpy(payload.source_widget_id, child_id.c_str(), sizeof(payload.source_widget_id) - 1);
+          payload.cell_index = index;
           payload.copy = ImGui::GetIO().KeyCtrl;
-          ImGui::SetDragDropPayload(payload_type.c_str(), &payload, sizeof(payload));
+          ImGui::SetDragDropPayload(kInvXferPayload, &payload, sizeof(payload));
+
+          // Keep global source state fresh so cross-inventory targets can read it
+          InventoryDragSourceState &src_state = g_inventory_drag_sources[child_id];
+          src_state.item = slot;
+          src_state.cell_index = index;
+          src_state.item_index = item_index;
+          src_state.abs_image = slot.image;
+          if(!src_state.abs_image.empty() && !g_widget_document_path.empty())
+          {
+            std::filesystem::path p(src_state.abs_image);
+            if(p.is_relative())
+              src_state.abs_image = (g_widget_document_path.parent_path() / p).generic_string();
+          }
+
           ImGui::TextUnformatted(slot.title.empty() ? (payload.copy ? "Copy item" : "Move item") : slot.title.c_str());
           if(payload.copy) ImGui::TextDisabled("Release over an empty slot to duplicate");
           ImGui::EndDragDropSource();
         }
         if(slot.enabled && ImGui::BeginDragDropTarget())
         {
-          if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(payload_type.c_str()))
+          if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(kInvXferPayload))
           {
-            const auto *drag = static_cast<const InventoryDragPayload *>(payload->Data);
-            if(drag && drag->index >= 0 && drag->index < total_cells && drag->index != index)
+            const auto *drag = static_cast<const InventoryXferPayload *>(payload->Data);
+            if(drag)
             {
-              const int source_item_index = cell_lookup[static_cast<size_t>(drag->index)];
-              const int target_item_index = item_index;
-              if(source_item_index >= 0 && static_cast<size_t>(source_item_index) < items->array.size())
+              const std::string source_id(drag->source_widget_id);
+              const bool same_inventory = (source_id == child_id);
+              if(same_inventory)
               {
-                InventorySlotInfo source_slot;
-                std::string source_error;
-                if(extract_inventory_slot(items->array[static_cast<size_t>(source_item_index)], source_slot, source_error) && source_slot.enabled)
+                // Same-inventory drag: swap/move/copy within this grid
+                if(drag->cell_index >= 0 && drag->cell_index < total_cells && drag->cell_index != index)
                 {
+                  const int source_item_index = cell_lookup[static_cast<size_t>(drag->cell_index)];
+                  const int target_item_index = item_index;
+                  if(source_item_index >= 0 && static_cast<size_t>(source_item_index) < items->array.size())
+                  {
+                    InventorySlotInfo source_slot;
+                    std::string source_error;
+                    if(extract_inventory_slot(items->array[static_cast<size_t>(source_item_index)], source_slot, source_error) && source_slot.enabled)
+                    {
+                      const bool target_enabled = !has_slot_value || (slot_ok && slot.enabled);
+                      if(target_enabled)
+                      {
+                        if(drag->copy && !has_slot_value)
+                        {
+                          Value duplicated = items->array[static_cast<size_t>(source_item_index)];
+                          set_inventory_slot_position(duplicated, index);
+                          items->array.push_back(std::move(duplicated));
+                          changed = true;
+                        }
+                        else if(has_slot_value && target_item_index >= 0 && target_item_index != source_item_index)
+                        {
+                          set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                          set_inventory_slot_position(items->array[static_cast<size_t>(target_item_index)], drag->cell_index);
+                          changed = true;
+                        }
+                        else if(!has_slot_value)
+                        {
+                          set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                          changed = true;
+                        }
+                        if(changed) trim_inventory_slots(*items);
+                      }
+                    }
+                  }
+                }
+              }
+              else
+              {
+                // Cross-inventory drag: move/copy between different inventory widgets
+                auto src_it = g_inventory_drag_sources.find(source_id);
+                if(src_it != g_inventory_drag_sources.end())
+                {
+                  const InventoryDragSourceState &src_state = src_it->second;
                   const bool target_enabled = !has_slot_value || (slot_ok && slot.enabled);
                   if(target_enabled)
                   {
-                    if(drag->copy && !has_slot_value)
+                    // Re-relativize source image against this document's directory
+                    std::string target_image = src_state.abs_image;
+                    if(!target_image.empty() && !g_widget_document_path.empty())
                     {
-                      Value duplicated = items->array[static_cast<size_t>(source_item_index)];
-                      set_inventory_slot_position(duplicated, index);
-                      items->array.push_back(std::move(duplicated));
+                      std::error_code ec;
+                      auto rel = std::filesystem::relative(std::filesystem::path(target_image),
+                          g_widget_document_path.parent_path(), ec);
+                      if(!ec && !rel.empty()) target_image = rel.generic_string();
+                    }
+                    Value new_item = make_inventory_slot_value(
+                        src_state.item.title, target_image, src_state.item.tooltip,
+                        src_state.item.quantity, src_state.item.color_text, src_state.item.enabled);
+                    set_inventory_slot_position(new_item, index);
+
+                    if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
+                    {
+                      // Target occupied: swap (target item travels back to source slot)
+                      if(!drag->copy)
+                      {
+                        InventorySlotInfo displaced;
+                        std::string displaced_err;
+                        if(extract_inventory_slot(items->array[static_cast<size_t>(item_index)], displaced, displaced_err))
+                        {
+                          CrossSlotData swap_data;
+                          swap_data.title = displaced.title;
+                          swap_data.tooltip = displaced.tooltip;
+                          swap_data.quantity = displaced.quantity;
+                          swap_data.color_text = displaced.color_text;
+                          swap_data.enabled = displaced.enabled;
+                          swap_data.abs_image = displaced.image;
+                          if(!swap_data.abs_image.empty() && !g_widget_document_path.empty())
+                          {
+                            std::filesystem::path p(swap_data.abs_image);
+                            if(p.is_relative())
+                              swap_data.abs_image = (g_widget_document_path.parent_path() / p).generic_string();
+                          }
+                          PendingCrossInventoryOp pending;
+                          pending.kind = CrossInventoryOpKind::ReplaceWith;
+                          pending.cell_index = src_state.cell_index;
+                          pending.replace_data = std::move(swap_data);
+                          g_pending_cross_ops[source_id] = std::move(pending);
+                        }
+                      }
+                      items->array[static_cast<size_t>(item_index)] = std::move(new_item);
                       changed = true;
                     }
-                    else if(has_slot_value && target_item_index >= 0 && target_item_index != source_item_index)
+                    else
                     {
-                      set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
-                      set_inventory_slot_position(items->array[static_cast<size_t>(target_item_index)], drag->index);
-                      changed = true;
-                    }
-                    else if(!has_slot_value)
-                    {
-                      set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                      // Target empty: add item, schedule removal from source if it's a move
+                      items->array.push_back(std::move(new_item));
+                      if(!drag->copy)
+                      {
+                        PendingCrossInventoryOp pending;
+                        pending.kind = CrossInventoryOpKind::Remove;
+                        pending.cell_index = src_state.cell_index;
+                        g_pending_cross_ops[source_id] = std::move(pending);
+                      }
                       changed = true;
                     }
                     if(changed) trim_inventory_slots(*items);
