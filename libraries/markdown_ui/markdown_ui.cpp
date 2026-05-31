@@ -3979,6 +3979,63 @@ struct MapPanState
   float start_offset_y = 0.f;
 };
 
+struct MapMarkerDragState
+{
+  bool active = false;
+  int marker_idx = -1;
+  ImVec2 live_uv = {0.5f, 0.5f};
+};
+
+struct MapDrawState
+{
+  bool draw_mode = false;
+  bool erase_mode = false;
+  bool is_drawing = false;
+  std::vector<ImVec2> current_pts;
+  float color_f[3] = {1.f, 0.27f, 0.27f};
+  float size_px = 3.f;
+  float erase_size_px = 20.f;
+};
+
+struct MapStrokeInfo
+{
+  std::vector<ImVec2> pts;
+  ImVec4 color = {1.f, 0.27f, 0.27f, 1.f};
+  float uv_thickness = 0.005f;
+};
+
+static std::vector<ImVec2> parse_stroke_pts(const std::string &s)
+{
+  std::vector<ImVec2> pts;
+  const char *p = s.c_str();
+  while(*p)
+  {
+    while(*p == ' ') ++p;
+    if(!*p) break;
+    char *end1 = nullptr, *end2 = nullptr;
+    const float x = std::strtof(p, &end1);
+    if(!end1 || *end1 != ',') break;
+    const float y = std::strtof(end1 + 1, &end2);
+    if(!end2) break;
+    pts.push_back(ImVec2(x, y));
+    p = end2;
+  }
+  return pts;
+}
+
+static std::string serialize_stroke_pts(const std::vector<ImVec2> &pts)
+{
+  std::string s;
+  char buf[32];
+  for(const ImVec2 &pt : pts)
+  {
+    if(!s.empty()) s += ' ';
+    std::snprintf(buf, sizeof(buf), "%.4f,%.4f", static_cast<double>(pt.x), static_cast<double>(pt.y));
+    s += buf;
+  }
+  return s;
+}
+
 void render_map_marker_tooltip(const MapMarkerInfo &m, const std::string &popup_id)
 {
   if(m.title.empty() && m.description.empty() && m.image.empty()) return;
@@ -4073,11 +4130,34 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
 
   const std::string child_id = make_hidden_widget_id("map", stmt);
 
-  static std::unordered_map<std::string, MapPanState>           s_pan_states;
-  static std::unordered_map<std::string, MapMarkerEditorState>  s_marker_editors;
-  static std::unordered_map<std::string, int>                   s_editing_marker;
+  static std::unordered_map<std::string, MapPanState>            s_pan_states;
+  static std::unordered_map<std::string, MapMarkerEditorState>   s_marker_editors;
+  static std::unordered_map<std::string, int>                    s_editing_marker;
   static std::unordered_map<std::string, MapSettingsEditorState> s_settings_editors;
-  static std::unordered_map<std::string, ImVec2>                s_right_click_uv;
+  static std::unordered_map<std::string, ImVec2>                 s_right_click_uv;
+  static std::unordered_map<std::string, MapMarkerDragState>     s_marker_drags;
+  static std::unordered_map<std::string, MapDrawState>           s_draw_states;
+
+  // Extract saved strokes from the variable
+  std::vector<MapStrokeInfo> saved_strokes;
+  if(const Value *sv = find_object_field(updated, "strokes"))
+  {
+    if(sv->kind == ValueKind::Array)
+    {
+      for(const Value &stroke_val : sv->array)
+      {
+        MapStrokeInfo si;
+        if(const Value *f = find_object_field(stroke_val, "pts"))
+          if(f->kind == ValueKind::String) si.pts = parse_stroke_pts(f->str);
+        if(const Value *f = find_object_field(stroke_val, "color"))
+          if(f->kind == ValueKind::String)
+          { std::string dummy; parse_inventory_mark_color(f->str.c_str(), dummy, si.color); }
+        if(const Value *f = find_object_field(stroke_val, "t"))
+          if(f->kind == ValueKind::Number) si.uv_thickness = static_cast<float>(f->number);
+        if(si.pts.size() >= 2) saved_strokes.push_back(std::move(si));
+      }
+    }
+  }
 
   const float available_width = std::max(0.f, ImGui::GetContentRegionAvail().x);
   const float widget_width = available_width > 1.f ? std::min(requested_width, available_width) : requested_width;
@@ -4085,6 +4165,8 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
   bool changed = false;
 
   MapPanState &pan = s_pan_states[child_id];
+  MapMarkerDragState &mdrag = s_marker_drags[child_id];
+  MapDrawState &ds = s_draw_states[child_id];
   int &editing_marker_idx = s_editing_marker.emplace(child_id, -1).first->second;
 
   ImGui::BeginDisabled(readonly);
@@ -4143,14 +4225,42 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
                  ImGui::GetColorU32(ImGuiCol_TextDisabled), hint);
     }
 
+    // Saved strokes (below markers, above map)
+    for(const MapStrokeInfo &si : saved_strokes)
+    {
+      const float st = std::max(1.f, si.uv_thickness * canvas_size.x * zoom);
+      std::vector<ImVec2> spts;
+      spts.reserve(si.pts.size());
+      for(const ImVec2 &p : si.pts) spts.push_back(uv_to_screen(p.x, p.y));
+      if(spts.size() >= 2)
+        dl->AddPolyline(spts.data(), static_cast<int>(spts.size()),
+                       ImGui::GetColorU32(si.color), ImDrawFlags_None, st);
+    }
+
+    // In-progress stroke preview
+    if(ds.is_drawing && ds.current_pts.size() >= 2)
+    {
+      const float uv_t = ds.size_px / (canvas_size.x * zoom);
+      const float st   = std::max(1.f, uv_t * canvas_size.x * zoom);
+      std::vector<ImVec2> spts;
+      spts.reserve(ds.current_pts.size());
+      for(const ImVec2 &p : ds.current_pts) spts.push_back(uv_to_screen(p.x, p.y));
+      const ImVec4 dcol = {ds.color_f[0], ds.color_f[1], ds.color_f[2], 1.f};
+      dl->AddPolyline(spts.data(), static_cast<int>(spts.size()),
+                     ImGui::GetColorU32(dcol), ImDrawFlags_None, st);
+    }
+
     // Markers
-    const float marker_r    = 10.f;
-    const ImVec2 mouse_pos  = ImGui::GetMousePos();
+    const float marker_r   = 10.f;
+    const ImVec2 mouse_pos = ImGui::GetMousePos();
     int hovered_marker = -1;
 
     for(const MapMarkerInfo &m : markers)
     {
-      const ImVec2 mpos = uv_to_screen(m.x, m.y);
+      // If this marker is being dragged, show it at live position
+      const float mx = (mdrag.active && mdrag.marker_idx == m.index) ? mdrag.live_uv.x : m.x;
+      const float my = (mdrag.active && mdrag.marker_idx == m.index) ? mdrag.live_uv.y : m.y;
+      const ImVec2 mpos = uv_to_screen(mx, my);
       if(mpos.x < canvas_pos.x - marker_r * 2.f || mpos.x > canvas_max.x + marker_r * 2.f ||
          mpos.y < canvas_pos.y - marker_r * 2.f || mpos.y > canvas_max.y + marker_r * 2.f)
         continue;
@@ -4165,8 +4275,9 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       const ImVec4 hov_col  = ImVec4(
           std::min(1.f, base_col.x * 1.15f), std::min(1.f, base_col.y * 1.15f),
           std::min(1.f, base_col.z * 1.15f), base_col.w);
-      dl->AddCircleFilled(mpos, marker_r, ImGui::GetColorU32(is_hov ? hov_col : base_col));
-      dl->AddCircle(mpos, marker_r, IM_COL32(0, 0, 0, 200), 0, 1.5f);
+      const bool show_drag = mdrag.active && mdrag.marker_idx == m.index;
+      dl->AddCircleFilled(mpos, marker_r, ImGui::GetColorU32((is_hov || show_drag) ? hov_col : base_col));
+      dl->AddCircle(mpos, marker_r, IM_COL32(0, 0, 0, 200), 0, show_drag ? 2.5f : 1.5f);
 
       if(!m.title.empty())
       {
@@ -4182,8 +4293,27 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
     const bool canvas_hovered = ImGui::IsItemHovered();
 
-    // Hover tooltip
-    if(hovered_marker >= 0 && canvas_hovered && editing_marker_idx == -1)
+    // Eraser circle overlay
+    if(ds.erase_mode && canvas_hovered)
+    {
+      dl->AddCircle(mouse_pos, ds.erase_size_px, IM_COL32(220, 80, 80, 200), 0, 1.5f);
+      dl->AddCircle(mouse_pos, ds.erase_size_px, IM_COL32(0, 0, 0, 100), 0, 3.0f);
+    }
+
+    // Cursor feedback
+    if(canvas_hovered || mdrag.active || pan.active)
+    {
+      if(mdrag.active || pan.active)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+      else if(ds.draw_mode || ds.erase_mode)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Arrow);
+      else
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+
+    // Hover tooltip (suppress during draw/erase mode, drag, and edit)
+    if(hovered_marker >= 0 && canvas_hovered && editing_marker_idx == -1
+       && !mdrag.active && !ds.draw_mode && !ds.erase_mode)
     {
       const MapMarkerInfo &hm = markers[static_cast<size_t>(hovered_marker)];
       render_map_marker_tooltip(hm, "##maptip_" + child_id + "_" + std::to_string(hovered_marker));
@@ -4204,8 +4334,120 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       changed = true;
     }
 
-    // Left-mouse drag pan (only when not hovering a marker)
-    if(!readonly && canvas_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered_marker < 0)
+    // Marker drag — start on left-click over a marker (not in draw mode)
+    if(!readonly && !ds.draw_mode && canvas_hovered
+       && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered_marker >= 0)
+    {
+      mdrag.active     = true;
+      mdrag.marker_idx = hovered_marker;
+      mdrag.live_uv    = screen_to_uv(mouse_pos);
+    }
+    if(mdrag.active)
+    {
+      if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
+      {
+        const ImVec2 uv = screen_to_uv(mouse_pos);
+        mdrag.live_uv = ImVec2(std::clamp(uv.x, 0.f, 1.f), std::clamp(uv.y, 0.f, 1.f));
+      }
+      else
+      {
+        // Commit position on release
+        Value *markers_arr = find_object_field(updated, "markers");
+        if(markers_arr && markers_arr->kind == ValueKind::Array
+           && mdrag.marker_idx < static_cast<int>(markers_arr->array.size()))
+        {
+          Value &mv = markers_arr->array[static_cast<size_t>(mdrag.marker_idx)];
+          { Value f; f.kind = ValueKind::Number; f.number = mdrag.live_uv.x; upsert_object_field(mv, "x", std::move(f)); }
+          { Value f; f.kind = ValueKind::Number; f.number = mdrag.live_uv.y; upsert_object_field(mv, "y", std::move(f)); }
+          changed = true;
+        }
+        mdrag.active = false;
+      }
+    }
+
+    // Draw mode — capture strokes with left mouse, disable pan
+    if(!readonly && ds.draw_mode && canvas_hovered)
+    {
+      if(ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+      {
+        ds.is_drawing = true;
+        ds.current_pts.clear();
+        ds.current_pts.push_back(screen_to_uv(mouse_pos));
+      }
+    }
+    if(ds.is_drawing && ds.draw_mode)
+    {
+      if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
+      {
+        const ImVec2 uv = screen_to_uv(mouse_pos);
+        const ImVec2 &last = ds.current_pts.back();
+        const float scr_dx = mouse_pos.x - uv_to_screen(last.x, last.y).x;
+        const float scr_dy = mouse_pos.y - uv_to_screen(last.x, last.y).y;
+        if(scr_dx * scr_dx + scr_dy * scr_dy > 4.f)
+          ds.current_pts.push_back(uv);
+      }
+      else
+      {
+        // Commit stroke on release
+        if(ds.current_pts.size() >= 2)
+        {
+          const float uv_t = ds.size_px / (canvas_size.x * zoom);
+          char hex_buf[8];
+          std::snprintf(hex_buf, sizeof(hex_buf), "#%02X%02X%02X",
+              std::clamp(static_cast<int>(ds.color_f[0] * 255.f + 0.5f), 0, 255),
+              std::clamp(static_cast<int>(ds.color_f[1] * 255.f + 0.5f), 0, 255),
+              std::clamp(static_cast<int>(ds.color_f[2] * 255.f + 0.5f), 0, 255));
+          Value stroke_obj; stroke_obj.kind = ValueKind::Object;
+          { Value f; f.kind = ValueKind::String; f.str = serialize_stroke_pts(ds.current_pts); upsert_object_field(stroke_obj, "pts", std::move(f)); }
+          { Value f; f.kind = ValueKind::String; f.str = hex_buf;                              upsert_object_field(stroke_obj, "color", std::move(f)); }
+          { Value f; f.kind = ValueKind::Number; f.number = uv_t;                             upsert_object_field(stroke_obj, "t", std::move(f)); }
+          Value *strokes_arr = find_object_field(updated, "strokes");
+          if(!strokes_arr)
+          {
+            Value arr; arr.kind = ValueKind::Array;
+            upsert_object_field(updated, "strokes", std::move(arr));
+            strokes_arr = find_object_field(updated, "strokes");
+          }
+          strokes_arr->array.push_back(std::move(stroke_obj));
+          changed = true;
+        }
+        ds.is_drawing = false;
+        ds.current_pts.clear();
+      }
+    }
+
+    // Erase mode — remove strokes touched by the eraser circle
+    if(!readonly && ds.erase_mode && canvas_hovered && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+      const float er = ds.erase_size_px;
+      const float er2 = er * er;
+      Value *strokes_arr = find_object_field(updated, "strokes");
+      if(strokes_arr && strokes_arr->kind == ValueKind::Array)
+      {
+        std::vector<size_t> to_erase;
+        for(size_t i = 0; i < strokes_arr->array.size(); i++)
+        {
+          if(i >= saved_strokes.size()) break;
+          for(const ImVec2 &uv_pt : saved_strokes[i].pts)
+          {
+            const ImVec2 sp = uv_to_screen(uv_pt.x, uv_pt.y);
+            const float dx = mouse_pos.x - sp.x;
+            const float dy = mouse_pos.y - sp.y;
+            if(dx * dx + dy * dy <= er2) { to_erase.push_back(i); break; }
+          }
+        }
+        if(!to_erase.empty())
+        {
+          for(auto it = to_erase.rbegin(); it != to_erase.rend(); ++it)
+            strokes_arr->array.erase(strokes_arr->array.begin() + static_cast<std::ptrdiff_t>(*it));
+          changed = true;
+        }
+      }
+    }
+
+    // Left-mouse pan (disabled in draw/erase mode or while dragging a marker)
+    if(!readonly && !ds.draw_mode && !ds.erase_mode && !mdrag.active
+       && canvas_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hovered_marker < 0)
     {
       pan.active         = true;
       pan.start_mouse    = mouse_pos;
@@ -4216,10 +4458,8 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
     {
       if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
       {
-        // Invert: dragging right moves the image right (camera style)
         offset_x = pan.start_offset_x + (mouse_pos.x - pan.start_mouse.x) / (canvas_size.x * zoom);
         offset_y = pan.start_offset_y + (mouse_pos.y - pan.start_mouse.y) / (canvas_size.y * zoom);
-        // Clamp to image bounds
         const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
         offset_x = std::clamp(offset_x, -max_off, max_off);
         offset_y = std::clamp(offset_y, -max_off, max_off);
@@ -4227,7 +4467,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       }
       else { pan.active = false; }
     }
-    // Also clamp after zoom
+    // Clamp after zoom
     {
       const float max_off = std::max(0.f, 0.5f - 0.5f / zoom);
       offset_x = std::clamp(offset_x, -max_off, max_off);
@@ -4292,7 +4532,9 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       ed.y = std::clamp(ed.y, 0.f, 1.f);
 
       ImGui::Separator();
-      ImGui::SetNextItemWidth(140.f);
+      const float hex_color_width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x
+                                  + ImGui::CalcTextSize("#00EDFF").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+      ImGui::SetNextItemWidth(hex_color_width);
       ImGui::ColorEdit3("Color##marker_col", ed.color_f,
                         ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_InputRGB);
       auto preset_color = [&](const char *label, float r, float g, float b) {
@@ -4385,6 +4627,45 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
       if(ImGui::Button("Zoom -"))    { zoom = std::clamp(zoom * 0.8f,  1.0f, 50.f); changed = true; }
       ImGui::SameLine();
       if(ImGui::Button("Reset view")) { zoom = 1.f; offset_x = 0.f; offset_y = 0.f; changed = true; }
+
+      ImGui::Separator();
+      if(ImGui::Checkbox("Draw mode", &ds.draw_mode) && ds.draw_mode)
+        { ds.erase_mode = false; ds.is_drawing = false; }
+      if(ds.draw_mode)
+      {
+        ImGui::SetNextItemWidth(140.f);
+        ImGui::ColorEdit3("Stroke color##dsclr", ds.color_f, ImGuiColorEditFlags_DisplayHex | ImGuiColorEditFlags_InputRGB);
+        ImGui::SetNextItemWidth(100.f);
+        ImGui::SliderFloat("Size px##dsz", &ds.size_px, 1.f, 20.f, "%.1f");
+      }
+      if(ImGui::Checkbox("Erase mode", &ds.erase_mode) && ds.erase_mode)
+        { ds.draw_mode = false; ds.is_drawing = false; ds.current_pts.clear(); }
+      if(ds.erase_mode)
+      {
+        ImGui::SetNextItemWidth(100.f);
+        ImGui::SliderFloat("Eraser px##esz", &ds.erase_size_px, 5.f, 100.f, "%.0f");
+      }
+      if(ds.draw_mode || ds.erase_mode)
+      {
+        if(ImGui::Button("Undo last stroke"))
+        {
+          Value *strokes_arr = find_object_field(updated, "strokes");
+          if(strokes_arr && strokes_arr->kind == ValueKind::Array && !strokes_arr->array.empty())
+          {
+            strokes_arr->array.pop_back();
+            changed = true;
+            ImGui::CloseCurrentPopup();
+          }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Clear strokes"))
+        {
+          Value arr; arr.kind = ValueKind::Array;
+          upsert_object_field(updated, "strokes", std::move(arr));
+          changed = true;
+          ImGui::CloseCurrentPopup();
+        }
+      }
 
       ImGui::Separator();
       const ImVec2 click_uv = s_right_click_uv.count(child_id) ? s_right_click_uv.at(child_id) : ImVec2(0.5f, 0.5f);
