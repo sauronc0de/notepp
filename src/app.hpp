@@ -126,8 +126,8 @@ private:
   bool search_window_visible_ = false;
   bool search_request_window_focus_ = false;
   bool layout_locked_ = false;
-  bool detached_note_windows_enabled_ = true;
-  bool dockers_enabled_ = true;
+  bool detached_note_windows_enabled_ = false;
+  bool dockers_enabled_ = false;
   bool history_replay_in_progress_ = false;
   bool force_note_layout_restore_ = false;
   std::string search_jump_note_path_;

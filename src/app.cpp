@@ -946,8 +946,8 @@ void App::load_state()
   active_note_idx_ = 0;
   folder_overview_mode_ = false;
   layout_locked_ = false;
-  detached_note_windows_enabled_ = true;
-  dockers_enabled_ = true;
+  detached_note_windows_enabled_ = false;
+  dockers_enabled_ = false;
 
   std::ifstream in_index(index_file_);
   if(in_index)
@@ -957,8 +957,8 @@ void App::load_state()
     active_note_idx_ = json_find_int(doc, "active_note", 0);
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
     layout_locked_ = json_find_bool(doc, "layout_locked", false);
-    detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", true);
-    dockers_enabled_ = json_find_bool(doc, "dockers_enabled", true);
+    detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", false);
+    dockers_enabled_ = json_find_bool(doc, "dockers_enabled", false);
     const std::string saved_lang = json_find_string(doc, "language");
     if(!saved_lang.empty()) Lang::set_language(saved_lang);
 
