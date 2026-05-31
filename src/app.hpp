@@ -126,6 +126,7 @@ private:
   bool search_request_window_focus_ = false;
   bool layout_locked_ = false;
   bool detached_note_windows_enabled_ = true;
+  bool dockers_enabled_ = true;
   bool history_replay_in_progress_ = false;
   bool force_note_layout_restore_ = false;
   std::string search_jump_note_path_;
@@ -151,6 +152,7 @@ private:
     bool has_layout = false;
     bool hidden = false;
     bool always_on_top = false;
+    ImGuiID dock_id = 0;
   };
   struct FolderMeta
   {

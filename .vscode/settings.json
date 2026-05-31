@@ -1,5 +1,5 @@
 {
-    "editor.formatOnSave": true,
+    "editor.formatOnSave": false,
     "search.exclude": {
         "examples": true,
         "libraries": true
@@ -164,4 +164,6 @@
         "shared_mutex": "cpp",
         "*.inc": "cpp"
     },
+    "claudeCode.allowDangerouslySkipPermissions": true,
+    "claudeCode.initialPermissionMode": "bypassPermissions"
 }

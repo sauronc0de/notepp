@@ -426,6 +426,15 @@ void set_detached_note_windows_enabled(bool enabled)
     io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 }
 
+void set_dockers_enabled(bool enabled)
+{
+  ImGuiIO &io = ImGui::GetIO();
+  if(enabled)
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  else
+    io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
+}
+
 void load_drawings_state()
 {
   g_folder_drawings.clear();
@@ -848,7 +857,7 @@ void App::init_imgui()
   io.FontDefault = font_regular;
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  set_dockers_enabled(dockers_enabled_);
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
 
   ImGui::StyleColorsDark();
@@ -933,6 +942,7 @@ void App::load_state()
   folder_overview_mode_ = false;
   layout_locked_ = false;
   detached_note_windows_enabled_ = true;
+  dockers_enabled_ = true;
 
   std::ifstream in_index(index_file_);
   if(in_index)
@@ -943,6 +953,7 @@ void App::load_state()
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
     layout_locked_ = json_find_bool(doc, "layout_locked", false);
     detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", true);
+    dockers_enabled_ = json_find_bool(doc, "dockers_enabled", true);
     const std::string saved_lang = json_find_string(doc, "language");
     if(!saved_lang.empty()) Lang::set_language(saved_lang);
 
@@ -1078,6 +1089,7 @@ void App::load_state()
   }
 
   normalize_active_indices();
+  set_dockers_enabled(dockers_enabled_);
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
   load_drawings_state();
   load_note_clipboard();
@@ -1120,6 +1132,7 @@ void App::save_index() const
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
   out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
   out << "  \"detached_note_windows\": " << (detached_note_windows_enabled_ ? "true" : "false") << ",\n";
+  out << "  \"dockers_enabled\": " << (dockers_enabled_ ? "true" : "false") << ",\n";
   out << "  \"language\": \"" << json_escape(Lang::current_language_code()) << "\",\n";
   out << "  \"folders\": [\n";
   for(size_t fi = 0; fi < folders_.size(); ++fi)
@@ -1585,6 +1598,7 @@ std::string App::capture_workspace_snapshot() const
   root["editing_mode"] = editing_mode_;
   root["layout_locked"] = layout_locked_;
   root["detached_note_windows"] = detached_note_windows_enabled_;
+  root["dockers_enabled"] = dockers_enabled_;
   root["preview_state"] = capture_preview_state_snapshot();
 
   std::vector<std::string> pending_paths = pending_fs_delete_paths_;
@@ -1812,6 +1826,8 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   editing_mode_ = root.value("editing_mode", false);
   layout_locked_ = root.value("layout_locked", false);
   detached_note_windows_enabled_ = root.value("detached_note_windows", true);
+  dockers_enabled_ = root.value("dockers_enabled", true);
+  set_dockers_enabled(dockers_enabled_);
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
   request_exit_edit_mode_ = false;
 
@@ -2250,6 +2266,7 @@ void App::render_debug_history_window() const
 
 bool App::frame_begin()
 {
+  set_dockers_enabled(dockers_enabled_);
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
   pinned_topmost_viewports_.clear();
 
@@ -5372,6 +5389,39 @@ __CURSOR__)MD");
           ImGui::Dummy(ImVec2(10.0f, 16.0f));
         }
         ImGui::SameLine();
+
+        {
+          const ImTextureID dockers_icon = get_toolbar_icon_texture("docker.png");
+          const ImVec2 sz_dockers = icon_sz("docker.png");
+          if(mode_button(
+                 "##toggle_dockers_icon",
+                 dockers_icon,
+                 sz_dockers,
+                 Lang::t("Dockers"),
+                 dockers_enabled_
+                     ? Lang::t("Dockers_enabled")
+                     : Lang::t("Dockers_disabled"),
+                 dockers_enabled_))
+          {
+            push_sidebar_snapshot();
+            dockers_enabled_ = !dockers_enabled_;
+            set_dockers_enabled(dockers_enabled_);
+            save_index();
+          }
+
+          ImGui::SameLine(0.0f, 4.0f);
+          {
+            const ImVec2 dot_pos = ImGui::GetCursorScreenPos();
+            const ImVec2 dot_center(dot_pos.x - 9.0f, dot_pos.y + 6.0f);
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            const ImU32 fill_col = dockers_enabled_
+                                       ? ImGui::GetColorU32(ImVec4(0.30f, 0.83f, 0.56f, 1.0f))
+                                       : ImGui::GetColorU32(ImVec4(0.15f, 0.18f, 0.22f, 1.0f));
+            dl->AddCircleFilled(dot_center, 3.0f, fill_col, 16);
+            ImGui::Dummy(ImVec2(10.0f, 16.0f));
+          }
+          ImGui::SameLine();
+        }
       }
       {
         const char *ver = "v" NOTEPP_VERSION;
@@ -5884,7 +5934,10 @@ __CURSOR__)MD");
       const std::string window_id = n.title + "###FolderNote_" + note_uid;
 
       const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
-      if(request_reset_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+      if(request_reset_layout)
+        ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+      else if(force_note_layout_restore_ && n.dock_id != 0)
+        ImGui::SetNextWindowDockID(n.dock_id, ImGuiCond_Always);
       if(n.has_layout)
       {
         const ImGuiCond cond = force_note_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
@@ -5913,6 +5966,7 @@ __CURSOR__)MD");
           note_flags);
       if(search_request_window_focus_ && ni == active_note_idx_) search_request_window_focus_ = false;
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
+      n.dock_id = ImGui::GetWindowDockID();
       const bool is_editing_this = editing_mode_ && ni == active_note_idx_;
 
       // Per-note custom font / size
