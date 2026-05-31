@@ -5884,7 +5884,7 @@ __CURSOR__)MD");
       const std::string window_id = n.title + "###FolderNote_" + note_uid;
 
       const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
-      if(force_note_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
+      if(request_reset_layout) ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
       if(n.has_layout)
       {
         const ImGuiCond cond = force_note_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
