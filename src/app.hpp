@@ -32,7 +32,9 @@ private:
   void init_imgui();
   void load_state();
   void save_state();
-  void save_index() const;
+  void save_index();
+  void sync_active_folder_settings();
+  void apply_folder_settings(int folder_idx);
   void load_note_content_for_active();
   void set_active_note(int folder_idx, int note_idx);
   void ensure_default_index();
@@ -128,6 +130,8 @@ private:
   bool layout_locked_ = false;
   bool detached_note_windows_enabled_ = false;
   bool dockers_enabled_ = false;
+  bool drawings_visible_ = true;
+  bool grid_visible_ = false;
   bool history_replay_in_progress_ = false;
   bool force_note_layout_restore_ = false;
   std::string search_jump_note_path_;
@@ -160,6 +164,11 @@ private:
     std::string name;
     std::vector<NoteMeta> notes;
     std::vector<std::string> images; // tracked image file paths (abs)
+    bool layout_locked = false;
+    bool detached_note_windows = false;
+    bool dockers_enabled = false;
+    bool drawings_visible = true;
+    bool grid_visible = false;
   };
   struct PendingDroppedFile
   {
