@@ -142,6 +142,7 @@ private:
   std::string state_file_path_;
   struct NoteMeta
   {
+    std::string id;
     std::string title;
     std::string path;
     std::string font_path;

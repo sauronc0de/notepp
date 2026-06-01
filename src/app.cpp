@@ -31,6 +31,7 @@
 #include <sstream>
 #include <numeric>
 #include <utility>
+#include <random>
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -91,6 +92,24 @@ using Json = nlohmann::json;
 
 namespace
 {
+
+std::string generate_uuid()
+{
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  static std::uniform_int_distribution<uint32_t> dis(0, 0xFF);
+  uint8_t bytes[16];
+  for(auto &b : bytes) b = (uint8_t)dis(gen);
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  char buf[37];
+  snprintf(buf, sizeof(buf),
+    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+    bytes[6], bytes[7], bytes[8], bytes[9],
+    bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+  return std::string(buf);
+}
 
 struct FreeStroke
 {
@@ -951,6 +970,7 @@ void App::load_state()
   detached_note_windows_enabled_ = false;
   dockers_enabled_ = false;
 
+  bool uuid_migrated_ = false;
   std::ifstream in_index(index_file_);
   if(in_index)
   {
@@ -963,7 +983,6 @@ void App::load_state()
     dockers_enabled_ = json_find_bool(doc, "dockers_enabled", false);
     const std::string saved_lang = json_find_string(doc, "language");
     if(!saved_lang.empty()) Lang::set_language(saved_lang);
-
     const std::string fpat = "\"folders\"";
     size_t fk = doc.find(fpat);
     if(fk != std::string::npos)
@@ -1001,6 +1020,8 @@ void App::load_state()
                   for(std::string_view nobj : json_array_objects(notes_arr))
                   {
                     NoteMeta n;
+                    n.id = json_find_string(nobj, "id");
+                    if(n.id.empty()) { n.id = generate_uuid(); uuid_migrated_ = true; }
                     n.title = json_find_string(nobj, "title");
                     n.path = json_find_string(nobj, "path");
                     n.pos_x = (float)json_find_int(nobj, "x", 0);
@@ -1078,6 +1099,7 @@ void App::load_state()
       FolderMeta f;
       f.name = "General";
       NoteMeta n;
+      n.id = generate_uuid();
       n.path = migrated_path;
       const std::filesystem::path fp(migrated_path);
       n.title = fp.stem().empty() ? "Note" : fp.stem().string();
@@ -1106,6 +1128,7 @@ void App::load_state()
   load_drawings_state();
   load_note_clipboard();
   load_note_content_for_active();
+  if(uuid_migrated_) save_index();
 }
 
 void App::save_state()
@@ -1189,7 +1212,8 @@ void App::save_index()
     for(size_t ni = 0; ni < f.notes.size(); ++ni)
     {
       const auto &n = f.notes[ni];
-      out << "        {\"title\": \"" << json_escape(n.title)
+      out << "        {\"id\": \"" << json_escape(n.id)
+          << "\", \"title\": \"" << json_escape(n.title)
           << "\", \"path\": \"" << json_escape(n.path)
           << "\", \"x\": " << (int)std::lround(n.pos_x)
           << ", \"y\": " << (int)std::lround(n.pos_y)
@@ -1323,6 +1347,7 @@ void App::open_or_create_readme()
 
   FolderMeta &f = folders_[(size_t)root_fi];
   NoteMeta n;
+  n.id = generate_uuid();
   n.title = "demo";
   n.path = make_note_path(f.name, n.title);
   write_text_file(n.path, kDemoNoteContent);
@@ -1468,6 +1493,7 @@ void App::sync_project_files()
       const std::string title = p.stem().string().empty() ? "Note" : p.stem().string();
       const int fi = find_or_create_folder(folder_name);
       NoteMeta n;
+      n.id = generate_uuid();
       n.title = title;
       n.path = norm;
       folders_[(size_t)fi].notes.push_back(std::move(n));
@@ -1795,6 +1821,7 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
         for(const Json &note_json : folder_json["notes"])
         {
           NoteMeta note;
+          note.id = generate_uuid();
           note.title = note_json.value("title", std::string("Note"));
           note.path = note_json.value("path", std::string());
           note.use_custom_color = note_json.value("use_custom_color", false);
@@ -3292,6 +3319,7 @@ void App::frame_ui()
         if(target_folder_idx < 0 || target_folder_idx >= (int)folders_.size()) return;
         FolderMeta &f = folders_[(size_t)target_folder_idx];
         NoteMeta n;
+        n.id = generate_uuid();
         n.title = make_unique_note_title(target_folder_idx, new_note_buf);
         n.path = make_note_path(f.name, n.title);
         remove_pending_delete_path(n.path);
@@ -3669,6 +3697,7 @@ void App::frame_ui()
             for(const CopiedNoteItem &cn : e.notes)
             {
               NoteMeta nn;
+              nn.id = generate_uuid();
               std::string base_title = sanitize_note_filename(cn.title.empty() ? "Note" : cn.title);
               std::string candidate = base_title;
               int suffix = 2;
@@ -4693,6 +4722,7 @@ void App::frame_ui()
       if(items.empty()) items.push_back(CopiedNoteItem{candidate, ""});
 
       NoteMeta new_note;
+      new_note.id = generate_uuid();
       new_note.title = candidate;
       new_note.path = make_note_path(pf.name, candidate);
       new_note.font_path = items.front().font_path;
@@ -4719,6 +4749,7 @@ void App::frame_ui()
       {
         const std::string candidate = make_unique_note_title(fi, ci.title.empty() ? "Note" : ci.title);
         NoteMeta new_note;
+        new_note.id = generate_uuid();
         new_note.title = candidate;
         new_note.path = make_note_path(pf.name, candidate);
         new_note.font_path = ci.font_path;
@@ -5449,6 +5480,7 @@ __CURSOR__)MD");
                 if(!already_in_index)
                 {
                   NoteMeta gn;
+                  gn.id = generate_uuid();
                   gn.title = globals_title;
                   gn.path = globals_path;
                   std::filesystem::create_directories(std::filesystem::path(globals_path).parent_path());
@@ -6174,12 +6206,7 @@ __CURSOR__)MD");
           if(sn.hidden) continue;
           sn.pos_x += d.x;
           sn.pos_y += d.y;
-          std::string sn_uid = sn.path;
-          for(char &c : sn_uid)
-          {
-            if(c == '#') c = '_';
-          }
-          const std::string sid = sn.title + "###FolderNote_" + sn_uid;
+          const std::string sid = sn.title + "###FolderNote_" + sn.id;
           ImGui::SetWindowPos(sid.c_str(), ImVec2(sn.pos_x, sn.pos_y), ImGuiCond_Always);
           layout_dirty_ = true;
         }
@@ -6307,6 +6334,7 @@ __CURSOR__)MD");
           const std::string new_title =
               make_unique_note_title(active_folder_idx_, img_alt);
           NoteMeta new_note;
+          new_note.id = generate_uuid();
           new_note.title = new_title;
           new_note.path = make_note_path(cf.name, new_title);
           std::string img_rel;
@@ -6370,12 +6398,7 @@ __CURSOR__)MD");
       if(n.hidden) continue;
       const float old_pos_x = n.pos_x;
       const float old_pos_y = n.pos_y;
-      std::string note_uid = n.path;
-      for(char &c : note_uid)
-      {
-        if(c == '#') c = '_';
-      }
-      const std::string window_id = n.title + "###FolderNote_" + note_uid;
+      const std::string window_id = n.title + "###FolderNote_" + n.id;
 
       const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
       if(request_reset_layout)
@@ -6461,7 +6484,7 @@ __CURSOR__)MD");
       const ImVec2 win_pos = ImGui::GetWindowPos();
       const float title_bar_h = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
       const ImVec2 mouse_pos = ImGui::GetMousePos();
-      const std::string actions_popup_id = "Note Window Actions##" + note_uid;
+      const std::string actions_popup_id = "Note Window Actions##" + n.id;
       ImGuiViewport *note_viewport = ImGui::GetWindowViewport();
       const bool note_is_detached = viewport_is_detached_from_main(note_viewport, window_);
       const bool note_is_collapsed = ImGui::IsWindowCollapsed();
@@ -6817,7 +6840,7 @@ __CURSOR__)MD");
         }
       }
 
-      const std::string body_popup_id = "Note Body Actions##" + note_uid;
+      const std::string body_popup_id = "Note Body Actions##" + n.id;
       const bool w_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
       if(!is_editing_this &&
          w_hovered &&
@@ -7131,12 +7154,7 @@ __CURSOR__)MD");
           if(sn.hidden) continue;
           sn.pos_x += pending_group_delta.x;
           sn.pos_y += pending_group_delta.y;
-          std::string sn_uid = sn.path;
-          for(char &c : sn_uid)
-          {
-            if(c == '#') c = '_';
-          }
-          const std::string sid = sn.title + "###FolderNote_" + sn_uid;
+          const std::string sid = sn.title + "###FolderNote_" + sn.id;
           ImGui::SetWindowPos(sid.c_str(), ImVec2(sn.pos_x, sn.pos_y), ImGuiCond_Always);
           layout_dirty_ = true;
         }
