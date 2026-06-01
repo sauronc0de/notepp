@@ -763,6 +763,8 @@ void App::init_sdl_gl()
       1100, 700,
       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_MAXIMIZED);
 
+  SDL_MaximizeWindow(window_);
+
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
 
