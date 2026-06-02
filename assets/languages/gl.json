@@ -98,6 +98,22 @@
         "Emoji picker (Ctrl+.)": "Selector de emojis (Ctrl+.)",
         "Mouse": "Rato",
         "Draw": "Debuxar",
-        "Draw (right click for color)": "Debuxar (clic dereito para a cor)"
+        "Draw (right click for color)": "Debuxar (clic dereito para a cor)",
+        "Layout profile": "Perfil de disposición",
+        "Save layout profile": "Gardar o perfil de disposición",
+        "Profile name:": "Nome do perfil:",
+    "(Custom)": "(Personalizado)",
+    "Quit": "Quit",
+    "Minimize": "Minimize",
+    "Profiles...": "Profiles...",
+    "Manage profiles": "Manage profiles",
+    "Layout Profiles": "Layout Profiles",
+    "No profiles.": "No profiles.",
+    "Save Profile": "Save Profile",
+    "Create Profile": "Create Profile",
+    "+ New Profile": "+ New Profile",
+    "Position": "Position",
+    "Size": "Size",
+    "Maximized": "Maximized"
     }
 }

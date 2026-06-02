@@ -98,6 +98,22 @@
         "Emoji picker (Ctrl+.)": "Emoji hautatzailea (Ctrl+.)",
         "Mouse": "Sagua",
         "Draw": "Marraztu",
-        "Draw (right click for color)": "Marraztu (eskuineko klik kolorea aldatzeko)"
+        "Draw (right click for color)": "Marraztu (eskuineko klik kolorea aldatzeko)",
+        "Layout profile": "Antolaketa-profila",
+        "Save layout profile": "Gorde antolaketa-profila",
+        "Profile name:": "Profilaren izena:",
+    "(Custom)": "(Pertsonalizatua)",
+    "Quit": "Quit",
+    "Minimize": "Minimize",
+    "Profiles...": "Profiles...",
+    "Manage profiles": "Manage profiles",
+    "Layout Profiles": "Layout Profiles",
+    "No profiles.": "No profiles.",
+    "Save Profile": "Save Profile",
+    "Create Profile": "Create Profile",
+    "+ New Profile": "+ New Profile",
+    "Position": "Position",
+    "Size": "Size",
+    "Maximized": "Maximized"
     }
 }

@@ -98,6 +98,24 @@
     "Emoji picker (Ctrl+.)": "Emoji picker (Ctrl+.)",
     "Mouse": "Mouse",
     "Draw": "Draw",
-    "Draw (right click for color)": "Draw (right click for color)"
+    "Draw (right click for color)": "Draw (right click for color)",
+    "Layout profile": "Layout profile",
+    "Save layout profile": "Save layout profile",
+    "Profile name:": "Profile name:",
+    "(Custom)": "(Custom)",
+    "Quit": "Quit",
+    "Minimize": "Minimize",
+    "Profiles...": "Profiles...",
+    "Manage profiles": "Manage profiles",
+    "Layout Profiles": "Layout Profiles",
+    "No profiles.": "No profiles.",
+    "Edit": "Edit",
+    "Copy": "Copy",
+    "Save Profile": "Save Profile",
+    "Create Profile": "Create Profile",
+    "+ New Profile": "+ New Profile",
+    "Position": "Position",
+    "Size": "Size",
+    "Maximized": "Maximized"
   }
 }

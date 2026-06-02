@@ -1,0 +1,67 @@
+{
+  "active_profile_id": "70970c4a-52d8-4fa0-9fa9-13e9e6541168",
+  "maximized_profile_id": "70970c4a-52d8-4fa0-9fa9-13e9e6541168",
+  "reduced_profile_id": "",
+  "profiles": [
+    {
+      "id": "70970c4a-52d8-4fa0-9fa9-13e9e6541168",
+      "name": "Default",
+      "window_maximized": true,
+      "window_x": 1920,
+      "window_y": 0,
+      "window_w": 1920,
+      "window_h": 1080,
+      "note_layouts": [
+        {"note_id": "7094b692-595b-4d56-93c5-96158506e133", "x": 288, "y": 260, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "6be775dd-cfe7-4194-8e5f-ddc482e97fe6", "x": 288, "y": 180, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "5f70548a-824f-4673-864c-17886556de15", "x": 288, "y": 260, "w": 520, "h": 382, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "40d8cd35-e6e4-4afb-a3d1-fc8ea9c82efe", "x": 288, "y": 220, "w": 520, "h": 370, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "034bf150-eb86-4bcb-83eb-76956bace62f", "x": 288, "y": 180, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "c71e841d-c3cd-4f3d-b7ab-149d2ae9333d", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "77d1f517-bd33-4c09-a65f-ed05e24a0515", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "c427aa9d-0235-4e3c-9e2e-4b98ccfea82f", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "4be00467-d98e-45ed-9635-e0fda4545f90", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "070e6c40-499a-4896-907e-57833bdc2944", "x": 288, "y": 220, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "c13cffc0-7ae8-40b8-bc40-34859c22c709", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "02eed105-126d-47be-933a-c5d110f308a7", "x": 288, "y": 180, "w": 520, "h": 370, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "78b519ee-55ff-44fb-984e-3a4f89cf9c9e", "x": 3282, "y": 230, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "94d9ac05-fd58-48b9-9156-6d363a4d913c", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "1b3e770a-71c6-44e5-b2da-9f15710cb49b", "x": 2403, "y": 366, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "f9a8f8d6-40df-4311-b856-d738f3f93428", "x": 2214, "y": 230, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "7772c93e-e11a-4f3b-a8ac-75fb82f74767", "x": 3282, "y": 46, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "771ced53-63c9-4377-b81d-95c08812c758", "x": 2748, "y": 46, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "26b0cd9d-6372-4821-badf-1dd8e5946f62", "x": 2214, "y": 46, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0}
+      ]
+    },
+    {
+      "id": "e8740961-17bf-43c4-9f68-2bd34240f2d6",
+      "name": "Sergi",
+      "window_maximized": false,
+      "window_x": 2260,
+      "window_y": 155,
+      "window_w": 1100,
+      "window_h": 800,
+      "note_layouts": [
+        {"note_id": "7094b692-595b-4d56-93c5-96158506e133", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "6be775dd-cfe7-4194-8e5f-ddc482e97fe6", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "5f70548a-824f-4673-864c-17886556de15", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "40d8cd35-e6e4-4afb-a3d1-fc8ea9c82efe", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "034bf150-eb86-4bcb-83eb-76956bace62f", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "c71e841d-c3cd-4f3d-b7ab-149d2ae9333d", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "77d1f517-bd33-4c09-a65f-ed05e24a0515", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "c427aa9d-0235-4e3c-9e2e-4b98ccfea82f", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "4be00467-d98e-45ed-9635-e0fda4545f90", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "070e6c40-499a-4896-907e-57833bdc2944", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "c13cffc0-7ae8-40b8-bc40-34859c22c709", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "02eed105-126d-47be-933a-c5d110f308a7", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "78b519ee-55ff-44fb-984e-3a4f89cf9c9e", "x": 288, "y": 652, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "94d9ac05-fd58-48b9-9156-6d363a4d913c", "x": 0, "y": 0, "w": 520, "h": 260, "hidden": false, "has_layout": false, "dock_id": 0},
+        {"note_id": "1b3e770a-71c6-44e5-b2da-9f15710cb49b", "x": 288, "y": 652, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "f9a8f8d6-40df-4311-b856-d738f3f93428", "x": 331, "y": 53, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "7772c93e-e11a-4f3b-a8ac-75fb82f74767", "x": 288, "y": 455, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "771ced53-63c9-4377-b81d-95c08812c758", "x": 288, "y": 220, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0},
+        {"note_id": "26b0cd9d-6372-4821-badf-1dd8e5946f62", "x": 572, "y": 521, "w": 520, "h": 140, "hidden": false, "has_layout": true, "dock_id": 0}
+      ]
+    }
+  ]
+}

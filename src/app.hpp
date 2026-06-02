@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -80,6 +81,55 @@ private:
   void render_debug_history_window() const;
   void shutdown();
 
+  struct NoteLayoutData
+  {
+    float pos_x = 0.0f;
+    float pos_y = 0.0f;
+    float width = 520.0f;
+    float height = 260.0f;
+    bool hidden = false;
+    bool has_layout = false;
+    ImGuiID dock_id = 0;
+  };
+  struct LayoutProfile
+  {
+    std::string id;
+    std::string name;
+    bool window_maximized = true;
+    int window_x = 100, window_y = 100;
+    int window_w = 1100, window_h = 700;
+    bool pending_delete = false;
+    std::unordered_map<std::string, NoteLayoutData> note_layouts;
+  };
+  struct ProfileModalState
+  {
+    bool open = false;
+    bool first_frame = false;   // true on the frame the modal is opened
+    int  edit_idx = -1;         // -1 = create new, >=0 = edit/copy existing
+    bool copy_mode = false;     // true when opening as a copy
+    char name_buf[64] = {};
+    bool maximized = true;
+    int  pos_x = 100, pos_y = 100;
+    int  size_w = 1100, size_h = 700;
+    // For the visual picker drag state
+    bool dragging_win = false;
+    bool resizing_win = false;
+    int  drag_offset_x = 0, drag_offset_y = 0;
+  };
+
+  void load_profiles();
+  void save_profiles();
+  void capture_to_active_profile();
+  void apply_profile(const LayoutProfile &profile, bool apply_window_state = true);
+  std::string create_profile(const std::string &name, bool maximized, int x, int y, int w, int h);
+  void delete_profile(const std::string &id);
+  LayoutProfile *find_active_profile();
+  const LayoutProfile *find_matching_profile() const;
+  void do_window_profile_switch();
+  bool is_window_covering_display() const;
+  void push_profile_snapshot();
+  void show_profile_modal();
+
   bool frame_begin();
   void frame_ui();
   void frame_end();
@@ -94,6 +144,7 @@ private:
   std::filesystem::path imgui_ini_file_;
   std::filesystem::path drawings_file_;
   std::filesystem::path g_clipboard_file;
+  std::filesystem::path profiles_file_;
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;
@@ -179,6 +230,18 @@ private:
   };
 
   std::vector<FolderMeta> folders_;
+  std::vector<LayoutProfile> layout_profiles_;
+  std::string active_profile_id_;
+  std::string maximized_profile_id_;
+  std::string reduced_profile_id_;
+  bool window_profile_check_pending_ = false;
+  int window_profile_check_delay_ = 0;
+  ProfileModalState profile_modal_;
+  bool manage_profiles_open_ = false;
+  // Borderless window drag
+  bool window_drag_active_ = false;
+  int  window_drag_start_mx_ = 0, window_drag_start_my_ = 0;
+  int  window_drag_start_wx_ = 0, window_drag_start_wy_ = 0;
   std::vector<PendingDroppedFile> pending_dropped_files_;
   std::vector<std::string> pending_fs_delete_paths_;
   int active_folder_idx_ = 0;

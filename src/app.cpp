@@ -647,6 +647,9 @@ App::App(AppConfig config)
   g_clipboard_file =
       config_.configPath / "note_clipboard.json";
 
+  profiles_file_ =
+      config_.configPath / "layout_profiles.json";
+
   g_drawings_file = drawings_file_;
 
   state_file_path_ = default_state_file_.string();
@@ -673,6 +676,7 @@ void App::switch_project(const std::filesystem::path &new_root)
   imgui_ini_file_ = config_.configPath / "imgui_layout.ini";
   drawings_file_ = config_.configPath / "drawings_state.txt";
   g_clipboard_file = config_.configPath / "note_clipboard.json";
+  profiles_file_ = config_.configPath / "layout_profiles.json";
   g_drawings_file = drawings_file_;
   state_file_path_ = default_state_file_.string();
   MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
@@ -780,12 +784,22 @@ void App::init_sdl_gl()
       "Notepp",
       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
       1100, 700,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_MAXIMIZED);
-
-  SDL_MaximizeWindow(window_);
+      SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS);
 
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
+
+  // Cover the primary display explicitly — SDL_WINDOW_MAXIMIZED+BORDERLESS is
+  // unreliable on many X11/Wayland compositors (WSL2, XWayland, etc.).
+  {
+    const int di = SDL_GetWindowDisplayIndex(window_);
+    SDL_Rect disp{};
+    if(di >= 0 && SDL_GetDisplayBounds(di, &disp) == 0)
+    {
+      SDL_SetWindowPosition(window_, disp.x, disp.y);
+      SDL_SetWindowSize(window_, disp.w, disp.h);
+    }
+  }
 
   gl_context_ = SDL_GL_CreateContext(window_);
   if(!gl_context_)
@@ -910,6 +924,17 @@ void App::init_imgui()
 void App::shutdown()
 {
   clear_toolbar_icon_cache();
+
+  // Permanently remove soft-deleted profiles before final save
+  layout_profiles_.erase(
+    std::remove_if(layout_profiles_.begin(), layout_profiles_.end(),
+                   [](const LayoutProfile &p) { return p.pending_delete; }),
+    layout_profiles_.end());
+  if(!layout_profiles_.empty())
+  {
+    capture_to_active_profile();
+    save_profiles();
+  }
 
   std::unordered_set<std::string> alive_paths;
   for(const FolderMeta &f : folders_)
@@ -1129,6 +1154,7 @@ void App::load_state()
   load_note_clipboard();
   load_note_content_for_active();
   if(uuid_migrated_) save_index();
+  load_profiles();
 }
 
 void App::save_state()
@@ -1149,6 +1175,8 @@ void App::save_state()
   save_index();
   save_drawings_state();
   save_note_clipboard();
+  capture_to_active_profile();
+  save_profiles();
 
   if(record_text_change)
   {
@@ -1248,6 +1276,600 @@ void App::save_index()
   }
   out << "  ]\n";
   out << "}\n";
+}
+
+void App::load_profiles()
+{
+  layout_profiles_.clear();
+  active_profile_id_.clear();
+  maximized_profile_id_.clear();
+  reduced_profile_id_.clear();
+
+  std::ifstream in(profiles_file_);
+  if(!in)
+  {
+    // First run: create the single default "Default" profile (maximized)
+    LayoutProfile p;
+    p.id = generate_uuid();
+    p.name = "Default";
+    p.window_maximized = true;
+    if(window_)
+    {
+      SDL_GetWindowSize(window_, &p.window_w, &p.window_h);
+      SDL_GetWindowPosition(window_, &p.window_x, &p.window_y);
+    }
+    layout_profiles_.push_back(std::move(p));
+    maximized_profile_id_ = layout_profiles_.back().id;
+    active_profile_id_ = maximized_profile_id_;
+    capture_to_active_profile();
+    save_profiles();
+    return;
+  }
+
+  const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  active_profile_id_ = json_find_string(doc, "active_profile_id");
+  maximized_profile_id_ = json_find_string(doc, "maximized_profile_id");
+  reduced_profile_id_ = json_find_string(doc, "reduced_profile_id");
+
+  const std::string ppat = "\"profiles\"";
+  size_t pk = doc.find(ppat);
+  if(pk == std::string::npos) return;
+  size_t pb = doc.find('[', pk + ppat.size());
+  if(pb == std::string::npos) return;
+  size_t pe = find_matching(doc, pb, '[', ']');
+  if(pe == std::string::npos) return;
+
+  std::string_view profiles_arr(doc.data() + pb + 1, pe - pb - 1);
+  for(std::string_view pobj : json_array_objects(profiles_arr))
+  {
+    LayoutProfile p;
+    p.id = json_find_string(pobj, "id");
+    if(p.id.empty()) continue;
+    p.name = json_find_string(pobj, "name");
+    if(p.name.empty()) p.name = "Profile";
+    p.window_maximized = json_find_bool(pobj, "window_maximized", true);
+    p.window_x = json_find_int(pobj, "window_x", -1);
+    p.window_y = json_find_int(pobj, "window_y", -1);
+    p.window_w = json_find_int(pobj, "window_w", 1100);
+    p.window_h = json_find_int(pobj, "window_h", 700);
+
+    const std::string nlpat = "\"note_layouts\"";
+    size_t nlk = pobj.find(nlpat);
+    if(nlk != std::string_view::npos)
+    {
+      size_t nlb = pobj.find('[', nlk + nlpat.size());
+      if(nlb != std::string_view::npos)
+      {
+        size_t nle = find_matching(pobj, nlb, '[', ']');
+        if(nle != std::string_view::npos)
+        {
+          std::string_view nl_arr = pobj.substr(nlb + 1, nle - nlb - 1);
+          for(std::string_view nlobj : json_array_objects(nl_arr))
+          {
+            const std::string note_id = json_find_string(nlobj, "note_id");
+            if(note_id.empty()) continue;
+            NoteLayoutData nd;
+            nd.pos_x = (float)json_find_int(nlobj, "x", 0);
+            nd.pos_y = (float)json_find_int(nlobj, "y", 0);
+            nd.width = (float)json_find_int(nlobj, "w", 520);
+            nd.height = (float)json_find_int(nlobj, "h", 260);
+            nd.hidden = json_find_bool(nlobj, "hidden", false);
+            nd.has_layout = json_find_bool(nlobj, "has_layout", false);
+            nd.dock_id = (ImGuiID)json_find_int(nlobj, "dock_id", 0);
+            p.note_layouts[note_id] = nd;
+          }
+        }
+      }
+    }
+    layout_profiles_.push_back(std::move(p));
+  }
+
+  // On startup, apply the profile that matches the current window state
+  const LayoutProfile *startup_match = find_matching_profile();
+  if(startup_match)
+  {
+    active_profile_id_ = startup_match->id;
+    apply_profile(*startup_match, false);
+  }
+}
+
+void App::save_profiles()
+{
+  std::ofstream out(profiles_file_, std::ios::trunc);
+  if(!out) return;
+
+  out << "{\n";
+  out << "  \"active_profile_id\": \"" << json_escape(active_profile_id_) << "\",\n";
+  out << "  \"maximized_profile_id\": \"" << json_escape(maximized_profile_id_) << "\",\n";
+  out << "  \"reduced_profile_id\": \"" << json_escape(reduced_profile_id_) << "\",\n";
+  out << "  \"profiles\": [\n";
+  for(size_t pi = 0; pi < layout_profiles_.size(); ++pi)
+  {
+    const auto &p = layout_profiles_[pi];
+    out << "    {\n";
+    out << "      \"id\": \"" << json_escape(p.id) << "\",\n";
+    out << "      \"name\": \"" << json_escape(p.name) << "\",\n";
+    out << "      \"window_maximized\": " << (p.window_maximized ? "true" : "false") << ",\n";
+    out << "      \"window_x\": " << p.window_x << ",\n";
+    out << "      \"window_y\": " << p.window_y << ",\n";
+    out << "      \"window_w\": " << p.window_w << ",\n";
+    out << "      \"window_h\": " << p.window_h << ",\n";
+    out << "      \"note_layouts\": [\n";
+    bool first_nl = true;
+    for(const auto &[note_id, nd] : p.note_layouts)
+    {
+      if(!first_nl) out << ",\n";
+      first_nl = false;
+      out << "        {\"note_id\": \"" << json_escape(note_id)
+          << "\", \"x\": " << (int)std::lround(nd.pos_x)
+          << ", \"y\": " << (int)std::lround(nd.pos_y)
+          << ", \"w\": " << (int)std::lround(nd.width)
+          << ", \"h\": " << (int)std::lround(nd.height)
+          << ", \"hidden\": " << (nd.hidden ? "true" : "false")
+          << ", \"has_layout\": " << (nd.has_layout ? "true" : "false")
+          << ", \"dock_id\": " << nd.dock_id << "}";
+    }
+    if(!first_nl) out << "\n";
+    out << "      ]\n";
+    out << "    }";
+    if(pi + 1 < layout_profiles_.size()) out << ",";
+    out << "\n";
+  }
+  out << "  ]\n";
+  out << "}\n";
+}
+
+void App::capture_to_active_profile()
+{
+  if(active_profile_id_.empty()) return;
+  auto it = std::find_if(layout_profiles_.begin(), layout_profiles_.end(),
+                         [&](const LayoutProfile &p) { return p.id == active_profile_id_; });
+  if(it == layout_profiles_.end()) return;
+
+  LayoutProfile &profile = *it;
+
+  if(window_)
+  {
+    profile.window_maximized = is_window_covering_display();
+    SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
+    SDL_GetWindowSize(window_, &profile.window_w, &profile.window_h);
+  }
+
+  profile.note_layouts.clear();
+  for(const auto &f : folders_)
+  {
+    for(const auto &n : f.notes)
+    {
+      if(n.id.empty()) continue;
+      NoteLayoutData nd;
+      nd.pos_x = n.pos_x;
+      nd.pos_y = n.pos_y;
+      nd.width = n.width;
+      nd.height = n.height;
+      nd.hidden = n.hidden;
+      nd.has_layout = n.has_layout;
+      nd.dock_id = n.dock_id;
+      profile.note_layouts[n.id] = nd;
+    }
+  }
+}
+
+void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
+{
+  for(auto &f : folders_)
+  {
+    for(auto &n : f.notes)
+    {
+      auto it = profile.note_layouts.find(n.id);
+      if(it != profile.note_layouts.end())
+      {
+        const NoteLayoutData &nd = it->second;
+        n.pos_x = nd.pos_x;
+        n.pos_y = nd.pos_y;
+        n.width = nd.width;
+        n.height = nd.height;
+        n.hidden = nd.hidden;
+        n.has_layout = nd.has_layout;
+        n.dock_id = nd.dock_id;
+      }
+    }
+  }
+  force_note_layout_restore_ = true;
+  layout_dirty_ = true;
+
+  if(apply_window_state && window_)
+  {
+    if(profile.window_maximized)
+    {
+      const int di = SDL_GetWindowDisplayIndex(window_);
+      SDL_Rect disp{};
+      if(di >= 0 && SDL_GetDisplayBounds(di, &disp) == 0)
+      {
+        SDL_SetWindowPosition(window_, disp.x, disp.y);
+        SDL_SetWindowSize(window_, disp.w, disp.h);
+      }
+      else
+      {
+        SDL_MaximizeWindow(window_);
+      }
+    }
+    else
+    {
+      SDL_SetWindowPosition(window_, profile.window_x, profile.window_y);
+      SDL_SetWindowSize(window_, profile.window_w, profile.window_h);
+    }
+  }
+}
+
+App::LayoutProfile *App::find_active_profile()
+{
+  if(active_profile_id_.empty()) return nullptr;
+  auto it = std::find_if(layout_profiles_.begin(), layout_profiles_.end(),
+                         [&](const LayoutProfile &p) { return p.id == active_profile_id_; });
+  return it != layout_profiles_.end() ? &*it : nullptr;
+}
+
+std::string App::create_profile(const std::string &name, bool maximized,
+                                 int x, int y, int w, int h)
+{
+  push_profile_snapshot();
+  LayoutProfile p;
+  p.id = generate_uuid();
+  p.name = name;
+  p.window_maximized = maximized;
+  p.window_x = x;
+  p.window_y = y;
+  p.window_w = w;
+  p.window_h = h;
+  layout_profiles_.push_back(std::move(p));
+  active_profile_id_ = layout_profiles_.back().id;
+  apply_profile(layout_profiles_.back(), true);
+  capture_to_active_profile();
+  window_profile_check_pending_ = false;
+  window_profile_check_delay_ = 0;
+  save_profiles();
+  save_index();
+  return active_profile_id_;
+}
+
+void App::push_profile_snapshot()
+{
+  // Re-use the workspace snapshot mechanism so profile changes join the undo stack
+  const std::string before = capture_workspace_snapshot();
+  record_workspace_history_action("Profile change", before);
+}
+
+void App::delete_profile(const std::string &id)
+{
+  auto it = std::find_if(layout_profiles_.begin(), layout_profiles_.end(),
+                         [&](const LayoutProfile &p) { return p.id == id; });
+  if(it == layout_profiles_.end()) return;
+  const bool was_active = (active_profile_id_ == id);
+  const bool was_maximized = (maximized_profile_id_ == id);
+  const bool was_reduced = (reduced_profile_id_ == id);
+  layout_profiles_.erase(it);
+  if(was_active) active_profile_id_.clear();
+  if(was_maximized) maximized_profile_id_.clear();
+  if(was_reduced) reduced_profile_id_.clear();
+  save_profiles();
+}
+
+bool App::is_window_covering_display() const
+{
+  if(!window_) return false;
+  const int di = SDL_GetWindowDisplayIndex(window_);
+  if(di < 0) return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MAXIMIZED) != 0;
+  SDL_Rect disp{};
+  if(SDL_GetDisplayBounds(di, &disp) != 0)
+    return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MAXIMIZED) != 0;
+  int wx = 0, wy = 0, ww = 0, wh = 0;
+  SDL_GetWindowPosition(window_, &wx, &wy);
+  SDL_GetWindowSize(window_, &ww, &wh);
+  constexpr int tol = 10;
+  return (std::abs(wx - disp.x) <= tol && std::abs(wy - disp.y) <= tol &&
+          std::abs(ww - disp.w) <= tol && std::abs(wh - disp.h) <= tol);
+}
+
+const App::LayoutProfile *App::find_matching_profile() const
+{
+  if(!window_) return nullptr;
+  const bool is_maximized = is_window_covering_display();
+  int cur_w = 0, cur_h = 0;
+  SDL_GetWindowSize(window_, &cur_w, &cur_h);
+
+  for(const auto &p : layout_profiles_)
+  {
+    if(p.window_maximized != is_maximized) continue;
+    if(!is_maximized)
+    {
+      constexpr int kTolerance = 10;
+      if(std::abs(cur_w - p.window_w) > kTolerance) continue;
+      if(std::abs(cur_h - p.window_h) > kTolerance) continue;
+    }
+    return &p;
+  }
+  return nullptr;
+}
+
+void App::do_window_profile_switch()
+{
+  const LayoutProfile *matching = find_matching_profile();
+  if(matching)
+  {
+    if(matching->id != active_profile_id_)
+    {
+      capture_to_active_profile();
+      active_profile_id_ = matching->id;
+      apply_profile(*matching, false);
+      save_profiles();
+      save_index();
+    }
+  }
+  else
+  {
+    if(!active_profile_id_.empty())
+    {
+      capture_to_active_profile();
+      save_profiles();
+      active_profile_id_.clear();
+    }
+  }
+}
+
+void App::show_profile_modal()
+{
+  auto &m = profile_modal_;
+  if(!m.open) return;
+
+  // Centre the modal on first use
+  const ImGuiIO &io = ImGui::GetIO();
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+
+  const char *modal_title = m.copy_mode ? "Copy Profile###profile_modal"
+                          : (m.edit_idx >= 0 ? "Edit Profile###profile_modal"
+                                             : "New Profile###profile_modal");
+  ImGui::OpenPopup("###profile_modal");
+
+  ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.10f, 0.12f, 0.17f, 0.98f));
+  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0.00f, 0.00f, 0.00f, 0.55f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 16.0f));
+
+  if(ImGui::BeginPopupModal(modal_title, nullptr,
+       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    // On first frame, initialise draft state
+    if(m.first_frame)
+    {
+      m.first_frame = false;
+      if(m.edit_idx >= 0 && m.edit_idx < (int)layout_profiles_.size())
+      {
+        const auto &src = layout_profiles_[(size_t)m.edit_idx];
+        std::strncpy(m.name_buf, src.name.c_str(), sizeof(m.name_buf) - 1);
+        if(m.copy_mode)
+        {
+          std::string copy_name = std::string(src.name) + " (copy)";
+          std::strncpy(m.name_buf, copy_name.c_str(), sizeof(m.name_buf) - 1);
+        }
+        m.maximized = src.window_maximized;
+        m.pos_x = src.window_x;
+        m.pos_y = src.window_y;
+        m.size_w = src.window_w;
+        m.size_h = src.window_h;
+      }
+      else
+      {
+        std::strncpy(m.name_buf, "Profile", sizeof(m.name_buf) - 1);
+        m.maximized = false;
+        m.pos_x = 100; m.pos_y = 100;
+        m.size_w = 1100; m.size_h = 700;
+      }
+      m.dragging_win = false;
+      m.resizing_win = false;
+    }
+
+    // ---- Name ----
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
+    ImGui::TextUnformatted(Lang::t("Profile name:"));
+    ImGui::PopStyleColor();
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##pm_name", m.name_buf, sizeof(m.name_buf));
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ---- Maximized checkbox ----
+    ImGui::Checkbox(Lang::t("Maximized"), &m.maximized);
+
+    ImGui::Spacing();
+
+    // ---- Visual window picker (only when not maximized) ----
+    if(!m.maximized)
+    {
+      // Compute canvas and scale
+      SDL_Rect disp = {0, 0, 1920, 1080};
+      SDL_GetDisplayBounds(0, &disp);
+      const float canvas_w = ImGui::GetContentRegionAvail().x;
+      const float canvas_h = canvas_w * (float)disp.h / (float)disp.w;
+      const float scale = canvas_w / (float)disp.w;
+
+      const ImVec2 canvas_tl = ImGui::GetCursorScreenPos();
+      const ImVec2 canvas_br(canvas_tl.x + canvas_w, canvas_tl.y + canvas_h);
+
+      // Canvas background = monitor
+      ImDrawList *dl = ImGui::GetWindowDrawList();
+      dl->AddRectFilled(canvas_tl, canvas_br, IM_COL32(12, 14, 20, 255), 6.0f);
+      dl->AddRect(canvas_tl, canvas_br, IM_COL32(50, 70, 110, 200), 6.0f, 0, 1.5f);
+
+      // Clamp draft window position so it fits in monitor
+      m.pos_x = std::max(0, std::min(m.pos_x, disp.w - m.size_w));
+      m.pos_y = std::max(0, std::min(m.pos_y, disp.h - m.size_h));
+      m.size_w = std::max(320, std::min(m.size_w, disp.w));
+      m.size_h = std::max(200, std::min(m.size_h, disp.h));
+
+      // Window rect in canvas space
+      const float wx0 = canvas_tl.x + m.pos_x * scale;
+      const float wy0 = canvas_tl.y + m.pos_y * scale;
+      const float wx1 = wx0 + m.size_w * scale;
+      const float wy1 = wy0 + m.size_h * scale;
+      const ImVec2 wpos(wx0, wy0), wsize(wx1, wy1);
+
+      // Draw window: body gradient-like fill
+      dl->AddRectFilled(wpos, wsize, IM_COL32(22, 50, 100, 210), 3.0f);
+      // Title bar stripe
+      const float tb_h = std::max(4.0f, 20.0f * scale);
+      dl->AddRectFilled(wpos, ImVec2(wx1, wy0 + tb_h), IM_COL32(60, 120, 230, 230), 3.0f,
+                        ImDrawFlags_RoundCornersTop);
+      // Border
+      dl->AddRect(wpos, wsize, IM_COL32(80, 150, 255, 200), 3.0f, 0, 1.2f);
+      // Resize handle (bottom-right triangle)
+      dl->AddTriangleFilled(ImVec2(wx1, wy1 - 10.0f), ImVec2(wx1 - 10.0f, wy1),
+                            ImVec2(wx1, wy1), IM_COL32(100, 170, 255, 180));
+
+      // Invisible button covering canvas for drag/resize interaction
+      ImGui::SetCursorScreenPos(canvas_tl);
+      ImGui::InvisibleButton("##pm_canvas", ImVec2(canvas_w, canvas_h));
+      const bool canvas_active = ImGui::IsItemActive();
+      const bool canvas_hovered = ImGui::IsItemHovered();
+      const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+      // Determine hover zones (in canvas coords)
+      const bool over_win = (mouse.x >= wx0 && mouse.x < wx1 &&
+                             mouse.y >= wy0 && mouse.y < wy1);
+      const bool over_resize = (mouse.x >= wx1 - 14.0f && mouse.y >= wy1 - 14.0f &&
+                                mouse.x < wx1 && mouse.y < wy1);
+
+      if(canvas_active)
+      {
+        if(!m.dragging_win && !m.resizing_win)
+        {
+          // Start drag or resize
+          if(over_resize)
+            m.resizing_win = true;
+          else if(over_win)
+          {
+            m.dragging_win = true;
+            m.drag_offset_x = (int)((mouse.x - canvas_tl.x) / scale) - m.pos_x;
+            m.drag_offset_y = (int)((mouse.y - canvas_tl.y) / scale) - m.pos_y;
+          }
+        }
+        const ImVec2 delta = ImGui::GetIO().MouseDelta;
+        if(m.dragging_win)
+        {
+          m.pos_x = (int)((mouse.x - canvas_tl.x) / scale) - m.drag_offset_x;
+          m.pos_y = (int)((mouse.y - canvas_tl.y) / scale) - m.drag_offset_y;
+        }
+        else if(m.resizing_win)
+        {
+          m.size_w = std::max(320, m.size_w + (int)(delta.x / scale));
+          m.size_h = std::max(200, m.size_h + (int)(delta.y / scale));
+        }
+      }
+      else
+      {
+        m.dragging_win = false;
+        m.resizing_win = false;
+      }
+
+      // Cursor hint
+      if(canvas_hovered && over_resize)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
+      else if(canvas_hovered && over_win)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+
+      ImGui::Spacing();
+
+      // Numeric inputs
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.7f, 0.9f, 1.0f));
+      ImGui::TextUnformatted(Lang::t("Position"));
+      ImGui::PopStyleColor();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("X##pm_x", &m.pos_x, 0);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("Y##pm_y", &m.pos_y, 0);
+
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.7f, 0.9f, 1.0f));
+      ImGui::TextUnformatted(Lang::t("Size"));
+      ImGui::PopStyleColor();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("W##pm_w", &m.size_w, 0);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("H##pm_h", &m.size_h, 0);
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // ---- Buttons ----
+    const float btn_w = 110.0f;
+    ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - btn_w * 2.0f - ImGui::GetStyle().ItemSpacing.x + ImGui::GetStyle().WindowPadding.x);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.16f, 0.22f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.22f, 0.30f, 1.0f));
+    if(ImGui::Button(Lang::t("Cancel"), ImVec2(btn_w, 0)))
+    {
+      ImGui::CloseCurrentPopup();
+      m.open = false;
+    }
+    ImGui::PopStyleColor(2);
+
+    ImGui::SameLine();
+
+    const bool name_ok = m.name_buf[0] != '\0';
+    ImGui::BeginDisabled(!name_ok);
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.45f, 0.90f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.55f, 1.00f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.35f, 0.80f, 1.0f));
+    const char *ok_label = (m.edit_idx >= 0 && !m.copy_mode) ? Lang::t("Save Profile") : Lang::t("Create Profile");
+    if(ImGui::Button(ok_label, ImVec2(btn_w, 0)))
+    {
+      const std::string pname(m.name_buf);
+      if(m.edit_idx >= 0 && !m.copy_mode)
+      {
+        // Edit existing
+        push_profile_snapshot();
+        auto &ep = layout_profiles_[(size_t)m.edit_idx];
+        ep.name = pname;
+        const bool was_maximized = ep.window_maximized;
+        ep.window_maximized = m.maximized;
+        ep.window_x = m.pos_x; ep.window_y = m.pos_y;
+        ep.window_w = m.size_w; ep.window_h = m.size_h;
+        if(ep.id == active_profile_id_)
+        {
+          // Re-apply window change if editing the active profile
+          apply_profile(ep, true);
+          window_profile_check_pending_ = false;
+          window_profile_check_delay_ = 20;
+        }
+        (void)was_maximized;
+        save_profiles();
+        save_index();
+      }
+      else
+      {
+        // Create or copy
+        create_profile(pname, m.maximized, m.pos_x, m.pos_y, m.size_w, m.size_h);
+      }
+      ImGui::CloseCurrentPopup();
+      m.open = false;
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::EndDisabled();
+
+    ImGui::EndPopup();
+  }
+  else
+  {
+    // Popup was closed externally (e.g., Escape)
+    m.open = false;
+  }
+
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor(2);
 }
 
 std::string App::make_note_path(const std::string &folder_name, const std::string &note_title) const
@@ -1768,6 +2390,26 @@ std::string App::capture_workspace_snapshot() const
   }
   root["drawings"] = std::move(drawings_json);
 
+  // Profile state (includes soft-deleted so undo can recover them)
+  Json profiles_json = Json::array();
+  for(const auto &p : layout_profiles_)
+  {
+    Json pj;
+    pj["id"] = p.id;
+    pj["name"] = p.name;
+    pj["window_maximized"] = p.window_maximized;
+    pj["window_x"] = p.window_x;
+    pj["window_y"] = p.window_y;
+    pj["window_w"] = p.window_w;
+    pj["window_h"] = p.window_h;
+    pj["pending_delete"] = p.pending_delete;
+    profiles_json.push_back(std::move(pj));
+  }
+  root["layout_profiles"] = std::move(profiles_json);
+  root["active_profile_id"] = active_profile_id_;
+  root["maximized_profile_id"] = maximized_profile_id_;
+  root["reduced_profile_id"] = reduced_profile_id_;
+
   return root.dump();
 }
 
@@ -1932,6 +2574,44 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   folder_overview_mode_ = root.value("folder_overview", false);
   editing_mode_ = root.value("editing_mode", false);
   request_exit_edit_mode_ = false;
+
+  // Restore profile list from snapshot (for undo/redo of profile operations)
+  if(root.contains("layout_profiles") && root["layout_profiles"].is_array())
+  {
+    // Preserve per-note layouts (not in snapshot) by building a map from current profiles
+    std::unordered_map<std::string, std::unordered_map<std::string, NoteLayoutData>> saved_layouts;
+    for(const auto &p : layout_profiles_)
+      saved_layouts[p.id] = p.note_layouts;
+
+    layout_profiles_.clear();
+    for(const Json &pj : root["layout_profiles"])
+    {
+      LayoutProfile p;
+      p.id = pj.value("id", std::string{});
+      if(p.id.empty()) continue;
+      p.name = pj.value("name", std::string("Profile"));
+      p.window_maximized = pj.value("window_maximized", true);
+      p.window_x = pj.value("window_x", 100);
+      p.window_y = pj.value("window_y", 100);
+      p.window_w = pj.value("window_w", 1100);
+      p.window_h = pj.value("window_h", 700);
+      p.pending_delete = pj.value("pending_delete", false);
+      // Restore note layouts if we have them
+      auto lit = saved_layouts.find(p.id);
+      if(lit != saved_layouts.end())
+        p.note_layouts = lit->second;
+      layout_profiles_.push_back(std::move(p));
+    }
+    active_profile_id_ = root.value("active_profile_id", active_profile_id_);
+    maximized_profile_id_ = root.value("maximized_profile_id", maximized_profile_id_);
+    reduced_profile_id_ = root.value("reduced_profile_id", reduced_profile_id_);
+
+    // Apply the restored active profile's window config
+    window_profile_check_pending_ = false;
+    window_profile_check_delay_ = 0;
+    const LayoutProfile *ap = find_active_profile();
+    if(ap) apply_profile(*ap, true);
+  }
 
   ensure_default_index();
   normalize_active_indices();
@@ -2395,6 +3075,20 @@ bool App::frame_begin()
       running_ = false;
     }
 
+    if(event.type == SDL_WINDOWEVENT &&
+       event.window.windowID == SDL_GetWindowID(window_))
+    {
+      const auto we = event.window.event;
+      if(we == SDL_WINDOWEVENT_SIZE_CHANGED || we == SDL_WINDOWEVENT_MOVED ||
+         we == SDL_WINDOWEVENT_MAXIMIZED || we == SDL_WINDOWEVENT_RESTORED)
+      {
+        // Debounced profile check after any window geometry change
+        static constexpr int kProfileCheckDelay = 12;
+        window_profile_check_delay_ = kProfileCheckDelay;
+        window_profile_check_pending_ = false;
+      }
+    }
+
     if(event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE &&
        search_window_visible_)
@@ -2555,6 +3249,36 @@ bool App::frame_begin()
       request_paste_sidebar_ = true;
       continue;
     }
+  }
+
+  // Borderless window drag (update position while mouse held)
+  if(window_drag_active_)
+  {
+    int mx = 0, my = 0;
+    SDL_GetGlobalMouseState(&mx, &my);
+    const Uint32 mouse_buttons = SDL_GetMouseState(nullptr, nullptr);
+    if(mouse_buttons & SDL_BUTTON(SDL_BUTTON_LEFT))
+    {
+      SDL_SetWindowPosition(window_,
+          window_drag_start_wx_ + (mx - window_drag_start_mx_),
+          window_drag_start_wy_ + (my - window_drag_start_my_));
+    }
+    else
+    {
+      window_drag_active_ = false;
+    }
+  }
+
+  // Profile auto-switch settle countdown and trigger
+  if(window_profile_check_delay_ > 0)
+  {
+    if(--window_profile_check_delay_ == 0)
+      window_profile_check_pending_ = true;
+  }
+  if(window_profile_check_pending_)
+  {
+    window_profile_check_pending_ = false;
+    do_window_profile_switch();
   }
 
   ImGui_ImplOpenGL3_NewFrame();
@@ -5898,6 +6622,165 @@ __CURSOR__)MD");
           }
           ImGui::SameLine();
         }
+
+        // Layout profiles — compact selector + manage button
+        {
+          // Build list of visible (non-deleted) profiles
+          std::vector<int> visible_pidx;
+          for(int pi = 0; pi < (int)layout_profiles_.size(); ++pi)
+            if(!layout_profiles_[(size_t)pi].pending_delete)
+              visible_pidx.push_back(pi);
+
+          const LayoutProfile *active_p = find_active_profile();
+          const char *combo_label = active_p ? active_p->name.c_str() : Lang::t("(Custom)");
+          ImGui::PushItemWidth(120.0f);
+          if(ImGui::BeginCombo("##layout_profile_combo", combo_label, ImGuiComboFlags_HeightSmall))
+          {
+            for(int pi : visible_pidx)
+            {
+              const auto &p = layout_profiles_[(size_t)pi];
+              const bool selected = (p.id == active_profile_id_);
+              ImGui::PushID(pi);
+              if(ImGui::Selectable(p.name.c_str(), selected) && !selected)
+              {
+                capture_to_active_profile();
+                active_profile_id_ = p.id;
+                apply_profile(layout_profiles_[(size_t)pi], true);
+                static constexpr int kProfileSwitchSettle = 20;
+                window_profile_check_pending_ = false;
+                window_profile_check_delay_ = kProfileSwitchSettle;
+                save_profiles();
+                save_index();
+              }
+              ImGui::PopID();
+            }
+            ImGui::EndCombo();
+          }
+          ImGui::PopItemWidth();
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            topbar_tooltip_text = Lang::t("Layout profile");
+
+          ImGui::SameLine(0.0f, 2.0f);
+          if(ImGui::SmallButton(Lang::t("Profiles...")))
+            manage_profiles_open_ = true;
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            topbar_tooltip_text = Lang::t("Manage profiles");
+          ImGui::SameLine();
+
+          // ---- Profile management popup ----
+          if(manage_profiles_open_)
+            ImGui::OpenPopup("##manage_profiles_popup");
+
+          if(ImGui::BeginPopup("##manage_profiles_popup",
+               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize))
+          {
+            manage_profiles_open_ = false; // reset — popup stays open via BeginPopup
+
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
+            ImGui::TextUnformatted(Lang::t("Layout Profiles"));
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+
+            if(visible_pidx.empty())
+            {
+              ImGui::TextDisabled("%s", Lang::t("No profiles."));
+            }
+            for(int pi : visible_pidx)
+            {
+              auto &p = layout_profiles_[(size_t)pi];
+              const bool is_active = (p.id == active_profile_id_);
+              ImGui::PushID(pi);
+
+              // Active indicator
+              if(is_active)
+              {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.75f, 0.35f, 1.0f));
+                ImGui::TextUnformatted("●");
+                ImGui::PopStyleColor();
+              }
+              else
+              {
+                ImGui::TextDisabled("○");
+              }
+              ImGui::SameLine();
+
+              // Profile name (click to switch)
+              ImGui::PushStyleColor(ImGuiCol_Text, is_active ?
+                ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.75f, 0.78f, 0.85f, 1.0f));
+              if(ImGui::Selectable(p.name.c_str(), is_active,
+                   ImGuiSelectableFlags_None, ImVec2(140.0f, 0.0f)) && !is_active)
+              {
+                ImGui::CloseCurrentPopup();
+                capture_to_active_profile();
+                active_profile_id_ = p.id;
+                apply_profile(layout_profiles_[(size_t)pi], true);
+                static constexpr int kSettle = 20;
+                window_profile_check_pending_ = false;
+                window_profile_check_delay_ = kSettle;
+                save_profiles(); save_index();
+              }
+              ImGui::PopStyleColor();
+              ImGui::SameLine();
+
+              // Edit
+              if(ImGui::SmallButton(Lang::t("Edit")))
+              {
+                ImGui::CloseCurrentPopup();
+                profile_modal_.open = true;
+                profile_modal_.first_frame = true;
+                profile_modal_.edit_idx = pi;
+                profile_modal_.copy_mode = false;
+              }
+              ImGui::SameLine();
+              // Copy
+              if(ImGui::SmallButton(Lang::t("Copy")))
+              {
+                ImGui::CloseCurrentPopup();
+                profile_modal_.open = true;
+                profile_modal_.first_frame = true;
+                profile_modal_.edit_idx = pi;
+                profile_modal_.copy_mode = true;
+              }
+              ImGui::SameLine();
+              // Delete
+              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.35f, 0.35f, 1.0f));
+              if(ImGui::SmallButton(Lang::t("Delete")))
+              {
+                push_profile_snapshot();
+                p.pending_delete = true;
+                if(active_profile_id_ == p.id) active_profile_id_.clear();
+                // If last visible profile was deleted, open create dialog
+                int remaining = 0;
+                for(const auto &q : layout_profiles_)
+                  if(!q.pending_delete) ++remaining;
+                if(remaining == 0)
+                {
+                  profile_modal_.open = true;
+                  profile_modal_.first_frame = true;
+                  profile_modal_.edit_idx = -1;
+                  profile_modal_.copy_mode = false;
+                  std::strncpy(profile_modal_.name_buf, "Default",
+                               sizeof(profile_modal_.name_buf) - 1);
+                }
+                save_profiles();
+                ImGui::CloseCurrentPopup();
+              }
+              ImGui::PopStyleColor();
+              ImGui::PopID();
+            }
+
+            ImGui::Separator();
+            if(ImGui::Button(Lang::t("+ New Profile"), ImVec2(-1.0f, 0.0f)))
+            {
+              ImGui::CloseCurrentPopup();
+              profile_modal_.open = true;
+              profile_modal_.first_frame = true;
+              profile_modal_.edit_idx = -1;
+              profile_modal_.copy_mode = false;
+            }
+            ImGui::EndPopup();
+          }
+        }
       }
       {
         const char *ver = "v" NOTEPP_VERSION;
@@ -5913,8 +6796,40 @@ __CURSOR__)MD");
         const ImVec2 lang_flag_display = lang_flag_tex ? icon_sz(lang_flag_file) : ImVec2(0, 0);
         const float lang_btn_w = lang_flag_tex ? lang_flag_display.x : (ImGui::CalcTextSize(lang_short).x + 10.0f);
         const float lang_btn_h = lang_flag_tex ? lang_flag_display.y : 18.0f;
+        // Custom window control buttons (quit / minimize) — rightmost
+        constexpr float ctrl_btn_w = 28.0f;
+        constexpr float ctrl_btn_h = 20.0f;
+        const float ctrl_y = (bar_h - ctrl_btn_h) * 0.5f;
+        const float quit_x = ImGui::GetWindowWidth() - ctrl_btn_w - right_margin;
+        const float min_x  = quit_x - ctrl_btn_w - 2.0f;
+
+        // Quit button
+        ImGui::SetCursorPos(ImVec2(quit_x, ctrl_y));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.15f, 0.15f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.00f, 0.10f, 0.10f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
+        if(ImGui::Button("✕##quit_btn", ImVec2(ctrl_btn_w, ctrl_btn_h)))
+          running_ = false;
+        ImGui::PopStyleColor(4);
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("%s", Lang::t("Quit"));
+
+        // Minimize button
+        ImGui::SetCursorPos(ImVec2(min_x, ctrl_y));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.35f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.40f, 0.40f, 0.55f, 1.00f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
+        if(ImGui::Button("─##min_btn", ImVec2(ctrl_btn_w, ctrl_btn_h)))
+          SDL_MinimizeWindow(window_);
+        ImGui::PopStyleColor(4);
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("%s", Lang::t("Minimize"));
+
+        // Language selector
         constexpr float gap = 6.0f;
-        const float lang_x = ImGui::GetWindowWidth() - ver_sz.x - right_margin - gap - lang_btn_w;
+        const float lang_x = min_x - ver_sz.x - gap - lang_btn_w - gap;
         ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
         bool lang_clicked = shaded_icon_button("##lang_btn", lang_flag_tex, ImVec2(lang_btn_w, lang_btn_h), lang_short);
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
@@ -5948,12 +6863,32 @@ __CURSOR__)MD");
         }
 
         // Version label
-        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ver_sz.x - right_margin, (bar_h - ver_sz.y) * 0.5f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        const float ver_x = lang_x + lang_btn_w + gap;
+        ImGui::SetCursorPos(ImVec2(ver_x, (bar_h - ver_sz.y) * 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.7f, 1.0f));
         ImGui::TextUnformatted(ver);
         ImGui::PopStyleColor();
+
+        // Toolbar drag for borderless window (click + drag on empty toolbar area)
+        {
+          const ImVec2 tb_pos = ImGui::GetWindowPos();
+          const ImVec2 tb_size = ImGui::GetWindowSize();
+          const ImVec2 mp = ImGui::GetIO().MousePos;
+          const bool over_toolbar = (mp.x >= tb_pos.x && mp.x < tb_pos.x + tb_size.x &&
+                                     mp.y >= tb_pos.y && mp.y < tb_pos.y + tb_size.y);
+          if(over_toolbar && ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered())
+          {
+            if(!is_window_covering_display())
+            {
+              SDL_GetGlobalMouseState(&window_drag_start_mx_, &window_drag_start_my_);
+              SDL_GetWindowPosition(window_, &window_drag_start_wx_, &window_drag_start_wy_);
+              window_drag_active_ = true;
+            }
+          }
+        }
       }
       ImGui::PopStyleColor(8);
+      show_profile_modal();
       ImGui::End();
       ImGui::PopStyleVar(2);
     }

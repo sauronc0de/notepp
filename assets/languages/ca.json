@@ -98,6 +98,22 @@
     "Emoji picker (Ctrl+.)": "Selector d'emojis (Ctrl+.)",
     "Mouse": "Ratolí",
     "Draw": "Dibuixa",
-    "Draw (right click for color)": "Dibuixa (clic dret per al color)"
+    "Draw (right click for color)": "Dibuixa (clic dret per al color)",
+    "Layout profile": "Perfil de disposició",
+    "Save layout profile": "Desa el perfil de disposició",
+    "Profile name:": "Nom del perfil:",
+    "(Custom)": "(Personalitzat)",
+    "Quit": "Quit",
+    "Minimize": "Minimize",
+    "Profiles...": "Profiles...",
+    "Manage profiles": "Manage profiles",
+    "Layout Profiles": "Layout Profiles",
+    "No profiles.": "No profiles.",
+    "Save Profile": "Save Profile",
+    "Create Profile": "Create Profile",
+    "+ New Profile": "+ New Profile",
+    "Position": "Position",
+    "Size": "Size",
+    "Maximized": "Maximized"
   }
 }

@@ -98,6 +98,22 @@
         "Emoji picker (Ctrl+.)": "Píco-emma Mapa (Ctrl+.)",
         "Mouse": "Nirmë",
         "Draw": "Tehta",
-        "Draw (right click for color)": "Tehta (mára-nappa quilë)"
+        "Draw (right click for color)": "Tehta (mára-nappa quilë)",
+        "Layout profile": "Layout profile",
+        "Save layout profile": "Save layout profile",
+        "Profile name:": "Profile name:",
+        "(Custom)": "(Custom)",
+    "Quit": "Quit",
+    "Minimize": "Minimize",
+    "Profiles...": "Profiles...",
+    "Manage profiles": "Manage profiles",
+    "Layout Profiles": "Layout Profiles",
+    "No profiles.": "No profiles.",
+    "Save Profile": "Save Profile",
+    "Create Profile": "Create Profile",
+    "+ New Profile": "+ New Profile",
+    "Position": "Position",
+    "Size": "Size",
+    "Maximized": "Maximized"
     }
 }

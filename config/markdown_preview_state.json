@@ -1,8 +1,48 @@
 {
   "documents": {
-    "/workspaces/notepp/data/./demo.md": {
+    "/workspaces/notepp/data/DnD/Grimori.md": {
+      "headers": {
+        "0": false,
+        "1296": false,
+        "2737": false,
+        "58": false
+      }
+    },
+    "/workspaces/notepp/data/DnD/Index.md": {
       "headers": {
         "0": false
+      }
+    },
+    "/workspaces/notepp/data/DnD/Personality.md": {
+      "headers": {
+        "0": false
+      }
+    },
+    "/workspaces/notepp/data/DnD/Stats.md": {
+      "headers": {
+        "0": false
+      }
+    },
+    "/workspaces/notepp/data/General/Html.md": {
+      "headers": {
+        "1": false
+      }
+    },
+    "/workspaces/notepp/data/General/Links.md": {
+      "headers": {
+        "0": false,
+        "68": false
+      }
+    },
+    "/workspaces/notepp/data/General/demo.md": {
+      "headers": {
+        "0": false
+      }
+    },
+    "/workspaces/notepp/data/General/demo2.md": {
+      "headers": {
+        "0": false,
+        "3862": false
       }
     }
   }
