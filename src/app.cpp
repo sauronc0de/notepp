@@ -749,6 +749,10 @@ int App::run()
       {
         // Nothing to render — discard the ImGui frame and yield the CPU.
         ImGui::EndFrame();
+        // UpdatePlatformWindows must be called after every EndFrame when
+        // viewports are enabled, or ImGui fires a sanity-check assertion.
+        if(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+          ImGui::UpdatePlatformWindows();
         SDL_Delay(8);
       }
     }
@@ -789,17 +793,11 @@ void App::init_sdl_gl()
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
 
-  // Cover the primary display explicitly — SDL_WINDOW_MAXIMIZED+BORDERLESS is
-  // unreliable on many X11/Wayland compositors (WSL2, XWayland, etc.).
-  {
-    const int di = SDL_GetWindowDisplayIndex(window_);
-    SDL_Rect disp{};
-    if(di >= 0 && SDL_GetDisplayBounds(di, &disp) == 0)
-    {
-      SDL_SetWindowPosition(window_, disp.x, disp.y);
-      SDL_SetWindowSize(window_, disp.w, disp.h);
-    }
-  }
+  // Use fullscreen-desktop for the default maximized state. This goes through
+  // the compositor's fullscreen protocol and is reliable on all platforms
+  // (Wayland, XWayland, X11, Windows) — unlike SDL_SetWindowPosition which
+  // can be silently offset by Wayland compositors.
+  SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
 
   gl_context_ = SDL_GL_CreateContext(window_);
   if(!gl_context_)
@@ -1439,8 +1437,13 @@ void App::capture_to_active_profile()
   if(window_)
   {
     profile.window_maximized = is_window_covering_display();
-    SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
-    SDL_GetWindowSize(window_, &profile.window_w, &profile.window_h);
+    // Only store position/size for non-fullscreen profiles; maximized ones
+    // always restore via SDL_WINDOW_FULLSCREEN_DESKTOP.
+    if(!profile.window_maximized)
+    {
+      SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
+      SDL_GetWindowSize(window_, &profile.window_w, &profile.window_h);
+    }
   }
 
   profile.note_layouts.clear();
@@ -1489,20 +1492,11 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
   {
     if(profile.window_maximized)
     {
-      const int di = SDL_GetWindowDisplayIndex(window_);
-      SDL_Rect disp{};
-      if(di >= 0 && SDL_GetDisplayBounds(di, &disp) == 0)
-      {
-        SDL_SetWindowPosition(window_, disp.x, disp.y);
-        SDL_SetWindowSize(window_, disp.w, disp.h);
-      }
-      else
-      {
-        SDL_MaximizeWindow(window_);
-      }
+      SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
     }
     else
     {
+      SDL_SetWindowFullscreen(window_, 0);
       SDL_SetWindowPosition(window_, profile.window_x, profile.window_y);
       SDL_SetWindowSize(window_, profile.window_w, profile.window_h);
     }
@@ -1565,17 +1559,8 @@ void App::delete_profile(const std::string &id)
 bool App::is_window_covering_display() const
 {
   if(!window_) return false;
-  const int di = SDL_GetWindowDisplayIndex(window_);
-  if(di < 0) return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MAXIMIZED) != 0;
-  SDL_Rect disp{};
-  if(SDL_GetDisplayBounds(di, &disp) != 0)
-    return (SDL_GetWindowFlags(window_) & SDL_WINDOW_MAXIMIZED) != 0;
-  int wx = 0, wy = 0, ww = 0, wh = 0;
-  SDL_GetWindowPosition(window_, &wx, &wy);
-  SDL_GetWindowSize(window_, &ww, &wh);
-  constexpr int tol = 10;
-  return (std::abs(wx - disp.x) <= tol && std::abs(wy - disp.y) <= tol &&
-          std::abs(ww - disp.w) <= tol && std::abs(wh - disp.h) <= tol);
+  const Uint32 flags = SDL_GetWindowFlags(window_);
+  return (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP;
 }
 
 const App::LayoutProfile *App::find_matching_profile() const
