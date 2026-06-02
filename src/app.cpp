@@ -1364,12 +1364,20 @@ void App::load_profiles()
     layout_profiles_.push_back(std::move(p));
   }
 
-  // On startup, apply the profile that matches the current window state
-  const LayoutProfile *startup_match = find_matching_profile();
-  if(startup_match)
+  // Restore last active profile (apply its window state so the window
+  // opens exactly as the user left it).
+  const LayoutProfile *last = find_active_profile();
+  if(last)
+    apply_profile(*last, true);
+  else
   {
-    active_profile_id_ = startup_match->id;
-    apply_profile(*startup_match, false);
+    // Fallback for first run or if the saved ID is gone: match by current window.
+    const LayoutProfile *match = find_matching_profile();
+    if(match)
+    {
+      active_profile_id_ = match->id;
+      apply_profile(*match, false);
+    }
   }
 }
 
@@ -6797,33 +6805,25 @@ __CURSOR__)MD");
         const float lang_btn_w = lang_flag_tex ? lang_flag_display.x : (ImGui::CalcTextSize(lang_short).x + 10.0f);
         const float lang_btn_h = lang_flag_tex ? lang_flag_display.y : 18.0f;
         // Custom window control buttons (quit / minimize) — rightmost
-        constexpr float ctrl_btn_w = 28.0f;
-        constexpr float ctrl_btn_h = 20.0f;
-        const float ctrl_y = (bar_h - ctrl_btn_h) * 0.5f;
-        const float quit_x = ImGui::GetWindowWidth() - ctrl_btn_w - right_margin;
-        const float min_x  = quit_x - ctrl_btn_w - 2.0f;
+        const ImTextureID quit_icon = get_toolbar_icon_texture("quit.png");
+        const ImTextureID min_icon  = get_toolbar_icon_texture("minimize.png");
+        const ImVec2 quit_sz = icon_sz("quit.png");
+        const ImVec2 min_sz  = icon_sz("minimize.png");
+        const float ctrl_y = (bar_h - kIconH) * 0.5f;
+        const float quit_x = ImGui::GetWindowWidth() - quit_sz.x - right_margin;
+        const float min_x  = quit_x - min_sz.x - 4.0f;
 
         // Quit button
         ImGui::SetCursorPos(ImVec2(quit_x, ctrl_y));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.15f, 0.15f, 0.90f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.00f, 0.10f, 0.10f, 1.00f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
-        if(ImGui::Button("✕##quit_btn", ImVec2(ctrl_btn_w, ctrl_btn_h)))
+        if(shaded_icon_button("##quit_btn", quit_icon, quit_sz, "✕"))
           running_ = false;
-        ImGui::PopStyleColor(4);
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           ImGui::SetTooltip("%s", Lang::t("Quit"));
 
         // Minimize button
         ImGui::SetCursorPos(ImVec2(min_x, ctrl_y));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.25f, 0.35f, 0.90f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.40f, 0.40f, 0.55f, 1.00f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.85f));
-        if(ImGui::Button("─##min_btn", ImVec2(ctrl_btn_w, ctrl_btn_h)))
+        if(shaded_icon_button("##min_btn", min_icon, min_sz, "─"))
           SDL_MinimizeWindow(window_);
-        ImGui::PopStyleColor(4);
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           ImGui::SetTooltip("%s", Lang::t("Minimize"));
 
