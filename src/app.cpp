@@ -1613,7 +1613,6 @@ void App::rename_note_storage_for_title(const std::string &new_title)
   state_file_path_ = new_path.string();
   note_title_ = safe_title;
   sync_active_note_meta();
-  force_note_layout_restore_ = true;
   save_state();
 }
 
@@ -1649,7 +1648,6 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
     state_file_path_ = n.path;
     note_title_ = n.title;
   }
-  force_note_layout_restore_ = true;
   save_index();
 }
 
@@ -1707,6 +1705,7 @@ std::string App::capture_workspace_snapshot() const
     for(const NoteMeta &note : folder.notes)
     {
       Json note_json;
+      note_json["id"] = note.id;
       note_json["title"] = note.title;
       note_json["path"] = note.path;
       note_json["use_custom_color"] = note.use_custom_color;
@@ -1821,7 +1820,8 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
         for(const Json &note_json : folder_json["notes"])
         {
           NoteMeta note;
-          note.id = generate_uuid();
+          note.id = note_json.value("id", std::string{});
+          if(note.id.empty()) note.id = generate_uuid();
           note.title = note_json.value("title", std::string("Note"));
           note.path = note_json.value("path", std::string());
           note.use_custom_color = note_json.value("use_custom_color", false);
