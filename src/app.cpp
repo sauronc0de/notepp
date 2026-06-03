@@ -1229,7 +1229,8 @@ void App::save_index()
 {
   sync_active_folder_settings();
 
-  std::ofstream out(index_file_, std::ios::trunc);
+  std::filesystem::path tmp = index_file_; tmp += ".tmp";
+  std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -1291,6 +1292,8 @@ void App::save_index()
   }
   out << "  ]\n";
   out << "}\n";
+  out.close();
+  std::filesystem::rename(tmp, index_file_);
 }
 
 void App::load_profiles()
@@ -1398,7 +1401,8 @@ void App::load_profiles()
 
 void App::save_profiles()
 {
-  std::ofstream out(profiles_file_, std::ios::trunc);
+  std::filesystem::path tmp = profiles_file_; tmp += ".tmp";
+  std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -1440,6 +1444,8 @@ void App::save_profiles()
   }
   out << "  ]\n";
   out << "}\n";
+  out.close();
+  std::filesystem::rename(tmp, profiles_file_);
 }
 
 void App::capture_to_active_profile()
