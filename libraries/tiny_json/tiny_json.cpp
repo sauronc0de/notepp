@@ -127,6 +127,21 @@ int json_find_int(std::string_view obj, std::string_view key, int defv)
   return std::atoi(std::string(obj.substr(b, e - b)).c_str());
 }
 
+float json_find_float(std::string_view obj, std::string_view key, float defv)
+{
+  const std::string pat = "\"" + std::string(key) + "\"";
+  const size_t k = obj.find(pat);
+  if(k == std::string::npos) return defv;
+  const size_t c = obj.find(':', k + pat.size());
+  if(c == std::string::npos) return defv;
+  size_t b = c + 1;
+  while(b < obj.size() && (obj[b] == ' ' || obj[b] == '\t' || obj[b] == '\n' || obj[b] == '\r')) ++b;
+  size_t e = b;
+  while(e < obj.size() && (obj[e] == '-' || obj[e] == '.' || (obj[e] >= '0' && obj[e] <= '9'))) ++e;
+  if(e <= b) return defv;
+  return std::strtof(std::string(obj.substr(b, e - b)).c_str(), nullptr);
+}
+
 bool json_find_bool(std::string_view obj, std::string_view key, bool defv)
 {
   const std::string pat = "\"" + std::string(key) + "\"";

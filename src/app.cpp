@@ -90,6 +90,7 @@ using TinyJson::find_matching;
 using TinyJson::json_array_objects;
 using TinyJson::json_escape;
 using TinyJson::json_find_bool;
+using TinyJson::json_find_float;
 using TinyJson::json_find_int;
 using TinyJson::json_find_string;
 using TinyJson::json_unescape;
@@ -595,7 +596,7 @@ void load_note_clipboard()
     ci.title = g_copied_note_title;
     ci.content = g_copied_note_content;
     ci.font_path = json_find_string(doc, "font_path");
-    ci.font_size = (float)json_find_int(doc, "font_size", 0);
+    ci.font_size = json_find_float(doc, "font_size", 0.0f);
     ci.use_custom_color = json_find_bool(doc, "use_custom_color", false);
     ci.color_r = (float)json_find_int(doc, "color_r", 0) / 255.0f;
     ci.color_g = (float)json_find_int(doc, "color_g", 0) / 255.0f;
@@ -634,7 +635,7 @@ void App::save_note_clipboard()
     if(!ci.font_path.empty())
       out << ",\n  \"font_path\": \"" << json_escape(ci.font_path) << "\"";
     if(ci.font_size > 0.0f)
-      out << ",\n  \"font_size\": " << (int)std::lround(ci.font_size);
+      out << ",\n  \"font_size\": " << ci.font_size;
   }
   out << "\n}\n";
   g_clipboard_dirty = false;
@@ -711,6 +712,7 @@ void App::switch_project(const std::filesystem::path &new_root)
   note_title_ = "Note";
   markdown_text_.clear();
 
+  reset_sidebar_state_ = true;
   load_state();
 }
 #endif
@@ -1076,7 +1078,7 @@ void App::load_state()
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
                     n.color_b = (float)json_find_int(nobj, "color_b", 0) / 255.0f;
                     n.font_path = json_find_string(nobj, "font_path");
-                    n.font_size = (float)json_find_int(nobj, "font_size", 0);
+                    n.font_size = json_find_float(nobj, "font_size", 0.0f);
                     if(n.title.empty()) n.title = "Note";
                     if(n.path.empty()) n.path = make_note_path(f.name, n.title);
                     f.notes.push_back(std::move(n));
@@ -1273,7 +1275,7 @@ void App::save_index()
       if(!n.font_path.empty())
         out << ", \"font_path\": \"" << json_escape(n.font_path) << "\"";
       if(n.font_size > 0.0f)
-        out << ", \"font_size\": " << (int)std::lround(n.font_size);
+        out << ", \"font_size\": " << n.font_size;
       out << "}";
       if(ni + 1 < f.notes.size()) out << ",";
       out << "\n";
@@ -3465,6 +3467,63 @@ void App::frame_ui()
     SearchScope last_scope = SearchScope::CurrentPageNotes;
   };
   static SearchDialogState search_dialog;
+  static std::string deferred_sidebar_snapshot_before;
+
+  if(reset_sidebar_state_)
+  {
+    request_sync_files = false;
+    new_folder_buf[0] = '\0';
+    new_note_buf[0] = '\0';
+    open_new_folder_popup = false;
+    open_new_note_popup = false;
+    focus_new_note_input = false;
+    new_folder_parent_idx = -1;
+    new_note_target_folder_idx = -1;
+    force_open_folder_idx = -1;
+    open_rename_note_popup = false;
+    rename_note_folder_idx = -1;
+    rename_note_idx = -1;
+    rename_note_buf[0] = '\0';
+    open_rename_folder_popup = false;
+    rename_folder_idx = -1;
+    open_rename_image_popup = false;
+    rename_image_folder_idx = -1;
+    rename_image_current_path.clear();
+    rename_image_buf[0] = '\0';
+    pending_move_image_src_fi = -1;
+    pending_move_image_dst_fi = -1;
+    pending_move_image_path.clear();
+    sidebar_last_selected_was_folder = false;
+    rename_folder_buf[0] = '\0';
+    open_note_color_popup = false;
+    color_note_folder_idx = -1;
+    color_note_idx = -1;
+    note_color_buf[0] = note_color_buf[1] = note_color_buf[2] = 0.0f;
+    note_color_use_default = true;
+    pending_delete_folder_idx = -1;
+    pending_delete_note_folder_idx = -1;
+    pending_delete_note_idx = -1;
+    pending_delete_note_indices.clear();
+    pending_paste_note_folder_idx = -1;
+    paste_target_folder_idx = -1;
+    open_paste_note_popup = false;
+    paste_note_buf[0] = '\0';
+    selected_note_indices.clear();
+    selected_stroke_indices.clear();
+    pending_focus_note_idx = -1;
+    last_sidebar_anchor_folder_idx = -1;
+    last_sidebar_anchor_note_idx = -1;
+    pending_move_source_folder_idx = -1;
+    pending_move_target_folder_idx = -1;
+    pending_move_note_indices.clear();
+    pending_move_folder_source_idx = -1;
+    pending_move_folder_target_idx = -1;
+    drag_hover_folder_idx = -1;
+    sidebar_flashes.clear();
+    search_dialog = {};
+    deferred_sidebar_snapshot_before.clear();
+    reset_sidebar_state_ = false;
+  }
 
   auto remove_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -3836,7 +3895,6 @@ void App::frame_ui()
     mutate();
     record_workspace_after(label, std::move(before_snapshot));
   };
-  static std::string deferred_sidebar_snapshot_before;
   auto push_sidebar_snapshot = [&]() {
     if(deferred_sidebar_snapshot_before.empty()) deferred_sidebar_snapshot_before = capture_workspace_before();
   };
