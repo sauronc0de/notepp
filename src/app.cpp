@@ -178,6 +178,31 @@ void sanitize_window_rect_for_displays(int &x, int &y, int &w, int &h)
   y = clamp_to_range(y, best_bounds.y, best_bounds.y + best_bounds.h - h);
 }
 
+void apply_borderless_maximized_window(SDL_Window *window)
+{
+  if(window == nullptr) return;
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+    SDL_SetWindowFullscreen(window, 0);
+
+  SDL_MaximizeWindow(window);
+}
+
+void apply_borderless_window_rect(SDL_Window *window, int x, int y, int w, int h)
+{
+  if(window == nullptr) return;
+
+  sanitize_window_rect_for_displays(x, y, w, h);
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+    SDL_SetWindowFullscreen(window, 0);
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0)
+    SDL_RestoreWindow(window);
+
+  SDL_SetWindowPosition(window, x, y);
+  SDL_SetWindowSize(window, w, h);
+}
+
 struct FreeStroke
 {
   std::vector<ImVec2> points;
@@ -895,11 +920,9 @@ void App::init_sdl_gl()
   if(!window_)
     throw std::runtime_error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
 
-  // Use fullscreen-desktop for the default maximized state. This goes through
-  // the compositor's fullscreen protocol and is reliable on all platforms
-  // (Wayland, XWayland, X11, Windows) — unlike SDL_SetWindowPosition which
-  // can be silently offset by Wayland compositors.
-  SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
+  // Start maximized as a regular borderless window. Avoid fullscreen-desktop:
+  // profile switches should not blank or reconfigure the rest of the desktop.
+  apply_borderless_maximized_window(window_);
 
   gl_context_ = SDL_GL_CreateContext(window_);
   if(!gl_context_)
@@ -1548,8 +1571,8 @@ void App::capture_to_active_profile()
   if(window_)
   {
     profile.window_maximized = is_window_covering_display();
-    // Only store position/size for non-fullscreen profiles; maximized ones
-    // always restore via SDL_WINDOW_FULLSCREEN_DESKTOP.
+    // Only store position/size for non-maximized profiles; maximized ones
+    // restore through the window manager without entering fullscreen mode.
     if(!profile.window_maximized)
     {
       SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
@@ -1603,18 +1626,12 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
   {
     if(profile.window_maximized)
     {
-      SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
+      apply_borderless_maximized_window(window_);
     }
     else
     {
-      int window_x = profile.window_x;
-      int window_y = profile.window_y;
-      int window_w = profile.window_w;
-      int window_h = profile.window_h;
-      sanitize_window_rect_for_displays(window_x, window_y, window_w, window_h);
-      SDL_SetWindowFullscreen(window_, 0);
-      SDL_SetWindowPosition(window_, window_x, window_y);
-      SDL_SetWindowSize(window_, window_w, window_h);
+      apply_borderless_window_rect(
+          window_, profile.window_x, profile.window_y, profile.window_w, profile.window_h);
     }
   }
 }
@@ -1676,7 +1693,22 @@ bool App::is_window_covering_display() const
 {
   if(!window_) return false;
   const Uint32 flags = SDL_GetWindowFlags(window_);
-  return (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP;
+  if((flags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP) return true;
+  if((flags & SDL_WINDOW_MAXIMIZED) == SDL_WINDOW_MAXIMIZED) return true;
+
+  int x = 0, y = 0, w = 0, h = 0;
+  SDL_GetWindowPosition(window_, &x, &y);
+  SDL_GetWindowSize(window_, &w, &h);
+
+  const int display_index = std::max(0, SDL_GetWindowDisplayIndex(window_));
+  SDL_Rect bounds{};
+  if(!get_display_bounds(display_index, bounds)) return false;
+
+  constexpr int kTolerance = 10;
+  return std::abs(x - bounds.x) <= kTolerance &&
+         std::abs(y - bounds.y) <= kTolerance &&
+         std::abs(w - bounds.w) <= kTolerance &&
+         std::abs(h - bounds.h) <= kTolerance;
 }
 
 const App::LayoutProfile *App::find_matching_profile() const
