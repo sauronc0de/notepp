@@ -140,6 +140,23 @@ bool get_display_bounds(int display_index, SDL_Rect &bounds)
   return SDL_GetDisplayBounds(display_index, &bounds) == 0;
 }
 
+bool current_video_driver_is_wayland()
+{
+  const char *driver = SDL_GetCurrentVideoDriver();
+  return driver != nullptr && std::strcmp(driver, "wayland") == 0;
+}
+
+int display_index_for_window(SDL_Window *window)
+{
+  if(window == nullptr) return 0;
+
+  const int display_index = SDL_GetWindowDisplayIndex(window);
+  if(display_index >= 0) return display_index;
+
+  const int display_count = SDL_GetNumVideoDisplays();
+  return display_count > 0 ? 0 : -1;
+}
+
 void sanitize_window_rect_for_displays(int &x, int &y, int &w, int &h)
 {
   static constexpr int kMinWindowW = 320;
@@ -185,7 +202,31 @@ void apply_borderless_maximized_window(SDL_Window *window)
   if((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
     SDL_SetWindowFullscreen(window, 0);
 
-  SDL_MaximizeWindow(window);
+  if(current_video_driver_is_wayland())
+  {
+    SDL_MaximizeWindow(window);
+    return;
+  }
+
+  const int display_index = display_index_for_window(window);
+  SDL_Rect bounds{};
+  if(display_index < 0 || !get_display_bounds(display_index, bounds))
+  {
+    SDL_MaximizeWindow(window);
+    return;
+  }
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0)
+    SDL_RestoreWindow(window);
+
+  SDL_SetWindowResizable(window, SDL_TRUE);
+  SDL_SetWindowBordered(window, SDL_FALSE);
+  SDL_SetWindowMinimumSize(window, 320, 200);
+  SDL_SetWindowMaximumSize(window, 0, 0);
+
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
+  SDL_SetWindowSize(window, bounds.w, bounds.h);
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
 }
 
 void apply_borderless_window_rect(SDL_Window *window, int x, int y, int w, int h)
@@ -199,8 +240,14 @@ void apply_borderless_window_rect(SDL_Window *window, int x, int y, int w, int h
   if((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0)
     SDL_RestoreWindow(window);
 
+  SDL_SetWindowResizable(window, SDL_TRUE);
+  SDL_SetWindowBordered(window, SDL_FALSE);
+  SDL_SetWindowMinimumSize(window, 320, 200);
+  SDL_SetWindowMaximumSize(window, 0, 0);
+
   SDL_SetWindowPosition(window, x, y);
   SDL_SetWindowSize(window, w, h);
+  SDL_SetWindowPosition(window, x, y);
 }
 
 struct FreeStroke
