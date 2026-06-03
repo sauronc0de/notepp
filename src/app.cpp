@@ -118,6 +118,66 @@ std::string generate_uuid()
   return std::string(buf);
 }
 
+int clamp_to_range(int value, int lo, int hi)
+{
+  if(hi < lo) return lo;
+  return std::max(lo, std::min(value, hi));
+}
+
+int rect_intersection_area(const SDL_Rect &a, const SDL_Rect &b)
+{
+  const int x0 = std::max(a.x, b.x);
+  const int y0 = std::max(a.y, b.y);
+  const int x1 = std::min(a.x + a.w, b.x + b.w);
+  const int y1 = std::min(a.y + a.h, b.y + b.h);
+  if(x1 <= x0 || y1 <= y0) return 0;
+  return (x1 - x0) * (y1 - y0);
+}
+
+bool get_display_bounds(int display_index, SDL_Rect &bounds)
+{
+  if(SDL_GetDisplayUsableBounds(display_index, &bounds) == 0) return true;
+  return SDL_GetDisplayBounds(display_index, &bounds) == 0;
+}
+
+void sanitize_window_rect_for_displays(int &x, int &y, int &w, int &h)
+{
+  static constexpr int kMinWindowW = 320;
+  static constexpr int kMinWindowH = 200;
+
+  w = std::max(kMinWindowW, w);
+  h = std::max(kMinWindowH, h);
+
+  const int display_count = SDL_GetNumVideoDisplays();
+  if(display_count <= 0) return;
+
+  const SDL_Rect proposed{x, y, w, h};
+  SDL_Rect best_bounds{};
+  int best_area = -1;
+  bool have_bounds = false;
+
+  for(int di = 0; di < display_count; ++di)
+  {
+    SDL_Rect bounds{};
+    if(!get_display_bounds(di, bounds)) continue;
+
+    const int area = rect_intersection_area(proposed, bounds);
+    if(!have_bounds || area > best_area)
+    {
+      best_bounds = bounds;
+      best_area = area;
+      have_bounds = true;
+    }
+  }
+
+  if(!have_bounds) return;
+
+  w = std::min(w, std::max(kMinWindowW, best_bounds.w));
+  h = std::min(h, std::max(kMinWindowH, best_bounds.h));
+  x = clamp_to_range(x, best_bounds.x, best_bounds.x + best_bounds.w - w);
+  y = clamp_to_range(y, best_bounds.y, best_bounds.y + best_bounds.h - h);
+}
+
 struct FreeStroke
 {
   std::vector<ImVec2> points;
@@ -1547,9 +1607,14 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
     }
     else
     {
+      int window_x = profile.window_x;
+      int window_y = profile.window_y;
+      int window_w = profile.window_w;
+      int window_h = profile.window_h;
+      sanitize_window_rect_for_displays(window_x, window_y, window_w, window_h);
       SDL_SetWindowFullscreen(window_, 0);
-      SDL_SetWindowPosition(window_, profile.window_x, profile.window_y);
-      SDL_SetWindowSize(window_, profile.window_w, profile.window_h);
+      SDL_SetWindowPosition(window_, window_x, window_y);
+      SDL_SetWindowSize(window_, window_w, window_h);
     }
   }
 }
@@ -1619,7 +1684,9 @@ const App::LayoutProfile *App::find_matching_profile() const
   if(!window_) return nullptr;
   const bool is_maximized = is_window_covering_display();
   int cur_w = 0, cur_h = 0;
+  int cur_x = 0, cur_y = 0;
   SDL_GetWindowSize(window_, &cur_w, &cur_h);
+  SDL_GetWindowPosition(window_, &cur_x, &cur_y);
 
   for(const auto &p : layout_profiles_)
   {
@@ -1627,8 +1694,15 @@ const App::LayoutProfile *App::find_matching_profile() const
     if(!is_maximized)
     {
       constexpr int kTolerance = 10;
-      if(std::abs(cur_w - p.window_w) > kTolerance) continue;
-      if(std::abs(cur_h - p.window_h) > kTolerance) continue;
+      int profile_x = p.window_x;
+      int profile_y = p.window_y;
+      int profile_w = p.window_w;
+      int profile_h = p.window_h;
+      sanitize_window_rect_for_displays(profile_x, profile_y, profile_w, profile_h);
+      if(std::abs(cur_x - profile_x) > kTolerance) continue;
+      if(std::abs(cur_y - profile_y) > kTolerance) continue;
+      if(std::abs(cur_w - profile_w) > kTolerance) continue;
+      if(std::abs(cur_h - profile_h) > kTolerance) continue;
     }
     return &p;
   }
