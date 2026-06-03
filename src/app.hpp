@@ -249,6 +249,7 @@ private:
   int active_note_idx_ = 0;
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
+  bool state_dirty_ = false;
   UndoRedo::HistoryManager history_;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;
 

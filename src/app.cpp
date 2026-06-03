@@ -261,6 +261,9 @@ struct FolderFontCache
 
 static std::unordered_map<std::string, FolderFontCache> g_explorer_font_cache;
 static std::unordered_map<std::string, ImFont *> g_note_font_cache;
+// Fonts added this frame but not yet in a rebuilt atlas; flushed in batch at frame start.
+static std::unordered_map<std::string, ImFont *> g_note_font_pending;
+static bool g_note_fonts_dirty = false;
 
 static bool is_font_file_ext(const std::filesystem::path &p)
 {
@@ -305,16 +308,32 @@ static ImFont *get_or_load_note_font(const std::string &abs_path, float size)
   auto it = g_note_font_cache.find(cache_key);
   if(it != g_note_font_cache.end()) return it->second;
 
+  // Already queued for the next batch rebuild — return nullptr until then.
+  if(g_note_font_pending.count(cache_key)) return nullptr;
+
   ImGuiIO &io = ImGui::GetIO();
   ImFont *font = io.Fonts->AddFontFromFileTTF(abs_path.c_str(), size);
   if(font)
   {
-    ImGui_ImplOpenGL3_DestroyFontsTexture();
-    io.Fonts->Build();
-    ImGui_ImplOpenGL3_CreateFontsTexture();
+    g_note_font_pending[cache_key] = font;
+    g_note_fonts_dirty = true;
   }
-  g_note_font_cache[cache_key] = font;
-  return font;
+  return nullptr;
+}
+
+// Rebuild the font atlas once after all new fonts have been queued this frame.
+// Must be called between ImGui::Render() and the next ImGui_ImplOpenGL3_NewFrame().
+static void flush_pending_note_fonts()
+{
+  if(!g_note_fonts_dirty) return;
+  ImGuiIO &io = ImGui::GetIO();
+  ImGui_ImplOpenGL3_DestroyFontsTexture();
+  io.Fonts->Build();
+  ImGui_ImplOpenGL3_CreateFontsTexture();
+  for(auto &[key, font] : g_note_font_pending)
+    g_note_font_cache[key] = font;
+  g_note_font_pending.clear();
+  g_note_fonts_dirty = false;
 }
 
 static std::string copy_font_to_folder(const std::string &src_path,
@@ -772,7 +791,11 @@ int App::run()
         // viewports are enabled, or ImGui fires a sanity-check assertion.
         if(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
           ImGui::UpdatePlatformWindows();
-        SDL_Delay(8);
+        // Block until an event arrives (up to 33 ms) so the thread sleeps instead
+        // of spinning. Push the event back so frame_begin picks it up next iteration.
+        SDL_Event ev;
+        if(SDL_WaitEventTimeout(&ev, 33) == 1)
+          SDL_PushEvent(&ev);
       }
     }
 
@@ -836,11 +859,13 @@ void App::init_sdl_gl()
       strstr(gl_renderer, "d3d12")     || strstr(gl_renderer, "SVGA")      ||
       strstr(gl_renderer, "VMware");
   SDL_GL_SetSwapInterval(software_gl ? 0 : 1);
+#ifndef NDEBUG
   std::fprintf(stderr, "[notepp] GL Renderer : %s\n", gl_renderer ? gl_renderer : "(null — GLEW not yet init)");
   std::fprintf(stderr, "[notepp] GL Vendor   : %s\n", gl_vendor   ? gl_vendor   : "(null)");
   std::fprintf(stderr, "[notepp] Software GL : %s\n", software_gl ? "YES" : "NO");
   std::fprintf(stderr, "[notepp] VSync       : %s  (SDL_GL_SetSwapInterval -> %d)\n",
                SDL_GL_GetSwapInterval() == 0 ? "OFF" : "ON", SDL_GL_GetSwapInterval());
+#endif
 }
 
 void App::init_imgui()
@@ -1961,7 +1986,7 @@ void App::open_or_create_readme()
       for(auto &c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       if(lower == "demo")
       {
-        save_state();
+        state_dirty_ = true;
         active_folder_idx_ = fi;
         active_note_idx_ = ni;
         editing_mode_ = false;
@@ -2188,7 +2213,7 @@ void App::load_note_content_for_active()
   {
     std::filesystem::create_directories(std::filesystem::path(state_file_path_).parent_path());
     markdown_text_.clear();
-    save_state();
+    state_dirty_ = true;
   }
   discard_pending_text_history();
   request_undo_edit_ = false;
@@ -2206,7 +2231,7 @@ void App::set_active_note(int folder_idx, int note_idx)
   else
     note_idx = std::max(0, std::min(note_idx, note_count - 1));
 
-  save_state();
+  state_dirty_ = true;
   const int prev_folder = active_folder_idx_;
   active_folder_idx_ = folder_idx;
   active_note_idx_ = note_idx;
@@ -2253,7 +2278,7 @@ void App::rename_note_storage_for_title(const std::string &new_title)
   state_file_path_ = new_path.string();
   note_title_ = safe_title;
   sync_active_note_meta();
-  save_state();
+  state_dirty_ = true;
 }
 
 void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &new_title)
@@ -2653,7 +2678,7 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   g_drawings_dirty = false;
   layout_dirty_ = false;
   force_note_layout_restore_ = true;
-  save_state();
+  state_dirty_ = true;
 
   history_replay_in_progress_ = previous_replay;
 }
@@ -2708,7 +2733,7 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
     normalize_input_text_buffer(markdown_text_);
   }
 
-  save_state();
+  state_dirty_ = true;
   history_replay_in_progress_ = previous_replay;
 }
 
@@ -3067,8 +3092,13 @@ void App::render_debug_history_window() const
 
 bool App::frame_begin()
 {
-  set_dockers_enabled(dockers_enabled_);
-  set_detached_note_windows_enabled(detached_note_windows_enabled_);
+  {
+    const ImGuiIO &_io = ImGui::GetIO();
+    if(bool(_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) != dockers_enabled_)
+      set_dockers_enabled(dockers_enabled_);
+    if(bool(_io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != detached_note_windows_enabled_)
+      set_detached_note_windows_enabled(detached_note_windows_enabled_);
+  }
   pinned_topmost_viewports_.clear();
 
   bool had_event = false;
@@ -3299,6 +3329,7 @@ bool App::frame_begin()
     do_window_profile_switch();
   }
 
+  flush_pending_note_fonts();
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
@@ -4066,7 +4097,7 @@ void App::frame_ui()
         FolderMeta f;
         f.name = candidate;
         folders_.push_back(std::move(f));
-        save_state();
+        state_dirty_ = true;
         active_folder_idx_ = (int)folders_.size() - 1;
         active_note_idx_ = -1;
         folder_overview_mode_ = true;
@@ -4657,7 +4688,7 @@ void App::frame_ui()
     if(ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
     {
       const int prev_folder = active_folder_idx_;
-      save_state();
+      state_dirty_ = true;
       active_folder_idx_ = fi;
       selected_note_indices.clear();
       selected_stroke_indices.clear();
@@ -4721,7 +4752,7 @@ void App::frame_ui()
           const bool ctrl = ImGui::GetIO().KeyCtrl;
           const bool shift = ImGui::GetIO().KeyShift;
           const int prev_folder = active_folder_idx_;
-          save_state();
+          state_dirty_ = true;
           active_folder_idx_ = fi;
           active_note_idx_ = ni;
           n.hidden = false;
@@ -4854,7 +4885,7 @@ void App::frame_ui()
           if(ImGui::MenuItem(Lang::t("Edit note")))
           {
             const int prev_folder = active_folder_idx_;
-            save_state();
+            state_dirty_ = true;
             active_folder_idx_ = fi;
             active_note_idx_ = ni;
             if(fi != prev_folder)
@@ -5244,7 +5275,7 @@ void App::frame_ui()
           if(ImGui::Selectable(label.c_str(), note_sel))
           {
             const int prev_folder = active_folder_idx_;
-            save_state();
+            state_dirty_ = true;
             active_folder_idx_ = rfi;
             active_note_idx_ = ni;
             n.hidden = false;
@@ -5416,7 +5447,7 @@ void App::frame_ui()
      (!pending_delete_note_indices.empty() || pending_delete_note_idx >= 0))
   {
     push_sidebar_snapshot();
-    save_state();
+    state_dirty_ = true;
     const int fi = pending_delete_note_folder_idx;
     if(fi >= 0 && fi < (int)folders_.size())
     {
@@ -5457,7 +5488,7 @@ void App::frame_ui()
   if(pending_delete_folder_idx >= 0)
   {
     push_sidebar_snapshot();
-    save_state();
+    state_dirty_ = true;
     const int fi = pending_delete_folder_idx;
     if(fi >= 0 && fi < (int)folders_.size())
     {
@@ -6044,7 +6075,7 @@ void App::frame_ui()
         fmt_folder.selection_anchor = cursor;
         refocus_folder_editor = true;
         normalize_input_text_buffer(markdown_text_);
-        save_state();
+        state_dirty_ = true;
       };
 
       static char inventory_builder_title[128] = "Inventory";
@@ -6165,7 +6196,7 @@ void App::frame_ui()
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_bold", ic_bold, sz_bold, "Bold", Lang::t("Bold")))
@@ -6173,7 +6204,7 @@ void App::frame_ui()
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_strike", ic_strike, sz_strike, "Strike", Lang::t("Strike")))
@@ -6181,7 +6212,7 @@ void App::frame_ui()
           push_undo_snapshot();
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_note", ic_note, sz_note, "Note", Lang::t("Note quote")))
@@ -6189,7 +6220,7 @@ void App::frame_ui()
           push_undo_snapshot();
           apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::SameLine();
         ImGui::ColorEdit3("##top_color", (float *)&fmt_folder.color, ImGuiColorEditFlags_NoInputs);
@@ -6200,7 +6231,7 @@ void App::frame_ui()
           const std::string hex = rgba_to_hex(fmt_folder.color);
           apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, hex);
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -6209,7 +6240,7 @@ void App::frame_ui()
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_table", ic_table, sz_table, "Table", Lang::t("Insert markdown table")))
@@ -6409,7 +6440,7 @@ __CURSOR__)MD");
             push_undo_snapshot();
             insert_markdown_table_at_cursor(markdown_text_, fmt_folder, table_builder_rows, table_builder_cols);
             normalize_input_text_buffer(markdown_text_);
-            save_state();
+            state_dirty_ = true;
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
@@ -6467,7 +6498,7 @@ __CURSOR__)MD");
             push_undo_snapshot();
             markdown_text_.insert(static_cast<size_t>(pos), emoji_picker_.last_selected);
             normalize_input_text_buffer(markdown_text_);
-            save_state();
+            state_dirty_ = true;
             const int new_pos = pos + static_cast<int>(emoji_picker_.last_selected.size());
             fmt_folder.cursor_pos = new_pos;
             fmt_folder.sel_start = new_pos;
@@ -7530,7 +7561,7 @@ __CURSOR__)MD");
           if(editing_mode_ && !is_editing_this)
           {
             normalize_input_text_buffer(markdown_text_);
-            save_state();
+            state_dirty_ = true;
             editing_mode_ = false;
           }
           if(!is_editing_this)
@@ -7642,7 +7673,7 @@ __CURSOR__)MD");
           if(is_editing_this)
           {
             normalize_input_text_buffer(markdown_text_);
-            save_state();
+            state_dirty_ = true;
             editing_mode_ = false;
           }
           save_index();
@@ -7755,7 +7786,7 @@ __CURSOR__)MD");
               before_edit,
               markdown_text_,
               should_push_word_granular_undo(before_edit, markdown_text_, fmt_folder));
-          save_state();
+          state_dirty_ = true;
         }
         const bool editor_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         const ImGuiIO &io = ImGui::GetIO();
@@ -7814,7 +7845,7 @@ __CURSOR__)MD");
           {
             markdown_text_ = preview_text;
             normalize_input_text_buffer(markdown_text_);
-            save_state();
+            state_dirty_ = true;
           }
           else if(preview_text != preview_before)
           {
@@ -7893,7 +7924,7 @@ __CURSOR__)MD");
         if(editing_mode_ && !is_editing_this)
         {
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
           editing_mode_ = false;
         }
         if(!is_editing_this)
@@ -8000,7 +8031,7 @@ __CURSOR__)MD");
             fmt_folder.pending_sel_start = new_cursor;
             fmt_folder.pending_sel_end = new_cursor;
             refocus_folder_editor = true;
-            save_state();
+            state_dirty_ = true;
           }
           else
           {
@@ -8046,7 +8077,7 @@ __CURSOR__)MD");
         if(is_editing_this)
         {
           normalize_input_text_buffer(markdown_text_);
-          save_state();
+          state_dirty_ = true;
           editing_mode_ = false;
         }
         save_index();
@@ -8196,7 +8227,7 @@ __CURSOR__)MD");
     if(editing_mode_ && request_exit_edit_mode_)
     {
       normalize_input_text_buffer(markdown_text_);
-      save_state();
+      state_dirty_ = true;
       editing_mode_ = false;
       request_exit_edit_mode_ = false;
     }
@@ -8421,7 +8452,7 @@ __CURSOR__)MD");
     if(preview_changed)
     {
       const std::string preview_state_after = capture_preview_state_snapshot();
-      save_state();
+      state_dirty_ = true;
       record_preview_history_action("Edit preview widget", state_file_path_, preview_before, markdown_text_, preview_state_before, preview_state_after);
     }
     if(request_undo_edit_ && history_.can_undo())
@@ -8521,7 +8552,7 @@ __CURSOR__)MD");
           before_edit,
           markdown_text_,
           should_push_word_granular_undo(before_edit, markdown_text_, fmt));
-      save_state();
+      state_dirty_ = true;
     }
     // Image drop target for the single-note editor
     if(ImGui::BeginDragDropTarget())
@@ -8548,7 +8579,7 @@ __CURSOR__)MD");
         fmt.pending_sel_end = new_cursor;
         refocus_editor = true;
         update_pending_text_history("Insert image", before_drop, markdown_text_, true);
-        save_state();
+        state_dirty_ = true;
       }
       ImGui::EndDragDropTarget();
     }
@@ -8674,7 +8705,7 @@ __CURSOR__)MD");
       if(applied)
       {
         normalize_input_text_buffer(markdown_text_);
-        save_state();
+        state_dirty_ = true;
         fmt.sel_start = anchor_sel_start;
         fmt.sel_end = anchor_sel_end;
       }
@@ -8700,7 +8731,7 @@ __CURSOR__)MD");
   if(editing_mode_ && request_exit_edit_mode_)
   {
     normalize_input_text_buffer(markdown_text_);
-    save_state();
+    state_dirty_ = true;
     editing_mode_ = false;
     request_exit_edit_mode_ = false;
     show_palette = false;
@@ -8744,6 +8775,11 @@ __CURSOR__)MD");
   {
     save_index();
     layout_dirty_ = false;
+  }
+  if(state_dirty_)
+  {
+    save_state();
+    state_dirty_ = false;
   }
   render_search_dialog();
   render_debug_history_window();
