@@ -9,6 +9,9 @@
 #endif
 
 #include "nfd.hpp"
+#include "tiny_json/tiny_json.hpp"
+
+using TinyJson::json_escape;
 
 namespace fs = std::filesystem;
 
@@ -59,7 +62,7 @@ void save_last_project_path(const fs::path &path)
     return;
 
   file << "{\n";
-  file << "  \"lastProjectPath\": \"" << path.generic_string() << "\"\n";
+  file << "  \"lastProjectPath\": \"" << json_escape(path.generic_string()) << "\"\n";
   file << "}\n";
 
   // Maintain the recent projects list (most recent first, max 10)
@@ -167,7 +170,7 @@ ProjectInfo create_or_open_project(const fs::path &root)
     std::ofstream file(project.projectFile);
 
     file << "{\n";
-    file << "  \"name\": \"" << root.filename().generic_string() << "\",\n";
+    file << "  \"name\": \"" << json_escape(root.filename().generic_string()) << "\",\n";
     file << "  \"version\": 1,\n";
     file << "  \"notesPath\": \"notes\",\n";
     file << "  \"assetsPath\": \"assets\"\n";
