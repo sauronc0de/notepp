@@ -70,7 +70,13 @@ size_t find_matching(std::string_view s, size_t start, char open, char close)
   for(size_t i = start; i < s.size(); ++i)
   {
     const char c = s[i];
-    if(c == '"' && (i == 0 || s[i - 1] != '\\')) in_string = !in_string;
+    if(c == '"')
+    {
+      size_t bs = 0;
+      size_t j = i;
+      while(j > 0 && s[j - 1] == '\\') { ++bs; --j; }
+      if(bs % 2 == 0) in_string = !in_string;
+    }
     if(in_string) continue;
     if(c == open)
       ++depth;
@@ -93,7 +99,13 @@ std::string json_find_string(std::string_view obj, std::string_view key)
   size_t q2 = q1 + 1;
   while(q2 < obj.size())
   {
-    if(obj[q2] == '"' && obj[q2 - 1] != '\\') break;
+    if(obj[q2] == '"')
+    {
+      size_t bs = 0;
+      size_t j = q2;
+      while(j > 0 && obj[j - 1] == '\\') { ++bs; --j; }
+      if(bs % 2 == 0) break;
+    }
     ++q2;
   }
   if(q2 >= obj.size()) return {};
