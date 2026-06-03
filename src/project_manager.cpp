@@ -9,7 +9,7 @@
 #endif
 
 #include "nfd.hpp"
-#include "tiny_json/tiny_json.hpp"
+#include "tiny_json.hpp"
 
 using TinyJson::json_escape;
 
