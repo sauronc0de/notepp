@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <numeric>
 #include <sstream>
 #include <unordered_map>
