@@ -38,6 +38,12 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h>
+#include <shlobj.h>
+#endif
+#if defined(__APPLE__)
+#include <unistd.h>
+#include <sys/wait.h>
 #endif
 #include <vector>
 
@@ -327,13 +333,20 @@ static std::string copy_font_to_folder(const std::string &src_path,
 static void reveal_in_file_explorer(const std::string &file_path)
 {
 #if defined(_WIN32)
-  std::string escaped = file_path;
-  for(auto &c : escaped)
-    if(c == '/') c = '\\';
-  std::string cmd = "explorer.exe /select,\"" + escaped + "\"";
-  (void)system(cmd.c_str());
+  std::wstring wpath = std::filesystem::path(file_path).wstring();
+  PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(wpath.c_str());
+  if(pidl) {
+    SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
+    ILFree(pidl);
+  }
 #elif defined(__APPLE__)
-  (void)system(("open -R \"" + file_path + "\"").c_str());
+  pid_t pid = fork();
+  if(pid == 0) {
+    const char *args[] = {"open", "-R", file_path.c_str(), nullptr};
+    execvp("open", (char *const *)args);
+    _exit(127);
+  }
+  if(pid > 0) waitpid(pid, nullptr, 0);
 #else
   const std::string dir = std::filesystem::path(file_path).parent_path().string();
   SDL_OpenURL(("file://" + dir).c_str());
@@ -343,13 +356,17 @@ static void reveal_in_file_explorer(const std::string &file_path)
 static void open_directory(const std::filesystem::path &dir)
 {
 #if defined(_WIN32)
-  std::string d = dir.string();
-  for(auto &c : d)
-    if(c == '/') c = '\\';
-  std::string cmd = "explorer.exe \"" + d + "\"";
-  (void)system(cmd.c_str());
+  std::wstring wpath = dir.wstring();
+  ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
-  (void)system(("open \"" + dir.string() + "\"").c_str());
+  std::string dstr = dir.string();
+  pid_t pid = fork();
+  if(pid == 0) {
+    const char *args[] = {"open", dstr.c_str(), nullptr};
+    execvp("open", (char *const *)args);
+    _exit(127);
+  }
+  if(pid > 0) waitpid(pid, nullptr, 0);
 #else
   SDL_OpenURL(("file://" + dir.string()).c_str());
 #endif
