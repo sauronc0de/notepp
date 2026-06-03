@@ -175,6 +175,7 @@ private:
 #if USE_PORTABLE_PATHS
   bool request_open_project_ = false;
 #endif
+  bool reset_sidebar_state_ = false;
   bool request_close_search_ = false;
   bool search_window_visible_ = false;
   bool search_request_window_focus_ = false;
