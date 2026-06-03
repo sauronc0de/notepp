@@ -843,7 +843,14 @@ void App::init_sdl_gl()
 
   gl_context_ = SDL_GL_CreateContext(window_);
   if(!gl_context_)
-    throw std::runtime_error(std::string("SDL_GL_CreateContext failed: ") + SDL_GetError());
+  {
+    const std::string msg = std::string("OpenGL 3.2 Core context creation failed: ") + SDL_GetError() +
+        "\n\nNotepp requires OpenGL 3.2 Core or newer. "
+        "Very old integrated GPUs (e.g. Intel HD 2000/3000, Sandy Bridge) do not meet this requirement. "
+        "Please update your graphics drivers or run on a newer GPU.";
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Unsupported GPU", msg.c_str(), window_);
+    throw std::runtime_error(msg);
+  }
 
   SDL_GL_MakeCurrent(window_, gl_context_);
 
@@ -877,12 +884,6 @@ void App::init_imgui()
 
   // Pick a font family that has Bold/Italic files available.
   io.Fonts->AddFontDefault();
-
-  // Example with Roboto (put these files in assets/fonts or wherever you want):
-  // - Roboto-Regular.ttf
-  // - Roboto-Italic.ttf
-  // - Roboto-Bold.ttf
-  // - Roboto-BoldItalic.ttf
 
   constexpr float kUiFontSize = 14.0f;
   auto merge_emoji_fallback = [&](const char *emoji_font_path) {
@@ -1037,7 +1038,7 @@ void App::load_state()
   detached_note_windows_enabled_ = false;
   dockers_enabled_ = false;
 
-  bool uuid_migrated_ = false;
+  bool uuid_migrated = false;
   std::ifstream in_index(index_file_);
   if(in_index)
   {
@@ -1088,7 +1089,7 @@ void App::load_state()
                   {
                     NoteMeta n;
                     n.id = json_find_string(nobj, "id");
-                    if(n.id.empty()) { n.id = generate_uuid(); uuid_migrated_ = true; }
+                    if(n.id.empty()) { n.id = generate_uuid(); uuid_migrated = true; }
                     n.title = json_find_string(nobj, "title");
                     n.path = json_find_string(nobj, "path");
                     n.pos_x = (float)json_find_int(nobj, "x", 0);
@@ -1195,7 +1196,7 @@ void App::load_state()
   load_drawings_state();
   load_note_clipboard();
   load_note_content_for_active();
-  if(uuid_migrated_) save_index();
+  if(uuid_migrated) save_index();
   load_profiles();
 }
 

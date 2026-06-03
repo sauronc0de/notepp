@@ -32,8 +32,11 @@ fs::path get_appdata_dir()
 
   return result / "Notepp";
 #else
-  const char *home = std::getenv("HOME");
+  const char *xdg = std::getenv("XDG_CONFIG_HOME");
+  if(xdg && *xdg)
+    return fs::path(xdg) / "Notepp";
 
+  const char *home = std::getenv("HOME");
   if(home)
     return fs::path(home) / ".config" / "Notepp";
 
