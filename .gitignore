@@ -5,6 +5,7 @@ dist/
 
 # Ignore saves folder
 data/
+config/
 
 # Ignore imgui Views config
 imgui.ini
