@@ -241,6 +241,7 @@ private:
   bool manage_profiles_open_ = false;
   // Borderless window drag
   bool window_drag_active_ = false;
+  bool window_drag_was_maximized_ = false;
   int  window_drag_start_mx_ = 0, window_drag_start_my_ = 0;
   int  window_drag_start_wx_ = 0, window_drag_start_wy_ = 0;
   std::vector<PendingDroppedFile> pending_dropped_files_;

@@ -157,6 +157,42 @@ int display_index_for_window(SDL_Window *window)
   return display_count > 0 ? 0 : -1;
 }
 
+int display_index_for_point(int x, int y)
+{
+  const int display_count = SDL_GetNumVideoDisplays();
+  for(int di = 0; di < display_count; ++di)
+  {
+    SDL_Rect bounds{};
+    if(SDL_GetDisplayBounds(di, &bounds) != 0) continue;
+    if(x >= bounds.x && x < bounds.x + bounds.w &&
+       y >= bounds.y && y < bounds.y + bounds.h)
+      return di;
+  }
+  return -1;
+}
+
+int best_display_index_for_rect(const SDL_Rect &rect)
+{
+  const int display_count = SDL_GetNumVideoDisplays();
+  int best_index = -1;
+  int best_area = -1;
+
+  for(int di = 0; di < display_count; ++di)
+  {
+    SDL_Rect bounds{};
+    if(!get_display_bounds(di, bounds)) continue;
+
+    const int area = rect_intersection_area(rect, bounds);
+    if(best_index < 0 || area > best_area)
+    {
+      best_index = di;
+      best_area = area;
+    }
+  }
+
+  return best_index;
+}
+
 void sanitize_window_rect_for_displays(int &x, int &y, int &w, int &h)
 {
   static constexpr int kMinWindowW = 320;
@@ -213,6 +249,43 @@ void apply_borderless_maximized_window(SDL_Window *window)
   if(display_index < 0 || !get_display_bounds(display_index, bounds))
   {
     SDL_MaximizeWindow(window);
+    return;
+  }
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0)
+    SDL_RestoreWindow(window);
+
+  SDL_SetWindowResizable(window, SDL_TRUE);
+  SDL_SetWindowBordered(window, SDL_FALSE);
+  SDL_SetWindowMinimumSize(window, 320, 200);
+  SDL_SetWindowMaximumSize(window, 0, 0);
+
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
+  SDL_SetWindowSize(window, bounds.w, bounds.h);
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
+}
+
+void apply_borderless_maximized_window(SDL_Window *window, int preferred_x, int preferred_y, int preferred_w, int preferred_h)
+{
+  if(window == nullptr) return;
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+    SDL_SetWindowFullscreen(window, 0);
+
+  if(current_video_driver_is_wayland())
+  {
+    SDL_MaximizeWindow(window);
+    return;
+  }
+
+  SDL_Rect preferred{preferred_x, preferred_y, std::max(1, preferred_w), std::max(1, preferred_h)};
+  int display_index = best_display_index_for_rect(preferred);
+  if(display_index < 0) display_index = display_index_for_window(window);
+
+  SDL_Rect bounds{};
+  if(display_index < 0 || !get_display_bounds(display_index, bounds))
+  {
+    apply_borderless_maximized_window(window);
     return;
   }
 
@@ -1618,9 +1691,20 @@ void App::capture_to_active_profile()
   if(window_)
   {
     profile.window_maximized = is_window_covering_display();
-    // Only store position/size for non-maximized profiles; maximized ones
-    // restore through the window manager without entering fullscreen mode.
-    if(!profile.window_maximized)
+    // Store monitor bounds for maximized profiles so multi-monitor restores are deterministic.
+    if(profile.window_maximized)
+    {
+      const int display_index = display_index_for_window(window_);
+      SDL_Rect bounds{};
+      if(display_index >= 0 && get_display_bounds(display_index, bounds))
+      {
+        profile.window_x = bounds.x;
+        profile.window_y = bounds.y;
+        profile.window_w = bounds.w;
+        profile.window_h = bounds.h;
+      }
+    }
+    else
     {
       SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
       SDL_GetWindowSize(window_, &profile.window_w, &profile.window_h);
@@ -1673,7 +1757,8 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
   {
     if(profile.window_maximized)
     {
-      apply_borderless_maximized_window(window_);
+      apply_borderless_maximized_window(
+          window_, profile.window_x, profile.window_y, profile.window_w, profile.window_h);
     }
     else
     {
@@ -1770,9 +1855,22 @@ const App::LayoutProfile *App::find_matching_profile() const
   for(const auto &p : layout_profiles_)
   {
     if(p.window_maximized != is_maximized) continue;
-    if(!is_maximized)
+    constexpr int kTolerance = 10;
+    if(is_maximized)
     {
-      constexpr int kTolerance = 10;
+      SDL_Rect preferred{p.window_x, p.window_y, std::max(1, p.window_w), std::max(1, p.window_h)};
+      const int display_index = best_display_index_for_rect(preferred);
+      SDL_Rect profile_bounds{};
+      if(display_index >= 0 && get_display_bounds(display_index, profile_bounds))
+      {
+        if(std::abs(cur_x - profile_bounds.x) > kTolerance) continue;
+        if(std::abs(cur_y - profile_bounds.y) > kTolerance) continue;
+        if(std::abs(cur_w - profile_bounds.w) > kTolerance) continue;
+        if(std::abs(cur_h - profile_bounds.h) > kTolerance) continue;
+      }
+    }
+    else
+    {
       int profile_x = p.window_x;
       int profile_y = p.window_y;
       int profile_w = p.window_w;
@@ -3467,7 +3565,24 @@ bool App::frame_begin()
     }
     else
     {
+      if(window_drag_was_maximized_)
+      {
+        int display_index = display_index_for_point(mx, my);
+        if(display_index < 0) display_index = display_index_for_window(window_);
+
+        SDL_Rect bounds{};
+        if(display_index >= 0 && get_display_bounds(display_index, bounds))
+        {
+          apply_borderless_maximized_window(window_, bounds.x, bounds.y, bounds.w, bounds.h);
+          capture_to_active_profile();
+          save_profiles();
+          save_index();
+          window_profile_check_pending_ = false;
+          window_profile_check_delay_ = 0;
+        }
+      }
       window_drag_active_ = false;
+      window_drag_was_maximized_ = false;
     }
   }
 
@@ -7129,12 +7244,10 @@ __CURSOR__)MD");
                                      mp.y >= tb_pos.y && mp.y < tb_pos.y + tb_size.y);
           if(over_toolbar && ImGui::IsMouseClicked(0) && !ImGui::IsAnyItemHovered())
           {
-            if(!is_window_covering_display())
-            {
-              SDL_GetGlobalMouseState(&window_drag_start_mx_, &window_drag_start_my_);
-              SDL_GetWindowPosition(window_, &window_drag_start_wx_, &window_drag_start_wy_);
-              window_drag_active_ = true;
-            }
+            window_drag_was_maximized_ = is_window_covering_display();
+            SDL_GetGlobalMouseState(&window_drag_start_mx_, &window_drag_start_my_);
+            SDL_GetWindowPosition(window_, &window_drag_start_wx_, &window_drag_start_wy_);
+            window_drag_active_ = true;
           }
         }
       }
