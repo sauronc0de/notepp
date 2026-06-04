@@ -3573,8 +3573,8 @@ bool App::frame_begin()
         SDL_Rect bounds{};
         if(display_index >= 0 && get_display_bounds(display_index, bounds))
         {
-          apply_borderless_maximized_window(window_, bounds.x, bounds.y, bounds.w, bounds.h);
           capture_to_active_profile();
+          apply_borderless_maximized_window(window_, bounds.x, bounds.y, bounds.w, bounds.h);
           save_profiles();
           save_index();
           window_profile_check_pending_ = false;
@@ -8237,7 +8237,7 @@ __CURSOR__)MD");
       const ImVec2 clamped_pos(
           std::max(bg_p0.x, std::min(pos.x, std::max(bg_p0.x, bg_p1.x - size.x))),
           std::max(bg_p0.y, std::min(pos.y, std::max(bg_p0.y, bg_p1.y - size.y))));
-      if(!allow_platform_windows &&
+      if(!allow_platform_windows && !force_note_layout_restore_ &&
          (std::fabs(clamped_pos.x - pos.x) > 0.01f || std::fabs(clamped_pos.y - pos.y) > 0.01f))
       {
         ImGui::SetWindowPos(window_id.c_str(), clamped_pos, ImGuiCond_Always);
@@ -8575,8 +8575,9 @@ __CURSOR__)MD");
 
   if(active_note.has_layout)
   {
-    ImGui::SetNextWindowPos(ImVec2(active_note.pos_x, active_note.pos_y), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, active_note.width), std::max(140.0f, active_note.height)), ImGuiCond_FirstUseEver);
+    const ImGuiCond cond = force_note_layout_restore_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowPos(ImVec2(active_note.pos_x, active_note.pos_y), cond);
+    ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, active_note.width), std::max(140.0f, active_note.height)), cond);
   }
   else
   {
@@ -9031,6 +9032,7 @@ __CURSOR__)MD");
 
   ImGui::End();
   ImGui::PopStyleColor(active_folder_theme_count);
+  force_note_layout_restore_ = false;
 
   if(!deferred_sidebar_snapshot_before.empty())
   {
