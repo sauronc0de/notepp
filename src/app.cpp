@@ -8095,9 +8095,9 @@ __CURSOR__)MD");
       {
         preview_text = read_file_text(n.path);
         const std::string preview_before = preview_text;
-        const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
+        const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize);
         MarkdownView::set_render_width(preview_w);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + preview_w);
         set_preview_document_path(n.path);
         const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(preview_text);
         const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;
@@ -8224,7 +8224,7 @@ __CURSOR__)MD");
             2.0f);
       }
 
-      if(!is_editing_this)
+      if(!is_editing_this && std::fabs(auto_h - size.y) > 1.5f)
       {
         ImGui::SetWindowSize(ImVec2(size.x, auto_h));
       }
@@ -8706,10 +8706,10 @@ __CURSOR__)MD");
     const float start_y = ImGui::GetCursorPosY();
     const std::string preview_before = markdown_text_;
     const std::string preview_state_before = capture_preview_state_snapshot();
-    const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f);
+    const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize);
     MarkdownView::set_render_width(preview_w);
 
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + preview_w);
     set_preview_document_path(state_file_path_);
     const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
     const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;

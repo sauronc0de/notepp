@@ -254,8 +254,8 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
 {
   if(!chart.title.empty()) ImGui::TextUnformatted(chart.title.c_str());
 
-  const float avail_w = ImGui::GetContentRegionAvail().x;
-  const float chart_w = std::floor(std::max(120.0f, std::min(240.0f, avail_w * 0.45f)));
+  const float stable_w = ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize;
+  const float chart_w = std::floor(std::max(120.0f, std::min(240.0f, std::max(0.0f, stable_w) * 0.45f)));
   const float chart_h = chart_w;
 
   ImGui::PushID(id);
