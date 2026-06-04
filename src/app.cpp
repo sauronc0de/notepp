@@ -7075,7 +7075,7 @@ __CURSOR__)MD");
               if(is_active)
               {
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.75f, 0.35f, 1.0f));
-                ImGui::TextUnformatted("●");
+                ImGui::TextUnformatted("○");
                 ImGui::PopStyleColor();
               }
               else
