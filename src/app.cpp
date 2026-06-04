@@ -773,7 +773,8 @@ void load_drawings_state()
 
 void save_drawings_state()
 {
-  std::ofstream out(g_drawings_file, std::ios::trunc);
+  std::filesystem::path tmp = g_drawings_file; tmp += ".tmp";
+  std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
 
   for(const auto &[folder, strokes] : g_folder_drawings)
@@ -797,6 +798,8 @@ void save_drawings_state()
     }
   }
 
+  out.close();
+  std::filesystem::rename(tmp, g_drawings_file);
   g_drawings_dirty = false;
 }
 
@@ -838,7 +841,8 @@ void load_note_clipboard()
 
 void App::save_note_clipboard()
 {
-  std::ofstream out(g_clipboard_file, std::ios::trunc);
+  std::filesystem::path tmp = g_clipboard_file; tmp += ".tmp";
+  std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
@@ -862,6 +866,8 @@ void App::save_note_clipboard()
       out << ",\n  \"font_size\": " << ci.font_size;
   }
   out << "\n}\n";
+  out.close();
+  std::filesystem::rename(tmp, g_clipboard_file);
   g_clipboard_dirty = false;
 }
 
@@ -1419,8 +1425,8 @@ void App::save_state()
     if(out) out << markdown_text_;
   }
   save_index();
-  save_drawings_state();
-  save_note_clipboard();
+  if(g_drawings_dirty) save_drawings_state();
+  if(g_clipboard_dirty) save_note_clipboard();
   capture_to_active_profile();
   save_profiles();
 
