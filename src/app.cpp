@@ -8099,7 +8099,7 @@ __CURSOR__)MD");
       }
       else if(note_window_visible)
       {
-        preview_text = read_file_text(n.path);
+        preview_text = is_current_note_document ? markdown_text_ : read_file_text(n.path);
         const std::string preview_before = preview_text;
         const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize);
         MarkdownView::set_render_width(preview_w);
@@ -8525,6 +8525,11 @@ __CURSOR__)MD");
     {
       save_index();
       layout_dirty_ = false;
+    }
+    if(state_dirty_)
+    {
+      save_state();
+      state_dirty_ = false;
     }
     render_search_dialog();
     render_debug_history_window();
