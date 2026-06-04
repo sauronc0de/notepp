@@ -461,7 +461,13 @@ void imgui_md::render_text(const char *str, const char *str_end)
     if(!m_is_table_header)
     {
 
-      float wl = ImGui::GetContentRegionAvail().x;
+      // Use a scrollbar-independent wrap width: derive from the total window width so
+      // the wrap position stays the same whether or not a vertical scrollbar is present.
+      // GetContentRegionAvail().x shrinks by ScrollbarSize when a scrollbar appears,
+      // which shifts line-breaks, changes content height, and causes frame-to-frame
+      // oscillation (visible as a blinking scrollbar).
+      float wl = ImGui::GetWindowWidth() - s.WindowPadding.x - s.ScrollbarSize - ImGui::GetCursorPosX();
+      wl = std::max(1.0f, wl);
 
       if(m_is_table_body)
       {
