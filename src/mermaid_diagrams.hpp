@@ -231,4 +231,18 @@ struct TreeViewDiagram { std::vector<TVNode> nodes; };
 bool parse_treeview(std::string_view src, TreeViewDiagram &out);
 void render_treeview(const TreeViewDiagram &d, int id);
 
+// ── Interactive edit back-channel ─────────────────────────────────────────
+// render_* functions write here when the user edits a diagram interactively.
+// render_preview_with_task_checkboxes_ex reads and applies it to the markdown.
+struct PendingEdit {
+    int         id = -1;   // line_start byte offset (same 'id' passed to render_*)
+    std::string body;      // new mermaid block body to replace the old one
+    bool active() const { return id >= 0; }
+    void clear()        { id = -1; body.clear(); }
+};
+extern PendingEdit g_pending_edit;
+// Set by render_* when it handles a right-click; read + cleared by markdown_support
+// so the note-level "Copy all" popup does not open on the same click.
+extern bool g_consumed_right_click;
+
 } // namespace MermaidDiagrams

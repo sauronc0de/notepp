@@ -1797,15 +1797,76 @@ bool parse_packet(std::string_view src, PacketDiagram &out)
   return header && !out.fields.empty();
 }
 
+// ── Interactive packet diagram helpers ───────────────────────────────────────
+
+PendingEdit g_pending_edit;
+bool        g_consumed_right_click = false;
+
+static std::string serialize_packet(const PacketDiagram &d)
+{
+  const PacketConfig &c = d.config;
+  std::ostringstream s;
+  s << "%%{init: {'packet': {"
+    << "'bitWidth': "    << (int)c.bitWidth
+    << ", 'rowHeight': " << (int)c.rowHeight
+    << ", 'bitsPerRow': "<< c.bitsPerRow
+    << ", 'showBits': "  << (c.showBits   ? "true" : "false")
+    << ", 'paddingX': "  << (int)c.paddingX
+    << ", 'paddingY': "  << (int)c.paddingY
+    << ", 'showLegend': "<< (c.showLegend ? "true" : "false")
+    << "}}}%%\n"
+    << "packet-beta\n";
+  if (!d.title.empty()) s << "  title \"" << d.title << "\"\n";
+  int cur = 0;
+  for (auto &f : d.fields) {
+    int bits = std::max(1, f.end - f.start + 1);
+    s << "  " << cur << "-" << (cur + bits - 1) << ": \"" << f.name << "\"\n";
+    cur += bits;
+  }
+  return s.str();
+}
+
+// Rebuild sequential start/end positions from each field's current bit count.
+static void rebuild_bits(std::vector<PacketField> &fields)
+{
+  int cur = 0;
+  for (auto &f : fields) {
+    int bits = std::max(1, f.end - f.start + 1);
+    f.start = cur; f.end = cur + bits - 1; cur = f.end + 1;
+  }
+}
+
+struct PacketEditState {
+  PacketConfig cfg_edit;                 // config being edited in the config popup
+  bool         cfg_open     = false;
+  int          ctx_fi       = -1;        // field right-clicked
+  int          rename_fi    = -1;
+  char         rename_buf[256] = {};
+  bool         rename_focus = false;
+  int          add_after    = -2;        // -2=closed, -1=prepend, >=0=insert after fi
+  char         add_name[256] = {};
+  int          add_bits     = 8;
+  bool         add_focus    = false;
+  bool         drag_active  = false;
+  int          drag_fi      = -1;
+  std::vector<PacketField> drag_fields;
+};
+static std::unordered_map<int, PacketEditState> s_pkt_states;
+
 void render_packet(const PacketDiagram &d, int id)
 {
   ImGui::PushID(id);
+  auto &es = s_pkt_states[id];
+
+  // Working fields — during drag we show the live-swapped order
+  const std::vector<PacketField> &wf = es.drag_active ? es.drag_fields : d.fields;
+  const int NF = (int)wf.size();
+
   const PacketConfig &cfg = d.config;
   const float bit_w = cfg.bitWidth, fh = cfg.rowHeight;
   const float px = cfg.paddingX, py = cfg.paddingY;
   const float hdr_h = cfg.showBits ? 16.0f : 0.0f;
-  const float sq = 10.0f, lgap = 5.0f, igap = 10.0f;  // legend geometry
-  // Fixed outer canvas margin — paddingX controls only inter-field gaps, not outer edges.
+  const float sq = 10.0f, lgap = 5.0f, igap = 10.0f;
   const float outer = 4.0f;
 
   int total  = std::max(d.total_bits, 1);
@@ -1813,14 +1874,11 @@ void render_packet(const PacketDiagram &d, int id)
   int n_rows = (total + bpr - 1) / bpr;
   float cw   = (float)bpr * bit_w + outer * 2.0f;
 
-  // ── Pre-compute per-field metadata ──────────────────────────────────────
-  const int NF = (int)d.fields.size();
-  // ext[fi]: label can't fit in the widest row-segment → goes to legend strip
-  // label_row[fi]: which row gets the inline label (widest segment)
+  // ── Per-field metadata ───────────────────────────────────────────────────
   std::vector<bool> ext(NF, false);
   std::vector<int>  label_row(NF, 0);
   for (int fi = 0; fi < NF; ++fi) {
-    auto &f = d.fields[fi];
+    auto &f = wf[fi];
     int best_seg = 0, best_r = 0;
     for (int row = 0; row < n_rows; ++row) {
       int rs = row * bpr, re = std::min(rs + bpr, total) - 1;
@@ -1828,21 +1886,17 @@ void render_packet(const PacketDiagram &d, int id)
       if (fs <= fe) { int seg = fe - fs + 1; if (seg > best_seg) { best_seg = seg; best_r = row; } }
     }
     label_row[fi] = best_r;
-    ImVec2 ts = ImGui::CalcTextSize(f.name.c_str());
-    // Account for paddingX insets reducing the visual width
-    ext[fi] = ts.x > (float)best_seg * bit_w - px - 4.0f;
+    ext[fi] = ImGui::CalcTextSize(f.name.c_str()).x > (float)best_seg * bit_w - px - 4.0f;
   }
   bool any_ext = false;
   for (bool b : ext) if (b) { any_ext = true; break; }
 
-  // ── Pre-compute legend height (may wrap to multiple lines) ───────────────
   float legend_h = 0.0f;
   if (any_ext && cfg.showLegend) {
     float avail_w = cw - outer * 2.0f, lx_s = 0.0f; int lrows = 1;
     for (int fi = 0; fi < NF; ++fi) {
       if (!ext[fi]) continue;
-      ImVec2 ts = ImGui::CalcTextSize(d.fields[fi].name.c_str());
-      float iw = sq + lgap + ts.x + igap;
+      float iw = sq + lgap + ImGui::CalcTextSize(wf[fi].name.c_str()).x + igap;
       if (lx_s + iw > avail_w && lx_s > 0.0f) { lx_s = 0.0f; lrows++; }
       lx_s += iw;
     }
@@ -1851,52 +1905,122 @@ void render_packet(const PacketDiagram &d, int id)
 
   const float title_h  = d.title.empty() ? 0.0f : (py * 0.5f + 16.0f);
   const float row_step = hdr_h + fh + py;
-  float ch = py * 0.5f + title_h + (float)n_rows * row_step + legend_h;
+  const float ch = py * 0.5f + title_h + (float)n_rows * row_step + legend_h;
 
+  // ── Origin + vis_rect (defined before InvisibleButton so frects can be built) ─
   const ImVec2 orig = ImGui::GetCursorScreenPos();
+
+  // vis_rect: (x, width) of the visual (inset) rect for a field segment [fs,fe]
+  // within row [rs,re]. paddingX/2 inset on each non-edge side.
+  auto vis_rect = [&](int rs, int re, int fs, int fe) -> std::pair<float,float> {
+    float li = (fs == rs) ? 0.0f : px * 0.5f;
+    float ri = (fe == re) ? 0.0f : px * 0.5f;
+    float vfx = orig.x + outer + (float)(fs - rs) * bit_w + li;
+    float vfw = (float)(fe - fs + 1) * bit_w - li - ri;
+    if (vfw < 1.0f) { vfx -= li; vfw += li + ri; }
+    return {vfx, vfw};
+  };
+
+  // Pre-compute field rects for hit-testing (hover + drag)
+  struct FR { int fi; float x, y, w; };
+  std::vector<FR> frects;
+  frects.reserve(NF * n_rows);
+  {
+    const float yb0 = orig.y + py * 0.5f + title_h;
+    for (int row = 0; row < n_rows; ++row) {
+      int rs = row * bpr, re = std::min(rs + bpr, total) - 1;
+      float fy0 = yb0 + (float)row * row_step + hdr_h;
+      for (int fi = 0; fi < NF; ++fi) {
+        int fs = std::max(wf[fi].start, rs), fe = std::min(wf[fi].end, re);
+        if (fs > fe) continue;
+        auto [vfx, vfw] = vis_rect(rs, re, fs, fe);
+        frects.push_back({fi, vfx, fy0, vfw});
+      }
+    }
+  }
+
+  // ── InvisibleButton ───────────────────────────────────────────────────────
   ImGui::InvisibleButton("##pkt", ImVec2(cw, ch));
+  const bool pkt_hovered = ImGui::IsItemHovered();
+  const bool pkt_active  = ImGui::IsItemActive();
+
+  // ── Hover + drag detection ────────────────────────────────────────────────
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  int hovered_fi = -1;
+  for (auto &r : frects)
+    if (mouse.x >= r.x && mouse.x < r.x + r.w && mouse.y >= r.y && mouse.y < r.y + fh)
+      { hovered_fi = r.fi; break; }
+  if (!pkt_hovered && !es.drag_active) hovered_fi = -1;
+
+  // Drag start (require 5 px movement to distinguish from click)
+  if (!es.drag_active && pkt_active && ImGui::IsMouseDragging(0, 5.0f)) {
+    ImVec2 dp = ImGui::GetMouseDragDelta(0);
+    ImVec2 pp = {mouse.x - dp.x, mouse.y - dp.y};
+    for (auto &r : frects)
+      if (pp.x >= r.x && pp.x < r.x + r.w && pp.y >= r.y && pp.y < r.y + fh)
+        { es.drag_active = true; es.drag_fi = r.fi; es.drag_fields = d.fields; break; }
+  }
+
+  // Drag update / end
+  if (es.drag_active) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    if (!ImGui::IsMouseDown(0)) {
+      // Commit if any field name or bit count changed
+      bool changed = false;
+      for (int i = 0; i < (int)d.fields.size() && i < (int)es.drag_fields.size(); ++i)
+        if (d.fields[i].name != es.drag_fields[i].name ||
+            (d.fields[i].end - d.fields[i].start) != (es.drag_fields[i].end - es.drag_fields[i].start))
+          { changed = true; break; }
+      if (changed) {
+        PacketDiagram nd = d; nd.fields = es.drag_fields;
+        nd.total_bits = 0; for (auto &f : nd.fields) nd.total_bits = std::max(nd.total_bits, f.end + 1);
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      es.drag_active = false; es.drag_fi = -1; es.drag_fields.clear();
+    } else if (hovered_fi >= 0 && hovered_fi != es.drag_fi &&
+               hovered_fi < (int)es.drag_fields.size()) {
+      // Swap entire field (name + bit count), then recompute sequential positions
+      std::swap(es.drag_fields[es.drag_fi], es.drag_fields[hovered_fi]);
+      rebuild_bits(es.drag_fields);
+      es.drag_fi = hovered_fi;
+    }
+  } else if (hovered_fi >= 0) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+  }
+
+  // ── Draw list + colors ────────────────────────────────────────────────────
   ImDrawList *dl   = ImGui::GetWindowDrawList();
   const ImU32 tcol = ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
   const ImU32 bord = ImGui::GetColorU32(ImGuiCol_Border);
-  // Label background: semi-opaque window bg — readable in both light and dark themes
+  const ImU32 hcol = ImGui::GetColorU32(ImGuiCol_Text, 0.55f);
   ImVec4 lbg4 = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg); lbg4.w = 0.88f;
   const ImU32 lbg = ImGui::GetColorU32(lbg4);
 
   float y_base = orig.y + py * 0.5f;
 
-  // ── Title ────────────────────────────────────────────────────────────────
+  // ── Title ─────────────────────────────────────────────────────────────────
   if (!d.title.empty()) {
     ImVec2 ts = ImGui::CalcTextSize(d.title.c_str());
     dl->AddText(ImVec2(orig.x + (cw - ts.x) * 0.5f, y_base), tcol, d.title.c_str());
     y_base += title_h;
   }
 
-  // ── Rows ─────────────────────────────────────────────────────────────────
+  // ── Rows ──────────────────────────────────────────────────────────────────
   for (int row = 0; row < n_rows; ++row) {
     int rs = row * bpr, re = std::min(rs + bpr, total) - 1;
     float ry = y_base + (float)row * row_step;
     float fy = ry + hdr_h;
 
-    // vis_rect: visual (inset) rect for a field segment.
-    // paddingX/2 inset on each non-edge side → full paddingX gap between adjacent fields.
-    // First field in row has no left inset; last has no right inset.
-    auto vis_rect = [&](int fs, int fe) -> std::pair<float,float> {
-      float li = (fs == rs) ? 0.0f : px * 0.5f;
-      float ri = (fe == re) ? 0.0f : px * 0.5f;
-      float vfx = orig.x + outer + (float)(fs - rs) * bit_w + li;
-      float vfw = (float)(fe - fs + 1) * bit_w - li - ri;
-      if (vfw < 1.0f) { vfx -= li; vfw += li + ri; }  // guard: px > bit_w
-      return {vfx, vfw};
-    };
+    auto vr = [&](int fs, int fe) { return vis_rect(rs, re, fs, fe); };
 
-    // Bit-number header — position uses the same even spacing as tick marks.
+    // Bit-number header — x aligned with the evenly-spaced tick grid
     if (cfg.showBits) {
       auto bit_hdr_x = [&](int bit) -> float {
         for (int fi2 = 0; fi2 < NF; ++fi2) {
-          int fs2 = std::max(d.fields[fi2].start, rs), fe2 = std::min(d.fields[fi2].end, re);
+          int fs2 = std::max(wf[fi2].start, rs), fe2 = std::min(wf[fi2].end, re);
           if (bit >= fs2 && bit <= fe2) {
-            auto [vfx2, vfw2] = vis_rect(fs2, fe2);
+            auto [vfx2, vfw2] = vr(fs2, fe2);
             return vfx2 + (float)(bit - fs2) / (float)(fe2 - fs2 + 1) * vfw2;
           }
         }
@@ -1908,66 +2032,200 @@ void render_packet(const PacketDiagram &d, int id)
       }
     }
 
-    // Pass 1 — field fills and borders
+    // Pass 1 — fills + borders + hover/drag highlight
     for (int fi = 0; fi < NF; ++fi) {
-      auto &f = d.fields[fi];
+      auto &f = wf[fi];
       int fs = std::max(f.start, rs), fe = std::min(f.end, re);
       if (fs > fe) continue;
-      auto [vfx, vfw] = vis_rect(fs, fe);
-      dl->AddRectFilled(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.42f), 3.0f);
+      auto [vfx, vfw] = vr(fs, fe);
+      float alpha = (es.drag_active && fi == es.drag_fi) ? 0.65f : 0.42f;
+      dl->AddRectFilled(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, alpha), 3.0f);
       dl->AddRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.80f), 3.0f, 0, 1.5f);
+      if (fi == hovered_fi || (es.drag_active && fi == es.drag_fi))
+        dl->AddRect(ImVec2(vfx-1,fy-1), ImVec2(vfx+vfw+1,fy+fh+1), hcol, 4.0f, 0, 2.0f);
     }
 
-    // Bit tick marks — evenly spaced within each field's visual width so every bit
-    // cell is the same size. vfx + j/nbits * vfw divides the rect into equal parts.
+    // Bit tick marks — evenly spaced within visual width so all bits are equal size
     for (int fi = 0; fi < NF; ++fi) {
-      auto &f = d.fields[fi];
+      auto &f = wf[fi];
       int fs = std::max(f.start, rs), fe = std::min(f.end, re);
       if (fs > fe) continue;
-      auto [vfx, vfw] = vis_rect(fs, fe);
+      auto [vfx, vfw] = vr(fs, fe);
       int nbits = fe - fs + 1;
       for (int j = 0; j <= nbits; ++j) {
         float tx = vfx + (float)j / (float)nbits * vfw;
-        dl->AddLine(ImVec2(tx, fy), ImVec2(tx, fy + fh), bord, 0.5f);
+        dl->AddLine(ImVec2(tx, fy), ImVec2(tx, fy+fh), bord, 0.5f);
       }
     }
 
-    // Pass 2 — labels as top layer with background frames (drawn over ticks)
+    // Pass 2 — labels (top layer, drawn over ticks)
     for (int fi = 0; fi < NF; ++fi) {
-      auto &f = d.fields[fi];
+      auto &f = wf[fi];
       int fs = std::max(f.start, rs), fe = std::min(f.end, re);
       if (fs > fe) continue;
-      auto [vfx, vfw] = vis_rect(fs, fe);
+      auto [vfx, vfw] = vr(fs, fe);
       if (!ext[fi] && row == label_row[fi]) {
-        // Label fits — draw centred with a rounded background frame
         ImVec2 ts = ImGui::CalcTextSize(f.name.c_str());
         float lx2 = vfx + (vfw - ts.x) * 0.5f, ly2 = fy + (fh - ts.y) * 0.5f;
         const float lp = 3.0f;
         dl->AddRectFilled(ImVec2(lx2-lp, ly2-lp), ImVec2(lx2+ts.x+lp, ly2+ts.y+lp), lbg, 2.5f);
         dl->AddText(ImVec2(lx2, ly2), tcol, f.name.c_str());
       } else if (ext[fi]) {
-        // Too narrow — draw a small coloured dot so the field is still identifiable
-        dl->AddCircleFilled(ImVec2(vfx + vfw * 0.5f, fy + fh - 5.0f), 2.5f, series_color(fi, 0.9f));
-        // Name not shown inline → reveal on hover
-        if (ImGui::IsMouseHoveringRect(ImVec2(vfx, fy), ImVec2(vfx + vfw, fy + fh)))
+        dl->AddCircleFilled(ImVec2(vfx+vfw*0.5f, fy+fh-5.0f), 2.5f, series_color(fi, 0.9f));
+        if (ImGui::IsMouseHoveringRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh)))
           ImGui::SetTooltip("%s", f.name.c_str());
       }
     }
   }
 
-  // ── Legend strip for fields whose labels didn't fit inline ───────────────
+  // ── Legend ────────────────────────────────────────────────────────────────
   if (any_ext && cfg.showLegend) {
     float lx = orig.x + outer, ly = y_base + (float)n_rows * row_step + py;
     float right_edge = orig.x + cw - outer;
     for (int fi = 0; fi < NF; ++fi) {
       if (!ext[fi]) continue;
-      ImVec2 ts = ImGui::CalcTextSize(d.fields[fi].name.c_str());
-      float iw = sq + lgap + ts.x + igap;
+      float iw = sq + lgap + ImGui::CalcTextSize(wf[fi].name.c_str()).x + igap;
       if (lx + iw > right_edge && lx > orig.x + outer) { lx = orig.x + outer; ly += 18.0f; }
-      dl->AddRectFilled(ImVec2(lx, ly + 2.0f), ImVec2(lx + sq, ly + sq + 2.0f), series_color(fi, 0.85f), 2.0f);
-      dl->AddText(ImVec2(lx + sq + lgap, ly), tcol, d.fields[fi].name.c_str());
+      dl->AddRectFilled(ImVec2(lx, ly+2), ImVec2(lx+sq, ly+sq+2), series_color(fi, 0.85f), 2.0f);
+      dl->AddText(ImVec2(lx+sq+lgap, ly), tcol, wf[fi].name.c_str());
       lx += iw;
     }
+  }
+
+  // ── Context menu trigger (right-click) ────────────────────────────────────
+  bool open_rename = false, open_add = false;
+  if (pkt_hovered && !es.drag_active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    g_consumed_right_click = true;
+    if (hovered_fi >= 0) {
+      es.ctx_fi = hovered_fi;
+      ImGui::OpenPopup("##pkt_ctx");
+    } else {
+      es.cfg_edit = d.config;
+      ImGui::OpenPopup("##pkt_cfg");
+    }
+  }
+
+  // ── Field context menu ────────────────────────────────────────────────────
+  if (ImGui::BeginPopup("##pkt_ctx")) {
+    const int fi = es.ctx_fi;
+    if (fi >= 0 && fi < (int)d.fields.size()) {
+      char hdr[128];
+      std::snprintf(hdr, sizeof(hdr), "%s  [%d-%d]",
+                    d.fields[fi].name.c_str(), d.fields[fi].start, d.fields[fi].end);
+      ImGui::TextDisabled("%s", hdr);
+      ImGui::Separator();
+      if (ImGui::MenuItem("Rename...")) {
+        es.rename_fi = fi;
+        std::strncpy(es.rename_buf, d.fields[fi].name.c_str(), 255);
+        es.rename_buf[255] = '\0';
+        es.rename_focus = true;
+        open_rename = true;
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Expand +1 bit")) {
+        PacketDiagram nd = d;
+        nd.fields[fi].end++;
+        for (int k = fi+1; k < (int)nd.fields.size(); ++k) { nd.fields[k].start++; nd.fields[k].end++; }
+        nd.total_bits++;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      bool can_shrink = d.fields[fi].end > d.fields[fi].start;
+      if (ImGui::MenuItem("Shrink -1 bit", nullptr, false, can_shrink)) {
+        PacketDiagram nd = d;
+        nd.fields[fi].end--;
+        for (int k = fi+1; k < (int)nd.fields.size(); ++k) { nd.fields[k].start--; nd.fields[k].end--; }
+        nd.total_bits--;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Add field before")) {
+        es.add_after = fi - 1; es.add_bits = 8; es.add_name[0] = '\0'; es.add_focus = true;
+        open_add = true;
+      }
+      if (ImGui::MenuItem("Add field after")) {
+        es.add_after = fi; es.add_bits = 8; es.add_name[0] = '\0'; es.add_focus = true;
+        open_add = true;
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Delete field")) {
+        PacketDiagram nd = d;
+        nd.fields.erase(nd.fields.begin() + fi);
+        rebuild_bits(nd.fields);
+        nd.total_bits = nd.fields.empty() ? 0 : nd.fields.back().end + 1;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+    }
+    ImGui::EndPopup();
+  }
+  // Open these AFTER EndPopup so they don't nest inside the context menu
+  if (open_rename) ImGui::OpenPopup("##pkt_rename");
+  if (open_add)    ImGui::OpenPopup("##pkt_add");
+
+  // ── Config popup ──────────────────────────────────────────────────────────
+  if (ImGui::BeginPopup("##pkt_cfg")) {
+    ImGui::Text("Packet Config");
+    ImGui::Separator();
+    ImGui::SliderFloat("Bit Width",       &es.cfg_edit.bitWidth,   8.f, 80.f,  "%.0fpx");
+    ImGui::SliderFloat("Row Height",      &es.cfg_edit.rowHeight,  16.f,120.f, "%.0fpx");
+    ImGui::SliderInt  ("Bits / Row",      &es.cfg_edit.bitsPerRow, 4, 128);
+    ImGui::SliderFloat("Padding X",       &es.cfg_edit.paddingX,   0.f, 40.f,  "%.0fpx");
+    ImGui::SliderFloat("Padding Y",       &es.cfg_edit.paddingY,   0.f, 40.f,  "%.0fpx");
+    ImGui::Checkbox   ("Show bit numbers",&es.cfg_edit.showBits);
+    ImGui::Checkbox   ("Show legend",     &es.cfg_edit.showLegend);
+    ImGui::Separator();
+    if (ImGui::Button("Apply")) {
+      PacketDiagram nd = d; nd.config = es.cfg_edit;
+      g_pending_edit = {id, serialize_packet(nd)};
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  // ── Rename modal ──────────────────────────────────────────────────────────
+  if (ImGui::BeginPopupModal("##pkt_rename", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Rename field:");
+    if (es.rename_focus) { ImGui::SetKeyboardFocusHere(); es.rename_focus = false; }
+    bool ok = ImGui::InputText("##rn", es.rename_buf, sizeof(es.rename_buf),
+                               ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::Spacing();
+    if (ImGui::Button("OK") || ok) {
+      if (es.rename_fi >= 0 && es.rename_fi < (int)d.fields.size() && es.rename_buf[0]) {
+        PacketDiagram nd = d;
+        nd.fields[es.rename_fi].name = es.rename_buf;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  // ── Add field modal ───────────────────────────────────────────────────────
+  if (ImGui::BeginPopupModal("##pkt_add", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("New field:");
+    if (es.add_focus) { ImGui::SetKeyboardFocusHere(); es.add_focus = false; }
+    ImGui::InputText("Name##an", es.add_name, sizeof(es.add_name));
+    ImGui::InputInt ("Bits##ab", &es.add_bits);
+    if (es.add_bits < 1) es.add_bits = 1;
+    ImGui::Spacing();
+    if (ImGui::Button("Add")) {
+      if (es.add_name[0]) {
+        PacketDiagram nd = d;
+        PacketField nf; nf.name = es.add_name; nf.start = 0; nf.end = es.add_bits - 1;
+        int ins = std::max(0, std::min(es.add_after + 1, (int)nd.fields.size()));
+        nd.fields.insert(nd.fields.begin() + ins, nf);
+        rebuild_bits(nd.fields);
+        nd.total_bits = nd.fields.empty() ? 0 : nd.fields.back().end + 1;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
   }
 
   ImGui::PopID();

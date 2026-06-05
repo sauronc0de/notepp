@@ -2359,6 +2359,36 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   result.consumed_right_click = result.consumed_right_click || img_ctx.consumed_right_click;
   result.markdown_changed     = result.markdown_changed     || img_ctx.markdown_changed;
 
+  // Consume right-click if a diagram handled it (prevents the note "Copy all" popup)
+  if (MermaidDiagrams::g_consumed_right_click) {
+    result.consumed_right_click = true;
+    MermaidDiagrams::g_consumed_right_click = false;
+  }
+
+  // Apply any interactive diagram edit committed this frame
+  if (MermaidDiagrams::g_pending_edit.active()) {
+    auto &pe = MermaidDiagrams::g_pending_edit;
+    size_t fence_start = (size_t)pe.id;
+    size_t body_start  = markdown.find('\n', fence_start);
+    if (body_start != std::string::npos && body_start + 1 < markdown.size()) {
+      body_start++;
+      size_t body_end = body_start;
+      while (body_end < markdown.size()) {
+        if (markdown[body_end] == '`' &&
+            body_end + 2 < markdown.size() &&
+            markdown[body_end+1] == '`' &&
+            markdown[body_end+2] == '`') break;
+        size_t nl = markdown.find('\n', body_end);
+        body_end = (nl == std::string::npos) ? markdown.size() : nl + 1;
+      }
+      std::string nb = pe.body;
+      if (!nb.empty() && nb.back() != '\n') nb += '\n';
+      markdown.replace(body_start, body_end - body_start, nb);
+      result.markdown_changed = true;
+    }
+    pe.clear();
+  }
+
   return result;
 }
 
