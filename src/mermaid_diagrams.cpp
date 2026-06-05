@@ -1751,6 +1751,7 @@ static void parse_packet_config(std::string_view src, PacketConfig &cfg)
         gb("showBits",   cfg.showBits);
         gf("paddingX",   cfg.paddingX);
         gf("paddingY",   cfg.paddingY);
+        gb("showLegend", cfg.showLegend);
       }
     }
     pos = end + 2;
@@ -1836,7 +1837,7 @@ void render_packet(const PacketDiagram &d, int id)
 
   // ── Pre-compute legend height (may wrap to multiple lines) ───────────────
   float legend_h = 0.0f;
-  if (any_ext) {
+  if (any_ext && cfg.showLegend) {
     float avail_w = cw - outer * 2.0f, lx_s = 0.0f; int lrows = 1;
     for (int fi = 0; fi < NF; ++fi) {
       if (!ext[fi]) continue;
@@ -1947,12 +1948,15 @@ void render_packet(const PacketDiagram &d, int id)
       } else if (ext[fi]) {
         // Too narrow — draw a small coloured dot so the field is still identifiable
         dl->AddCircleFilled(ImVec2(vfx + vfw * 0.5f, fy + fh - 5.0f), 2.5f, series_color(fi, 0.9f));
+        // Name not shown inline → reveal on hover
+        if (ImGui::IsMouseHoveringRect(ImVec2(vfx, fy), ImVec2(vfx + vfw, fy + fh)))
+          ImGui::SetTooltip("%s", f.name.c_str());
       }
     }
   }
 
   // ── Legend strip for fields whose labels didn't fit inline ───────────────
-  if (any_ext) {
+  if (any_ext && cfg.showLegend) {
     float lx = orig.x + outer, ly = y_base + (float)n_rows * row_step + py;
     float right_edge = orig.x + cw - outer;
     for (int fi = 0; fi < NF; ++fi) {

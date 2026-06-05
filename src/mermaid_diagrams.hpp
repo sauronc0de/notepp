@@ -150,9 +150,10 @@ struct PacketConfig {
     float bitWidth   = 20.0f; // pixels per bit  (mermaid: bitWidth)
     float rowHeight  = 40.0f; // field row height (mermaid: rowHeight)
     int   bitsPerRow = 32;    // bits shown per row (mermaid: bitsPerRow)
-    bool  showBits   = true;  // display bit-number header (mermaid: showBits)
+    bool  showBits   = true;   // display bit-number header (mermaid: showBits)
     float paddingX   = 8.0f;  // horizontal outer padding (mermaid: paddingX)
     float paddingY   = 6.0f;  // vertical padding between rows (mermaid: paddingY)
+    bool  showLegend = false;  // show legend strip for fields too narrow for inline labels
 };
 struct PacketDiagram { std::string title; std::vector<PacketField> fields; int total_bits = 0; PacketConfig config; };
 bool parse_packet(std::string_view src, PacketDiagram &out);
