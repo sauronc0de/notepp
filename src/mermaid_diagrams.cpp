@@ -1877,18 +1877,9 @@ void render_packet(const PacketDiagram &d, int id)
     float ry = y_base + (float)row * row_step;
     float fy = ry + hdr_h;
 
-    // Bit-number header (aligned to bit-column boundaries)
-    if (cfg.showBits) {
-      for (int i = rs; i <= re; i += 8) {
-        char buf[8]; std::snprintf(buf, sizeof(buf), "%d", i);
-        dl->AddText(ImVec2(orig.x + outer + (float)(i - rs) * bit_w, ry), lcol, buf);
-      }
-    }
-
-    // Compute the visual (inset) rect for a field segment.
-    // paddingX/2 is applied to each non-edge side so adjacent fields get a full
-    // paddingX gap between them. The first field in a row has no left inset and
-    // the last has no right inset, so the row fills edge-to-edge.
+    // vis_rect: visual (inset) rect for a field segment.
+    // paddingX/2 inset on each non-edge side → full paddingX gap between adjacent fields.
+    // First field in row has no left inset; last has no right inset.
     auto vis_rect = [&](int fs, int fe) -> std::pair<float,float> {
       float li = (fs == rs) ? 0.0f : px * 0.5f;
       float ri = (fe == re) ? 0.0f : px * 0.5f;
@@ -1897,6 +1888,24 @@ void render_packet(const PacketDiagram &d, int id)
       if (vfw < 1.0f) { vfx -= li; vfw += li + ri; }  // guard: px > bit_w
       return {vfx, vfw};
     };
+
+    // Bit-number header — position uses the same even spacing as tick marks.
+    if (cfg.showBits) {
+      auto bit_hdr_x = [&](int bit) -> float {
+        for (int fi2 = 0; fi2 < NF; ++fi2) {
+          int fs2 = std::max(d.fields[fi2].start, rs), fe2 = std::min(d.fields[fi2].end, re);
+          if (bit >= fs2 && bit <= fe2) {
+            auto [vfx2, vfw2] = vis_rect(fs2, fe2);
+            return vfx2 + (float)(bit - fs2) / (float)(fe2 - fs2 + 1) * vfw2;
+          }
+        }
+        return orig.x + outer + (float)(bit - rs) * bit_w;
+      };
+      for (int i = rs; i <= re; i += 8) {
+        char buf[8]; std::snprintf(buf, sizeof(buf), "%d", i);
+        dl->AddText(ImVec2(bit_hdr_x(i), ry), lcol, buf);
+      }
+    }
 
     // Pass 1 — field fills and borders
     for (int fi = 0; fi < NF; ++fi) {
@@ -1908,10 +1917,19 @@ void render_packet(const PacketDiagram &d, int id)
       dl->AddRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.80f), 3.0f, 0, 1.5f);
     }
 
-    // Bit tick marks (at bit-column boundaries, over fills, under labels)
-    for (int i = 0; i <= re - rs + 1; ++i)
-      dl->AddLine(ImVec2(orig.x + outer + (float)i * bit_w, fy),
-                  ImVec2(orig.x + outer + (float)i * bit_w, fy + fh), bord, 0.5f);
+    // Bit tick marks — evenly spaced within each field's visual width so every bit
+    // cell is the same size. vfx + j/nbits * vfw divides the rect into equal parts.
+    for (int fi = 0; fi < NF; ++fi) {
+      auto &f = d.fields[fi];
+      int fs = std::max(f.start, rs), fe = std::min(f.end, re);
+      if (fs > fe) continue;
+      auto [vfx, vfw] = vis_rect(fs, fe);
+      int nbits = fe - fs + 1;
+      for (int j = 0; j <= nbits; ++j) {
+        float tx = vfx + (float)j / (float)nbits * vfw;
+        dl->AddLine(ImVec2(tx, fy), ImVec2(tx, fy + fh), bord, 0.5f);
+      }
+    }
 
     // Pass 2 — labels as top layer with background frames (drawn over ticks)
     for (int fi = 0; fi < NF; ++fi) {
