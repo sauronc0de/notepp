@@ -3393,6 +3393,12 @@ bool App::frame_begin()
         window_profile_check_delay_ = kProfileCheckDelay;
         window_profile_check_pending_ = false;
       }
+      // On restore, ImGui's internal note positions may have been corrupted while
+      // the window was minimized (Windows collapses the client area to 0x0, causing
+      // ImGui to clamp all windows). Force a layout restore so notes snap back to
+      // their saved positions before any position-save logic can run.
+      if(we == SDL_WINDOWEVENT_RESTORED)
+        force_note_layout_restore_ = true;
     }
 
     if(event.type == SDL_KEYDOWN &&
@@ -3441,6 +3447,11 @@ bool App::frame_begin()
       if(edit_redo_shortcut)
       {
         request_redo_edit_ = true;
+        continue;
+      }
+      if(edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_l)
+      {
+        request_select_line_ = true;
         continue;
       }
       if(edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_PERIOD)
@@ -8059,6 +8070,28 @@ __CURSOR__)MD");
           refocus_folder_editor = true;
         }
 
+        if(request_select_line_)
+        {
+          const int text_len = static_cast<int>(markdown_text_.size());
+          const int pos = std::max(0, std::min(fmt_folder.cursor_pos, text_len));
+          int line_start = pos;
+          while(line_start > 0 && markdown_text_[static_cast<size_t>(line_start) - 1] != '\n')
+            --line_start;
+          int line_end = pos;
+          while(line_end < text_len && markdown_text_[static_cast<size_t>(line_end)] != '\n')
+            ++line_end;
+          if(line_end < text_len) ++line_end;
+          fmt_folder.cursor_pos = line_end;
+          fmt_folder.sel_start = line_start;
+          fmt_folder.sel_end = line_end;
+          fmt_folder.selection_anchor = line_start;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = line_start;
+          fmt_folder.pending_sel_end = line_end;
+          refocus_folder_editor = true;
+          request_select_line_ = false;
+        }
+
         ImGuiInputTextFlags flags =
             ImGuiInputTextFlags_AllowTabInput |
             ImGuiInputTextFlags_CallbackResize |
@@ -8309,7 +8342,7 @@ __CURSOR__)MD");
       const ImVec2 clamped_pos(
           std::max(bg_p0.x, std::min(pos.x, std::max(bg_p0.x, bg_p1.x - size.x))),
           std::max(bg_p0.y, std::min(pos.y, std::max(bg_p0.y, bg_p1.y - size.y))));
-      if(!allow_platform_windows && !force_note_layout_restore_ &&
+      if(!allow_platform_windows && !force_note_layout_restore_ && !window_is_minimized &&
          (std::fabs(clamped_pos.x - pos.x) > 0.01f || std::fabs(clamped_pos.y - pos.y) > 0.01f))
       {
         ImGui::SetWindowPos(window_id.c_str(), clamped_pos, ImGuiCond_Always);
@@ -8854,6 +8887,28 @@ __CURSOR__)MD");
       fmt.deleting_word_group = false;
       fmt.last_edit_cursor = -1;
       refocus_editor = true;
+    }
+
+    if(request_select_line_)
+    {
+      const int text_len = static_cast<int>(markdown_text_.size());
+      const int pos = std::max(0, std::min(fmt.cursor_pos, text_len));
+      int line_start = pos;
+      while(line_start > 0 && markdown_text_[static_cast<size_t>(line_start) - 1] != '\n')
+        --line_start;
+      int line_end = pos;
+      while(line_end < text_len && markdown_text_[static_cast<size_t>(line_end)] != '\n')
+        ++line_end;
+      if(line_end < text_len) ++line_end;
+      fmt.cursor_pos = line_end;
+      fmt.sel_start = line_start;
+      fmt.sel_end = line_end;
+      fmt.selection_anchor = line_start;
+      fmt.pending_select_range = true;
+      fmt.pending_sel_start = line_start;
+      fmt.pending_sel_end = line_end;
+      refocus_editor = true;
+      request_select_line_ = false;
     }
 
     ImGuiInputTextFlags flags =

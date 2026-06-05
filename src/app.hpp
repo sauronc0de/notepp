@@ -164,6 +164,7 @@ private:
   bool request_redo_draw_ = false;
   bool request_undo_edit_ = false;
   bool request_redo_edit_ = false;
+  bool request_select_line_ = false;
   bool request_copy_sidebar_ = false;
   bool request_paste_sidebar_ = false;
   bool show_emoji_picker_ = false;
