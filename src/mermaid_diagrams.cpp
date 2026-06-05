@@ -1710,24 +1710,79 @@ void render_block(const BlockDiagram &d, int id)
 // ═══════════════════════════════════════════════════════════════════════════
 // PACKET
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Parses %%{init: {'packet': {'bitWidth':20,'bitsPerRow':16,...}}}%% directives.
+static void parse_packet_config(std::string_view src, PacketConfig &cfg)
+{
+  const std::string s(src);
+  size_t pos = 0;
+  while ((pos = s.find("%%{", pos)) != std::string::npos) {
+    size_t end = s.find("%%", pos + 3);
+    if (end == std::string::npos) break;
+    const std::string dir = s.substr(pos + 3, end - pos - 3);
+    size_t pk = dir.find("packet");
+    if (pk != std::string::npos) {
+      size_t colon = dir.find(':', pk + 6);
+      size_t ob    = (colon != std::string::npos) ? dir.find('{', colon) : std::string::npos;
+      size_t cb    = (ob != std::string::npos) ? dir.find('}', ob + 1) : std::string::npos;
+      if (cb != std::string::npos) {
+        const std::string inner = dir.substr(ob + 1, cb - ob - 1);
+        auto gf = [&](const char *k, float &v) {
+          size_t kp = inner.find(k); if (kp == std::string::npos) return;
+          size_t cp = inner.find(':', kp + std::strlen(k)); if (cp == std::string::npos) return;
+          float r = (float)std::atof(inner.c_str() + cp + 1); if (r > 0) v = r;
+        };
+        auto gi = [&](const char *k, int &v) {
+          size_t kp = inner.find(k); if (kp == std::string::npos) return;
+          size_t cp = inner.find(':', kp + std::strlen(k)); if (cp == std::string::npos) return;
+          int r = std::atoi(inner.c_str() + cp + 1); if (r > 0) v = r;
+        };
+        auto gb = [&](const char *k, bool &v) {
+          size_t kp = inner.find(k); if (kp == std::string::npos) return;
+          size_t cp = inner.find(':', kp + std::strlen(k)); if (cp == std::string::npos) return;
+          const std::string rest = inner.substr(cp + 1);
+          size_t tp = rest.find("true"), fp2 = rest.find("false");
+          if (tp != std::string::npos && (fp2 == std::string::npos || tp < fp2)) v = true;
+          else if (fp2 != std::string::npos) v = false;
+        };
+        gf("bitWidth",   cfg.bitWidth);
+        gf("rowHeight",  cfg.rowHeight);
+        gi("bitsPerRow", cfg.bitsPerRow);
+        gb("showBits",   cfg.showBits);
+        gf("paddingX",   cfg.paddingX);
+        gf("paddingY",   cfg.paddingY);
+      }
+    }
+    pos = end + 2;
+  }
+}
+
 bool parse_packet(std::string_view src, PacketDiagram &out)
 {
-  out=PacketDiagram{}; Lines L{src}; std::string_view line; bool header=false;
-  while(L.next(line)){
-    std::string ll=lc(line);
-    if(!header){if(sw(ll,"packet-beta")||sw(ll,"packet")){header=true;continue;} continue;}
-    if(sw(ll,"title ")) { out.title=strip_quotes(line.substr(6));continue;}
-    // 0-15: "Label"  or  0+16: "Label"
-    size_t col=line.find(':'); if(col==std::string_view::npos) continue;
-    std::string range_s=std::string(tr(line.substr(0,col)));
-    std::string name=strip_quotes(line.substr(col+1));
-    int start=0,end=0;
-    size_t dash=range_s.find('-'); size_t plus=range_s.find('+');
-    if(dash!=std::string::npos){ start=std::atoi(range_s.substr(0,dash).c_str()); end=std::atoi(range_s.substr(dash+1).c_str()); }
-    else if(plus!=std::string::npos){ start=std::atoi(range_s.substr(0,plus).c_str()); int len2=std::atoi(range_s.substr(plus+1).c_str()); end=start+len2-1; }
-    else { start=std::atoi(range_s.c_str()); end=start; }
-    out.total_bits=std::max(out.total_bits,end+1);
-    out.fields.push_back({start,end,name});
+  out = PacketDiagram{};
+  parse_packet_config(src, out.config);
+  Lines L{src}; std::string_view line; bool header = false;
+  while (L.next(line)) {
+    std::string ll = lc(line);
+    if (!header) { if (sw(ll,"packet-beta") || sw(ll,"packet")) { header=true; continue; } continue; }
+    if (sw(ll,"%%") || sw(ll,"//")) continue;  // skip comments and directives
+    if (sw(ll,"title ")) { out.title = strip_quotes(line.substr(6)); continue; }
+    size_t col = line.find(':'); if (col == std::string_view::npos) continue;
+    std::string range_s = std::string(tr(line.substr(0, col)));
+    std::string name    = strip_quotes(line.substr(col + 1));
+    int start = 0, end = 0;
+    size_t dash = range_s.find('-'), plus = range_s.find('+');
+    if (dash != std::string::npos) {
+      start = std::atoi(range_s.substr(0, dash).c_str());
+      end   = std::atoi(range_s.substr(dash + 1).c_str());
+    } else if (plus != std::string::npos) {
+      start = std::atoi(range_s.substr(0, plus).c_str());
+      end   = start + std::atoi(range_s.substr(plus + 1).c_str()) - 1;
+    } else {
+      start = end = std::atoi(range_s.c_str());
+    }
+    out.total_bits = std::max(out.total_bits, end + 1);
+    out.fields.push_back({start, end, name});
   }
   return header && !out.fields.empty();
 }
@@ -1735,40 +1790,155 @@ bool parse_packet(std::string_view src, PacketDiagram &out)
 void render_packet(const PacketDiagram &d, int id)
 {
   ImGui::PushID(id);
-  const float bit_w=20.0f,field_h=40.0f,header_h=18.0f,pad=8.0f;
-  int total=d.total_bits>0?d.total_bits:32;
-  float cw=total*bit_w+pad*2, ch=field_h+header_h*2+pad*2;
-  const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##pkt",ImVec2(cw,ch));
-  ImDrawList *dl=ImGui::GetWindowDrawList();
-  const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
-  const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
-  const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
-  if(!d.title.empty()){ImVec2 ts=ImGui::CalcTextSize(d.title.c_str());dl->AddText(ImVec2(orig.x+(cw-ts.x)*0.5f,orig.y),tcol,d.title.c_str());}
-  // bit numbers header
-  float y0=orig.y+20;
-  for(int i=0;i<total;i+=8){
-    char buf[8]; std::snprintf(buf,sizeof(buf),"%d",i);
-    dl->AddText(ImVec2(orig.x+pad+i*bit_w,y0),lcol,buf);
+  const PacketConfig &cfg = d.config;
+  const float bit_w = cfg.bitWidth, fh = cfg.rowHeight;
+  const float px = cfg.paddingX, py = cfg.paddingY;
+  const float hdr_h = cfg.showBits ? 16.0f : 0.0f;
+  const float sq = 10.0f, lgap = 5.0f, igap = 10.0f;  // legend geometry
+  // Fixed outer canvas margin — paddingX controls only inter-field gaps, not outer edges.
+  const float outer = 4.0f;
+
+  int total  = std::max(d.total_bits, 1);
+  int bpr    = std::max(1, cfg.bitsPerRow);
+  int n_rows = (total + bpr - 1) / bpr;
+  float cw   = (float)bpr * bit_w + outer * 2.0f;
+
+  // ── Pre-compute per-field metadata ──────────────────────────────────────
+  const int NF = (int)d.fields.size();
+  // ext[fi]: label can't fit in the widest row-segment → goes to legend strip
+  // label_row[fi]: which row gets the inline label (widest segment)
+  std::vector<bool> ext(NF, false);
+  std::vector<int>  label_row(NF, 0);
+  for (int fi = 0; fi < NF; ++fi) {
+    auto &f = d.fields[fi];
+    int best_seg = 0, best_r = 0;
+    for (int row = 0; row < n_rows; ++row) {
+      int rs = row * bpr, re = std::min(rs + bpr, total) - 1;
+      int fs = std::max(f.start, rs), fe = std::min(f.end, re);
+      if (fs <= fe) { int seg = fe - fs + 1; if (seg > best_seg) { best_seg = seg; best_r = row; } }
+    }
+    label_row[fi] = best_r;
+    ImVec2 ts = ImGui::CalcTextSize(f.name.c_str());
+    // Account for paddingX insets reducing the visual width
+    ext[fi] = ts.x > (float)best_seg * bit_w - px - 4.0f;
   }
-  // fields
-  float fy=y0+header_h;
-  for(int i=0;i<(int)d.fields.size();++i){
-    auto &f=d.fields[i];
-    float fx=orig.x+pad+f.start*bit_w;
-    float fw=(f.end-f.start+1)*bit_w;
-    ImU32 fc=series_color(i,0.5f);
-    dl->AddRectFilled(ImVec2(fx,fy),ImVec2(fx+fw,fy+field_h),fc,2);
-    dl->AddRect(ImVec2(fx,fy),ImVec2(fx+fw,fy+field_h),bord,2);
-    std::string lbl=f.name.size()>(size_t)(fw/7)?f.name.substr(0,(size_t)(fw/7)-1)+"…":f.name;
-    ImVec2 ts=ImGui::CalcTextSize(lbl.c_str());
-    if(ts.x<=fw-4) dl->AddText(ImVec2(fx+(fw-ts.x)*0.5f,fy+(field_h-ts.y)*0.5f),tcol,lbl.c_str());
+  bool any_ext = false;
+  for (bool b : ext) if (b) { any_ext = true; break; }
+
+  // ── Pre-compute legend height (may wrap to multiple lines) ───────────────
+  float legend_h = 0.0f;
+  if (any_ext) {
+    float avail_w = cw - outer * 2.0f, lx_s = 0.0f; int lrows = 1;
+    for (int fi = 0; fi < NF; ++fi) {
+      if (!ext[fi]) continue;
+      ImVec2 ts = ImGui::CalcTextSize(d.fields[fi].name.c_str());
+      float iw = sq + lgap + ts.x + igap;
+      if (lx_s + iw > avail_w && lx_s > 0.0f) { lx_s = 0.0f; lrows++; }
+      lx_s += iw;
+    }
+    legend_h = py + (float)lrows * 18.0f;
   }
-  // bit tick marks
-  for(int i=0;i<=total;++i){
-    float tx=orig.x+pad+i*bit_w;
-    dl->AddLine(ImVec2(tx,fy),ImVec2(tx,fy+field_h),bord,0.5f);
+
+  const float title_h  = d.title.empty() ? 0.0f : (py * 0.5f + 16.0f);
+  const float row_step = hdr_h + fh + py;
+  float ch = py * 0.5f + title_h + (float)n_rows * row_step + legend_h;
+
+  const ImVec2 orig = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##pkt", ImVec2(cw, ch));
+  ImDrawList *dl   = ImGui::GetWindowDrawList();
+  const ImU32 tcol = ImGui::GetColorU32(ImGuiCol_Text);
+  const ImU32 lcol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  const ImU32 bord = ImGui::GetColorU32(ImGuiCol_Border);
+  // Label background: semi-opaque window bg — readable in both light and dark themes
+  ImVec4 lbg4 = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg); lbg4.w = 0.88f;
+  const ImU32 lbg = ImGui::GetColorU32(lbg4);
+
+  float y_base = orig.y + py * 0.5f;
+
+  // ── Title ────────────────────────────────────────────────────────────────
+  if (!d.title.empty()) {
+    ImVec2 ts = ImGui::CalcTextSize(d.title.c_str());
+    dl->AddText(ImVec2(orig.x + (cw - ts.x) * 0.5f, y_base), tcol, d.title.c_str());
+    y_base += title_h;
   }
+
+  // ── Rows ─────────────────────────────────────────────────────────────────
+  for (int row = 0; row < n_rows; ++row) {
+    int rs = row * bpr, re = std::min(rs + bpr, total) - 1;
+    float ry = y_base + (float)row * row_step;
+    float fy = ry + hdr_h;
+
+    // Bit-number header (aligned to bit-column boundaries)
+    if (cfg.showBits) {
+      for (int i = rs; i <= re; i += 8) {
+        char buf[8]; std::snprintf(buf, sizeof(buf), "%d", i);
+        dl->AddText(ImVec2(orig.x + outer + (float)(i - rs) * bit_w, ry), lcol, buf);
+      }
+    }
+
+    // Compute the visual (inset) rect for a field segment.
+    // paddingX/2 is applied to each non-edge side so adjacent fields get a full
+    // paddingX gap between them. The first field in a row has no left inset and
+    // the last has no right inset, so the row fills edge-to-edge.
+    auto vis_rect = [&](int fs, int fe) -> std::pair<float,float> {
+      float li = (fs == rs) ? 0.0f : px * 0.5f;
+      float ri = (fe == re) ? 0.0f : px * 0.5f;
+      float vfx = orig.x + outer + (float)(fs - rs) * bit_w + li;
+      float vfw = (float)(fe - fs + 1) * bit_w - li - ri;
+      if (vfw < 1.0f) { vfx -= li; vfw += li + ri; }  // guard: px > bit_w
+      return {vfx, vfw};
+    };
+
+    // Pass 1 — field fills and borders
+    for (int fi = 0; fi < NF; ++fi) {
+      auto &f = d.fields[fi];
+      int fs = std::max(f.start, rs), fe = std::min(f.end, re);
+      if (fs > fe) continue;
+      auto [vfx, vfw] = vis_rect(fs, fe);
+      dl->AddRectFilled(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.42f), 3.0f);
+      dl->AddRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.80f), 3.0f, 0, 1.5f);
+    }
+
+    // Bit tick marks (at bit-column boundaries, over fills, under labels)
+    for (int i = 0; i <= re - rs + 1; ++i)
+      dl->AddLine(ImVec2(orig.x + outer + (float)i * bit_w, fy),
+                  ImVec2(orig.x + outer + (float)i * bit_w, fy + fh), bord, 0.5f);
+
+    // Pass 2 — labels as top layer with background frames (drawn over ticks)
+    for (int fi = 0; fi < NF; ++fi) {
+      auto &f = d.fields[fi];
+      int fs = std::max(f.start, rs), fe = std::min(f.end, re);
+      if (fs > fe) continue;
+      auto [vfx, vfw] = vis_rect(fs, fe);
+      if (!ext[fi] && row == label_row[fi]) {
+        // Label fits — draw centred with a rounded background frame
+        ImVec2 ts = ImGui::CalcTextSize(f.name.c_str());
+        float lx2 = vfx + (vfw - ts.x) * 0.5f, ly2 = fy + (fh - ts.y) * 0.5f;
+        const float lp = 3.0f;
+        dl->AddRectFilled(ImVec2(lx2-lp, ly2-lp), ImVec2(lx2+ts.x+lp, ly2+ts.y+lp), lbg, 2.5f);
+        dl->AddText(ImVec2(lx2, ly2), tcol, f.name.c_str());
+      } else if (ext[fi]) {
+        // Too narrow — draw a small coloured dot so the field is still identifiable
+        dl->AddCircleFilled(ImVec2(vfx + vfw * 0.5f, fy + fh - 5.0f), 2.5f, series_color(fi, 0.9f));
+      }
+    }
+  }
+
+  // ── Legend strip for fields whose labels didn't fit inline ───────────────
+  if (any_ext) {
+    float lx = orig.x + outer, ly = y_base + (float)n_rows * row_step + py;
+    float right_edge = orig.x + cw - outer;
+    for (int fi = 0; fi < NF; ++fi) {
+      if (!ext[fi]) continue;
+      ImVec2 ts = ImGui::CalcTextSize(d.fields[fi].name.c_str());
+      float iw = sq + lgap + ts.x + igap;
+      if (lx + iw > right_edge && lx > orig.x + outer) { lx = orig.x + outer; ly += 18.0f; }
+      dl->AddRectFilled(ImVec2(lx, ly + 2.0f), ImVec2(lx + sq, ly + sq + 2.0f), series_color(fi, 0.85f), 2.0f);
+      dl->AddText(ImVec2(lx + sq + lgap, ly), tcol, d.fields[fi].name.c_str());
+      lx += iw;
+    }
+  }
+
   ImGui::PopID();
 }
 

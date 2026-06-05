@@ -145,8 +145,16 @@ bool parse_block(std::string_view src, BlockDiagram &out);
 void render_block(const BlockDiagram &d, int id);
 
 // ── Packet ───────────────────────────────────────────────────────────────────
-struct PacketField { int start = 0, end = 0; std::string name; };
-struct PacketDiagram { std::string title; std::vector<PacketField> fields; int total_bits = 0; };
+struct PacketField  { int start = 0, end = 0; std::string name; };
+struct PacketConfig {
+    float bitWidth   = 20.0f; // pixels per bit  (mermaid: bitWidth)
+    float rowHeight  = 40.0f; // field row height (mermaid: rowHeight)
+    int   bitsPerRow = 32;    // bits shown per row (mermaid: bitsPerRow)
+    bool  showBits   = true;  // display bit-number header (mermaid: showBits)
+    float paddingX   = 8.0f;  // horizontal outer padding (mermaid: paddingX)
+    float paddingY   = 6.0f;  // vertical padding between rows (mermaid: paddingY)
+};
+struct PacketDiagram { std::string title; std::vector<PacketField> fields; int total_bits = 0; PacketConfig config; };
 bool parse_packet(std::string_view src, PacketDiagram &out);
 void render_packet(const PacketDiagram &d, int id);
 

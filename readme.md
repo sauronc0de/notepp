@@ -1462,6 +1462,44 @@ block-beta
 
 **Keywords:** `packet-beta`, `packet`  · Format: `start-end: "Field Name"`
 
+Field range notations:
+
+| Notation | Meaning |
+|---|---|
+| `0-15: "Name"` | bits 0 through 15 |
+| `0+16: "Name"` | start bit 0, length 16 |
+| `7: "Name"` | single bit at position 7 |
+
+**Configuration** — place an init directive before the diagram keyword:
+
+```
+%%{init: {'packet': {'bitWidth': 20, 'rowHeight': 40, 'bitsPerRow': 32, 'showBits': true, 'paddingX': 8, 'paddingY': 6}}}%%
+```
+
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `bitWidth` | number | `20` | Pixels per bit column |
+| `rowHeight` | number | `40` | Height of each field row in pixels |
+| `bitsPerRow` | number | `32` | Number of bits displayed per row (enables multi-row layout) |
+| `showBits` | boolean | `true` | Show or hide the bit-number header |
+| `paddingX` | number | `8` | Horizontal outer padding in pixels |
+| `paddingY` | number | `6` | Vertical padding between rows in pixels |
+
+Labels that are too wide for their field cell are rendered in a legend strip below the diagram. Fields that wrap across rows (when `bitsPerRow` < total bits) are split into per-row segments automatically.
+
+````markdown
+```mermaid
+%%{init: {'packet': {'bitsPerRow': 16}}}%%
+packet-beta
+  title IPv4 Header (first 32 bits)
+  0-3: "Version"
+  4-7: "IHL"
+  8-13: "DSCP"
+  14-15: "ECN"
+  16-31: "Total Length"
+```
+````
+
 ````markdown
 ```mermaid
 packet-beta
