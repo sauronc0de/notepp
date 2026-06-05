@@ -2327,6 +2327,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       }
       ImGui::PopID();
       ImGui::PopStyleVar(2);
+      ImGui::NewLine();
     }
     else
     {

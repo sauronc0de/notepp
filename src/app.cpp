@@ -6348,6 +6348,9 @@ void App::frame_ui()
         fmt_folder.sel_start = cursor;
         fmt_folder.sel_end = cursor;
         fmt_folder.selection_anchor = cursor;
+        fmt_folder.pending_select_range = true;
+        fmt_folder.pending_sel_start = cursor;
+        fmt_folder.pending_sel_end = cursor;
         refocus_folder_editor = true;
         normalize_input_text_buffer(markdown_text_);
         state_dirty_ = true;
@@ -6472,6 +6475,13 @@ void App::frame_ui()
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.sel_start = anchor_sel_start;
+          fmt_folder.sel_end = anchor_sel_end;
+          fmt_folder.cursor_pos = anchor_sel_end;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = anchor_sel_start;
+          fmt_folder.pending_sel_end = anchor_sel_end;
+          refocus_folder_editor = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_bold", ic_bold, sz_bold, "Bold", Lang::t("Bold")))
@@ -6480,6 +6490,13 @@ void App::frame_ui()
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.sel_start = anchor_sel_start;
+          fmt_folder.sel_end = anchor_sel_end;
+          fmt_folder.cursor_pos = anchor_sel_end;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = anchor_sel_start;
+          fmt_folder.pending_sel_end = anchor_sel_end;
+          refocus_folder_editor = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_strike", ic_strike, sz_strike, "Strike", Lang::t("Strike")))
@@ -6488,6 +6505,13 @@ void App::frame_ui()
           apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.sel_start = anchor_sel_start;
+          fmt_folder.sel_end = anchor_sel_end;
+          fmt_folder.cursor_pos = anchor_sel_end;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = anchor_sel_start;
+          fmt_folder.pending_sel_end = anchor_sel_end;
+          refocus_folder_editor = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_note", ic_note, sz_note, "Note", Lang::t("Note quote")))
@@ -6496,6 +6520,13 @@ void App::frame_ui()
           apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.sel_start = anchor_sel_start;
+          fmt_folder.sel_end = anchor_sel_end;
+          fmt_folder.cursor_pos = anchor_sel_end;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = anchor_sel_start;
+          fmt_folder.pending_sel_end = anchor_sel_end;
+          refocus_folder_editor = true;
         }
         ImGui::SameLine();
         ImGui::ColorEdit3("##top_color", (float *)&fmt_folder.color, ImGuiColorEditFlags_NoInputs);
@@ -6507,6 +6538,13 @@ void App::frame_ui()
           apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, hex);
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.sel_start = anchor_sel_start;
+          fmt_folder.sel_end = anchor_sel_end;
+          fmt_folder.cursor_pos = anchor_sel_end;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = anchor_sel_start;
+          fmt_folder.pending_sel_end = anchor_sel_end;
+          refocus_folder_editor = true;
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -6516,6 +6554,10 @@ void App::frame_ui()
           insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
           normalize_input_text_buffer(markdown_text_);
           state_dirty_ = true;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = fmt_folder.cursor_pos;
+          fmt_folder.pending_sel_end = fmt_folder.cursor_pos;
+          refocus_folder_editor = true;
         }
         ImGui::SameLine();
         if(tool_button("##tb_table", ic_table, sz_table, "Table", Lang::t("Insert markdown table")))
@@ -6716,6 +6758,10 @@ __CURSOR__)MD");
             insert_markdown_table_at_cursor(markdown_text_, fmt_folder, table_builder_rows, table_builder_cols);
             normalize_input_text_buffer(markdown_text_);
             state_dirty_ = true;
+            fmt_folder.pending_select_range = true;
+            fmt_folder.pending_sel_start = fmt_folder.sel_start;
+            fmt_folder.pending_sel_end = fmt_folder.sel_end;
+            refocus_folder_editor = true;
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
