@@ -6765,7 +6765,7 @@ __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
-          if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
+          if(ImGui::Button(Lang::t("Cancel"))) { refocus_folder_editor = true; ImGui::CloseCurrentPopup(); }
           ImGui::EndPopup();
         }
         if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
@@ -6786,7 +6786,7 @@ __CURSOR__)MD");
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
-          if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
+          if(ImGui::Button(Lang::t("Cancel"))) { refocus_folder_editor = true; ImGui::CloseCurrentPopup(); }
           ImGui::EndPopup();
         }
         ImGui::SameLine();
@@ -7077,6 +7077,7 @@ __CURSOR__)MD");
                 window_profile_check_delay_ = kProfileSwitchSettle;
                 save_profiles();
                 save_index();
+                if(editing_mode_) refocus_folder_editor = true;
               }
               ImGui::PopID();
             }
@@ -7097,9 +7098,11 @@ __CURSOR__)MD");
           if(manage_profiles_open_)
             ImGui::OpenPopup("##manage_profiles_popup");
 
+          static bool profiles_popup_was_open = false;
           if(ImGui::BeginPopup("##manage_profiles_popup",
                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize))
           {
+            profiles_popup_was_open = true;
             manage_profiles_open_ = false; // reset — popup stays open via BeginPopup
 
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
@@ -7206,6 +7209,11 @@ __CURSOR__)MD");
             }
             ImGui::EndPopup();
           }
+          else if(profiles_popup_was_open)
+          {
+            profiles_popup_was_open = false;
+            if(editing_mode_ && !profile_modal_.open) refocus_folder_editor = true;
+          }
         }
       }
       {
@@ -7255,8 +7263,10 @@ __CURSOR__)MD");
         if(lang_clicked) ImGui::OpenPopup("##lang_select");
         const ImVec2 lang_btn_br = ImGui::GetItemRectMax();
         ImGui::SetNextWindowPos(ImVec2(lang_btn_br.x - 140.0f, lang_btn_br.y + 2.0f));
+        static bool lang_popup_was_open = false;
         if(ImGui::BeginPopup("##lang_select"))
         {
+          lang_popup_was_open = true;
           for(const auto &lang : Lang::languages())
           {
             const bool selected = (lang.code == Lang::current_language_code());
@@ -7278,6 +7288,11 @@ __CURSOR__)MD");
             ImGui::PopID();
           }
           ImGui::EndPopup();
+        }
+        else if(lang_popup_was_open)
+        {
+          lang_popup_was_open = false;
+          if(editing_mode_) refocus_folder_editor = true;
         }
 
         // Version label
@@ -7776,6 +7791,7 @@ __CURSOR__)MD");
       if(layout_locked_) note_flags |= ImGuiWindowFlags_NoMove;
       if(search_request_window_focus_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
+      if(refocus_folder_editor && editing_mode_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
       const int folder_theme_count =
           push_folder_imgui_theme(make_note_theme(n.use_custom_color, n.color_r, n.color_g, n.color_b, ImGui::GetStyle()), ImGui::GetStyle());
       const bool note_window_visible = ImGui::Begin(
@@ -8074,7 +8090,10 @@ __CURSOR__)MD");
           fmt_folder.typing_word_group = false;
           fmt_folder.deleting_word_group = false;
           fmt_folder.last_edit_cursor = -1;
-          ImGui::SetKeyboardFocusHere();
+          // SetKeyboardFocusHere() sets FromTabbing, which InputTextMultiline blocks
+          // when AllowTabInput is set. Activate directly with PreferInput instead.
+          GImGui->NavNextActivateId = ImGui::GetID("##md_folder");
+          GImGui->NavNextActivateFlags = ImGuiActivateFlags_PreferInput | ImGuiActivateFlags_TryToPreserveState;
           refocus_folder_editor = false;
         }
 
@@ -8846,7 +8865,8 @@ __CURSOR__)MD");
       fmt.typing_word_group = false;
       fmt.deleting_word_group = false;
       fmt.last_edit_cursor = -1;
-      ImGui::SetKeyboardFocusHere();
+      GImGui->NavNextActivateId = ImGui::GetID("##md");
+      GImGui->NavNextActivateFlags = ImGuiActivateFlags_PreferInput | ImGuiActivateFlags_TryToPreserveState;
       refocus_editor = false;
     }
 
