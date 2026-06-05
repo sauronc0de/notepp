@@ -1762,6 +1762,7 @@ bool parse_packet(std::string_view src, PacketDiagram &out)
   out = PacketDiagram{};
   parse_packet_config(src, out.config);
   Lines L{src}; std::string_view line; bool header = false;
+  int cur = 0;  // next available bit — used by implicit-start "+N" notation
   while (L.next(line)) {
     std::string ll = lc(line);
     if (!header) { if (sw(ll,"packet-beta") || sw(ll,"packet")) { header=true; continue; } continue; }
@@ -1773,14 +1774,22 @@ bool parse_packet(std::string_view src, PacketDiagram &out)
     int start = 0, end = 0;
     size_t dash = range_s.find('-'), plus = range_s.find('+');
     if (dash != std::string::npos) {
+      // "A-B" — explicit range
       start = std::atoi(range_s.substr(0, dash).c_str());
       end   = std::atoi(range_s.substr(dash + 1).c_str());
+    } else if (plus == 0) {
+      // "+N" — implicit start: begin at current position, length N
+      start = cur;
+      end   = cur + std::atoi(range_s.c_str() + 1) - 1;
     } else if (plus != std::string::npos) {
+      // "A+N" — explicit start with length
       start = std::atoi(range_s.substr(0, plus).c_str());
       end   = start + std::atoi(range_s.substr(plus + 1).c_str()) - 1;
     } else {
+      // "N" — single bit
       start = end = std::atoi(range_s.c_str());
     }
+    cur = end + 1;
     out.total_bits = std::max(out.total_bits, end + 1);
     out.fields.push_back({start, end, name});
   }
