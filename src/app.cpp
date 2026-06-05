@@ -8305,6 +8305,7 @@ __CURSOR__)MD");
 
       ImVec2 effective_pos = pos;
       const bool allow_platform_windows = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+      const bool window_is_minimized = (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) != 0;
       const ImVec2 clamped_pos(
           std::max(bg_p0.x, std::min(pos.x, std::max(bg_p0.x, bg_p1.x - size.x))),
           std::max(bg_p0.y, std::min(pos.y, std::max(bg_p0.y, bg_p1.y - size.y))));
@@ -8332,7 +8333,7 @@ __CURSOR__)MD");
       }
 
       auto changed_f = [](float a, float b) { return std::fabs(a - b) > 0.5f; };
-      if(changed_f(n.pos_x, effective_pos.x) || changed_f(n.pos_y, effective_pos.y) || changed_f(n.width, size.x) || changed_f(n.height, auto_h) || !n.has_layout)
+      if(!window_is_minimized && (changed_f(n.pos_x, effective_pos.x) || changed_f(n.pos_y, effective_pos.y) || changed_f(n.width, size.x) || changed_f(n.height, auto_h) || !n.has_layout))
       {
         n.pos_x = effective_pos.x;
         n.pos_y = effective_pos.y;
