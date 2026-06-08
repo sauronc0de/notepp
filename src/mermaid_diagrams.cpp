@@ -2344,14 +2344,14 @@ void render_kanban(const KanbanDiagram &d, int id)
   ImGui::PushID(id);
   auto &es = s_kb_states[id];
 
-  const float col_w=160.0f,card_h=32.0f,plus_h=22.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
+  const float col_w=160.0f,card_h=32.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
 
   const std::vector<KanbanCol> &cols = es.drag_active ? es.work_cols : d.columns;
   int nc=(int)cols.size();
   int max_cards=0; for(auto &c:cols) max_cards=std::max(max_cards,(int)c.cards.size());
   float cw=nc*(col_w+hgap)+hgap+pad*2;
-  // tight height: top-gap + cards + plus button + bottom-gap
-  float col_body_h=vgap+max_cards*(card_h+vgap)+plus_h+vgap;
+  // tight height: top-gap + cards + bottom-gap (one extra slot for drop indicator)
+  float col_body_h=vgap+(max_cards+1)*(card_h+vgap);
   float ch=col_header_h+col_body_h+pad*2;
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
@@ -2378,31 +2378,12 @@ void render_kanban(const KanbanDiagram &d, int id)
     }
   }
 
-  // ── Pre-compute + button positions ───────────────────────────────────────
-  // The + button sits right after the last card in each column
-  struct PlusBtn { int ci; float x,y; };
-  std::vector<PlusBtn> plus_btns;
-  for(int i=0;i<nc;++i){
-    float x=orig.x+pad+i*(col_w+hgap);
-    float cy=orig.y+pad+col_header_h+vgap+(float)cols[i].cards.size()*(card_h+vgap);
-    plus_btns.push_back({i, x+4, cy});
-  }
-
   // ── Hit test: card under mouse ────────────────────────────────────────────
   int hov_ci=-1, hov_ri=-1;
   if(kb_hovered||es.drag_active){
     for(auto &r:crects)
       if(mouse.x>=r.x&&mouse.x<r.x+(col_w-8)&&mouse.y>=r.y&&mouse.y<r.y+card_h){
         hov_ci=r.ci; hov_ri=r.ri; break;
-      }
-  }
-
-  // ── Hit test: + button under mouse ───────────────────────────────────────
-  int hov_plus=-1;
-  if(kb_hovered && !es.drag_active){
-    for(auto &p:plus_btns)
-      if(mouse.x>=p.x&&mouse.x<p.x+(col_w-8)&&mouse.y>=p.y&&mouse.y<p.y+plus_h){
-        hov_plus=p.ci; break;
       }
   }
 
@@ -2449,16 +2430,8 @@ void render_kanban(const KanbanDiagram &d, int id)
       es.drag_active=false; es.drag_ci=-1; es.drag_ri=-1;
       es.drop_ci=-1; es.drop_ri=-1; es.work_cols.clear();
     }
-  } else if(hov_ci>=0 || hov_plus>=0){
+  } else if(hov_ci>=0){
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-  }
-
-  // ── Left-click on + button → open add popup ───────────────────────────────
-  bool open_add_popup = false;
-  if(!es.drag_active && kb_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hov_plus>=0){
-    es.add_ci=hov_plus;
-    es.add_label[0]='\0'; es.add_desc[0]='\0'; es.add_focus=true;
-    open_add_popup=true;
   }
 
   // ── Right-click ───────────────────────────────────────────────────────────
@@ -2482,7 +2455,6 @@ void render_kanban(const KanbanDiagram &d, int id)
     }
   }
   if(open_col_ctx) ImGui::OpenPopup("##kb_col_ctx");
-  if(open_add_popup) ImGui::OpenPopup("##kb_add");
 
   // ── Draw columns ─────────────────────────────────────────────────────────
   for(int i=0;i<nc;++i){
@@ -2521,16 +2493,6 @@ void render_kanban(const KanbanDiagram &d, int id)
     }
     if(es.drag_active && es.drop_ci==i && es.drop_ri>=nj)
       dl->AddRectFilled(ImVec2(x+4,cy-vgap*0.5f-1),ImVec2(x+col_w-4,cy-vgap*0.5f+1),series_color(i,0.9f),2);
-
-    // ── + button ─────────────────────────────────────────────────────────
-    bool plus_hov=(hov_plus==i);
-    ImU32 plus_fill = series_color(i, plus_hov?0.18f:0.07f);
-    ImU32 plus_bord = series_color(i, plus_hov?0.6f:0.25f);
-    ImU32 plus_text = series_color(i, plus_hov?0.95f:0.45f);
-    dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+plus_h),plus_fill,3);
-    dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+plus_h),plus_bord,3);
-    ImVec2 ps=ImGui::CalcTextSize("+");
-    dl->AddText(ImVec2(x+4+(col_w-8-ps.x)*0.5f,cy+(plus_h-ps.y)*0.5f),plus_text,"+");
   }
 
   // ── Floating drag card ────────────────────────────────────────────────────
