@@ -2081,8 +2081,6 @@ void render_packet(const PacketDiagram &d, int id)
         dl->AddText(ImVec2(lx2, ly2), tcol, f.name.c_str());
       } else if (ext[fi]) {
         dl->AddCircleFilled(ImVec2(vfx+vfw*0.5f, fy+fh-5.0f), 2.5f, series_color(ci(fi), 0.9f));
-        if (ImGui::IsMouseHoveringRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh)))
-          ImGui::SetTooltip("%s", f.name.c_str());
       }
     }
   }
@@ -2099,6 +2097,13 @@ void render_packet(const PacketDiagram &d, int id)
       dl->AddText(ImVec2(lx+sq+lgap, ly), tcol, wf[fi].name.c_str());
       lx += iw;
     }
+  }
+
+  // ── Hover tooltip ─────────────────────────────────────────────────────────
+  if (pkt_hovered && hovered_fi >= 0 && !es.drag_active) {
+    const auto &hf = d.fields[hovered_fi];
+    int nbits = hf.end - hf.start + 1;
+    ImGui::SetTooltip("%s\n[%d-%d]  %db", hf.name.c_str(), hf.start, hf.end, nbits);
   }
 
   // ── Context menu trigger (right-click) ────────────────────────────────────
@@ -2119,8 +2124,9 @@ void render_packet(const PacketDiagram &d, int id)
     const int fi = es.ctx_fi;
     if (fi >= 0 && fi < (int)d.fields.size()) {
       char hdr[128];
-      std::snprintf(hdr, sizeof(hdr), "%s  [%d-%d]",
-                    d.fields[fi].name.c_str(), d.fields[fi].start, d.fields[fi].end);
+      std::snprintf(hdr, sizeof(hdr), "%s  [%d-%d]  %db",
+                    d.fields[fi].name.c_str(), d.fields[fi].start, d.fields[fi].end,
+                    d.fields[fi].end - d.fields[fi].start + 1);
       ImGui::TextDisabled("%s", hdr);
       ImGui::Separator();
       if (ImGui::MenuItem("Rename...")) {
