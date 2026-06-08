@@ -3678,10 +3678,15 @@ void App::frame_ui()
   ImGui::PopStyleColor();
   // Custom Explorer header: label on the left, refresh button on the right.
   static bool request_sync_files = false;
+  static bool open_restore_bak_popup = false;
+  static std::vector<std::string> bak_candidates;
+  static std::vector<int> bak_selected;
   {
     const float btn_sz = 14.0f;
+    const float btn_gap = 4.0f;
     const float right_margin = ImGui::GetStyle().WindowPadding.x;
     const ImTextureID refresh_icon = get_toolbar_icon_texture("refresh.png");
+    const ImTextureID recycle_icon = get_toolbar_icon_texture("recycle.png");
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(Lang::t("Explorer"));
     ImGui::SameLine();
@@ -3692,6 +3697,28 @@ void App::frame_ui()
     }
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("refresh_tooltip"));
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 2.0f * btn_sz - btn_gap - right_margin);
+    if(shaded_icon_button("##explorer_recycle", recycle_icon, ImVec2(btn_sz, btn_sz), "~##explorer_recycle"))
+    {
+      namespace fs = std::filesystem;
+      bak_candidates.clear();
+      bak_selected.clear();
+      std::error_code ec;
+      for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, ec))
+      {
+        if(!entry.is_regular_file(ec)) continue;
+        const std::string p = entry.path().string();
+        if(p.size() > 4 && p.compare(p.size() - 4, 4, ".bak") == 0)
+        {
+          bak_candidates.push_back(p);
+          bak_selected.push_back(true);
+        }
+      }
+      open_restore_bak_popup = true;
+    }
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+      ImGui::SetTooltip("%s", Lang::t("Restore removed notes"));
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -3839,6 +3866,9 @@ void App::frame_ui()
     sidebar_flashes.clear();
     search_dialog = {};
     deferred_sidebar_snapshot_before.clear();
+    open_restore_bak_popup = false;
+    bak_candidates.clear();
+    bak_selected.clear();
     reset_sidebar_state_ = false;
   }
 
@@ -4350,6 +4380,87 @@ void App::frame_ui()
   {
     ImGui::OpenPopup("Rename Image");
     open_rename_image_popup = false;
+  }
+  if(open_restore_bak_popup)
+  {
+    ImGui::OpenPopup("Restore Removed Notes");
+    open_restore_bak_popup = false;
+  }
+
+  if(ImGui::BeginPopupModal("Restore Removed Notes", nullptr,
+       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+  {
+    namespace fs = std::filesystem;
+    if(bak_candidates.empty())
+    {
+      ImGui::TextUnformatted(Lang::t("No removed notes found."));
+      ImGui::Spacing();
+      if(ImGui::Button(Lang::t("Close"))) ImGui::CloseCurrentPopup();
+    }
+    else
+    {
+      ImGui::TextUnformatted(Lang::t("Select notes to restore:"));
+      ImGui::Spacing();
+      ImGui::BeginChild("##bak_list", ImVec2(360.0f, std::min((float)bak_candidates.size() * 22.0f + 8.0f, 240.0f)), true);
+      for(int bi = 0; bi < (int)bak_candidates.size(); ++bi)
+      {
+        const std::string &bak_path = bak_candidates[(size_t)bi];
+        std::error_code ec;
+        fs::path rel = fs::relative(fs::path(bak_path), config_.dataPath, ec);
+        std::string display = ec ? bak_path : rel.string();
+        // Strip trailing ".bak" from display name
+        if(display.size() > 4 && display.compare(display.size() - 4, 4, ".bak") == 0)
+          display.resize(display.size() - 4);
+        ImGui::PushID(bi);
+        bool checked = bak_selected[(size_t)bi] != 0;
+        if(ImGui::Checkbox(display.c_str(), &checked))
+          bak_selected[(size_t)bi] = checked ? 1 : 0;
+        ImGui::PopID();
+      }
+      ImGui::EndChild();
+      ImGui::Spacing();
+      // Select all / deselect all
+      if(ImGui::SmallButton(Lang::t("Select All")))
+        for(int &s : bak_selected) s = 1;
+      ImGui::SameLine();
+      if(ImGui::SmallButton(Lang::t("Deselect All")))
+        for(int &s : bak_selected) s = 0;
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::Spacing();
+      if(ImGui::Button(Lang::t("Restore Selected")))
+      {
+        bool any = false;
+        for(int bi = 0; bi < (int)bak_candidates.size(); ++bi)
+        {
+          if(!bak_selected[(size_t)bi]) continue;
+          const std::string &bak_path = bak_candidates[(size_t)bi];
+          // Original path is bak_path without the ".bak" suffix
+          const std::string orig = bak_path.substr(0, bak_path.size() - 4);
+          std::error_code ren_ec;
+          fs::rename(fs::path(bak_path), fs::path(orig), ren_ec);
+          if(!ren_ec)
+          {
+            // Remove from pending-delete list so the app won't clean it up
+            pending_fs_delete_paths_.erase(
+                std::remove(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), orig),
+                pending_fs_delete_paths_.end());
+            any = true;
+          }
+        }
+        if(any)
+        {
+          sync_project_files();
+          save_index();
+        }
+        bak_candidates.clear();
+        bak_selected.clear();
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
   }
 
   if(ImGui::BeginPopup("New Folder"))
