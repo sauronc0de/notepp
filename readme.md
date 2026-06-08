@@ -1487,6 +1487,17 @@ Field range notations:
 
 Labels that are too wide for their field cell are rendered in a legend strip below the diagram. Fields that wrap across rows (when `bitsPerRow` < total bits) are split into per-row segments automatically.
 
+**Interactions:**
+
+| Interaction | Effect |
+|-------------|--------|
+| **Hover** over a field | Tooltip shows field name, bit range, and bit count |
+| **Drag** a field left / right | Swaps the field with its neighbour; colors travel with the field |
+| **Right-click** a field | Context menu: Rename, Expand +1 bit, Shrink −1 bit, Add field before, Delete |
+| **Right-click** on blank canvas | Config popup: edit all layout properties (bitWidth, rowHeight, bitsPerRow, showBits, paddingX, paddingY, showLegend) |
+
+All edits write back to the note source immediately.
+
 ````markdown
 ```mermaid
 %%{init: {'packet': {'bitsPerRow': 16}}}%%
@@ -1515,9 +1526,21 @@ packet-beta
 
 ### 15.18 Kanban Board
 
-**Keyword:** `kanban`  · Columns are top-level items; cards are indented. Cards support an optional `: description` suffix shown as a tooltip on hover (small dot in corner = has description).
+**Keyword:** `kanban`  · Columns are top-level items; cards are indented one level deeper.
 
-**Interactions:** drag & drop cards between/within columns · right-click to edit label & description · hover for tooltip.
+Card syntax: `id[Label]` or `id[Label]: description text`
+
+A small colored dot in the bottom-right corner of a card indicates it has a description.
+
+**Interactions:**
+
+| Interaction | Effect |
+|-------------|--------|
+| **Hover** over a card | Tooltip shows the description (or the label if no description is set) |
+| **Drag** a card | Move it to any position within its column or into a different column; a colored insertion bar shows the drop target |
+| **Right-click** a card | Edit popup: change the card label and description; confirm with **OK** or **Enter** |
+
+All edits write back to the note source immediately.
 
 ````markdown
 ```mermaid
