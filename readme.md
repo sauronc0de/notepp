@@ -1538,7 +1538,9 @@ A small colored dot in the bottom-right corner of a card indicates it has a desc
 |-------------|--------|
 | **Hover** over a card | Tooltip shows the description (or the label if no description is set) |
 | **Drag** a card | Move it to any position within its column or into a different column; a colored insertion bar shows the drop target |
-| **Right-click** a card | Edit popup: change the card label and description; confirm with **OK** or **Enter** |
+| **Right-click** a card | Edit popup: change the label and description (**OK** / **Enter** to confirm, **Delete** to remove the card) |
+| **Click `+`** at column bottom | Add-card popup: enter label and optional description, confirm with **Add** or **Enter** |
+| **Right-click** empty column area | Context menu with **Add card** option |
 
 All edits write back to the note source immediately.
 

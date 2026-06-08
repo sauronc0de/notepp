@@ -2350,8 +2350,8 @@ void render_kanban(const KanbanDiagram &d, int id)
   int nc=(int)cols.size();
   int max_cards=0; for(auto &c:cols) max_cards=std::max(max_cards,(int)c.cards.size());
   float cw=nc*(col_w+hgap)+hgap+pad*2;
-  // extra room: drop slot + the + button row
-  float col_body_h=(max_cards+2)*(card_h+vgap)+plus_h+vgap*2;
+  // tight height: top-gap + cards + plus button + bottom-gap
+  float col_body_h=vgap+max_cards*(card_h+vgap)+plus_h+vgap;
   float ch=col_header_h+col_body_h+pad*2;
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
