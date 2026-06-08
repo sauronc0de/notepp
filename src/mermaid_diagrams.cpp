@@ -2292,19 +2292,37 @@ bool parse_kanban(std::string_view src, KanbanDiagram &out)
 struct KanbanEditState {
   // drag
   bool drag_active = false;
-  int  drag_ci     = -1;   // source column
-  int  drag_ri     = -1;   // source card index
-  std::vector<KanbanCol> work_cols; // mutable working copy
-  int  drop_ci     = -1;   // hovered column during drag
-  int  drop_ri     = -1;   // insertion index in drop column
-  // right-click / edit popup
+  int  drag_ci     = -1;
+  int  drag_ri     = -1;
+  std::vector<KanbanCol> work_cols;
+  int  drop_ci     = -1;
+  int  drop_ri     = -1;
+  // edit popup (right-click card)
   int  ctx_ci      = -1;
   int  ctx_ri      = -1;
   char edit_label[256] = {};
   char edit_desc[512]  = {};
   bool edit_focus  = false;
+  // add-card popup
+  int  add_ci      = -1;
+  char add_label[256] = {};
+  char add_desc[512]  = {};
+  bool add_focus   = false;
 };
 static std::unordered_map<int,KanbanEditState> s_kb_states;
+
+static std::string next_card_id(const KanbanDiagram &d)
+{
+  int mx = 0;
+  for(auto &col : d.columns)
+    for(auto &card : col.cards){
+      const auto &s = card.id;
+      int i = (int)s.size();
+      while(i > 0 && std::isdigit((unsigned char)s[i-1])) --i;
+      if(i < (int)s.size()) mx = std::max(mx, std::atoi(s.c_str()+i));
+    }
+  return "c" + std::to_string(mx + 1);
+}
 
 static std::string serialize_kanban(const KanbanDiagram &d)
 {
@@ -2326,15 +2344,14 @@ void render_kanban(const KanbanDiagram &d, int id)
   ImGui::PushID(id);
   auto &es = s_kb_states[id];
 
-  const float col_w=160.0f,card_h=32.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
+  const float col_w=160.0f,card_h=32.0f,plus_h=22.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
 
-  // Use working copy during drag, else the immutable diagram
   const std::vector<KanbanCol> &cols = es.drag_active ? es.work_cols : d.columns;
   int nc=(int)cols.size();
   int max_cards=0; for(auto &c:cols) max_cards=std::max(max_cards,(int)c.cards.size());
-  // height must accommodate drop indicator slot
   float cw=nc*(col_w+hgap)+hgap+pad*2;
-  float col_body_h=(max_cards+2)*(card_h+vgap)+vgap;
+  // extra room: drop slot + the + button row
+  float col_body_h=(max_cards+2)*(card_h+vgap)+plus_h+vgap*2;
   float ch=col_header_h+col_body_h+pad*2;
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
@@ -2349,7 +2366,7 @@ void render_kanban(const KanbanDiagram &d, int id)
   const ImU32 hcol  = ImGui::GetColorU32(ImGuiCol_ButtonHovered);
   const ImVec2 mouse = ImGui::GetIO().MousePos;
 
-  // ── Pre-compute card rects for hit testing ────────────────────────────────
+  // ── Pre-compute card rects ────────────────────────────────────────────────
   struct CardRect { int ci,ri; float x,y; };
   std::vector<CardRect> crects;
   for(int i=0;i<nc;++i){
@@ -2361,56 +2378,67 @@ void render_kanban(const KanbanDiagram &d, int id)
     }
   }
 
-  // ── Hit test: which card is under mouse ───────────────────────────────────
-  int hov_ci=-1,hov_ri=-1;
+  // ── Pre-compute + button positions ───────────────────────────────────────
+  // The + button sits right after the last card in each column
+  struct PlusBtn { int ci; float x,y; };
+  std::vector<PlusBtn> plus_btns;
+  for(int i=0;i<nc;++i){
+    float x=orig.x+pad+i*(col_w+hgap);
+    float cy=orig.y+pad+col_header_h+vgap+(float)cols[i].cards.size()*(card_h+vgap);
+    plus_btns.push_back({i, x+4, cy});
+  }
+
+  // ── Hit test: card under mouse ────────────────────────────────────────────
+  int hov_ci=-1, hov_ri=-1;
   if(kb_hovered||es.drag_active){
-    for(auto &r:crects){
+    for(auto &r:crects)
       if(mouse.x>=r.x&&mouse.x<r.x+(col_w-8)&&mouse.y>=r.y&&mouse.y<r.y+card_h){
         hov_ci=r.ci; hov_ri=r.ri; break;
       }
-    }
+  }
+
+  // ── Hit test: + button under mouse ───────────────────────────────────────
+  int hov_plus=-1;
+  if(kb_hovered && !es.drag_active){
+    for(auto &p:plus_btns)
+      if(mouse.x>=p.x&&mouse.x<p.x+(col_w-8)&&mouse.y>=p.y&&mouse.y<p.y+plus_h){
+        hov_plus=p.ci; break;
+      }
   }
 
   // ── Drag start ────────────────────────────────────────────────────────────
   if(!es.drag_active && kb_active && ImGui::IsMouseDragging(0,5.0f)){
     ImVec2 dp=ImGui::GetMouseDragDelta(0);
     ImVec2 pp={mouse.x-dp.x,mouse.y-dp.y};
-    for(auto &r:crects){
+    for(auto &r:crects)
       if(pp.x>=r.x&&pp.x<r.x+(col_w-8)&&pp.y>=r.y&&pp.y<r.y+card_h){
         es.drag_active=true; es.drag_ci=r.ci; es.drag_ri=r.ri;
         es.work_cols=d.columns;
         es.drop_ci=r.ci; es.drop_ri=r.ri;
         break;
       }
-    }
   }
 
-  // ── Drag update: find drop target ─────────────────────────────────────────
+  // ── Drag update / end ─────────────────────────────────────────────────────
   if(es.drag_active){
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    int new_drop_ci=-1, new_drop_ri=0;
     for(int i=0;i<nc;++i){
       float cx=orig.x+pad+i*(col_w+hgap);
       if(mouse.x>=cx&&mouse.x<cx+col_w){
-        new_drop_ci=i;
+        es.drop_ci=i;
         float body_top=orig.y+pad+col_header_h+vgap;
         int nj=(int)cols[i].cards.size();
-        new_drop_ri=nj; // default: append at end
+        es.drop_ri=nj;
         for(int j=0;j<nj;++j){
-          float cy=body_top+j*(card_h+vgap);
-          if(mouse.y<cy+card_h*0.5f){ new_drop_ri=j; break; }
+          if(mouse.y<body_top+j*(card_h+vgap)+card_h*0.5f){ es.drop_ri=j; break; }
         }
         break;
       }
     }
-    if(new_drop_ci>=0){ es.drop_ci=new_drop_ci; es.drop_ri=new_drop_ri; }
-
-    // Drag end: commit
     if(!ImGui::IsMouseDown(0)){
       if(es.drop_ci>=0){
-        // Build new diagram from work_cols with card moved
-        KanbanDiagram nd = d;
-        KanbanCard moved = nd.columns[es.drag_ci].cards[es.drag_ri];
+        KanbanDiagram nd=d;
+        KanbanCard moved=nd.columns[es.drag_ci].cards[es.drag_ri];
         nd.columns[es.drag_ci].cards.erase(nd.columns[es.drag_ci].cards.begin()+es.drag_ri);
         int ins=es.drop_ri;
         if(es.drop_ci==es.drag_ci && es.drop_ri>es.drag_ri) --ins;
@@ -2421,9 +2449,40 @@ void render_kanban(const KanbanDiagram &d, int id)
       es.drag_active=false; es.drag_ci=-1; es.drag_ri=-1;
       es.drop_ci=-1; es.drop_ri=-1; es.work_cols.clear();
     }
-  } else if(hov_ci>=0){
+  } else if(hov_ci>=0 || hov_plus>=0){
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
   }
+
+  // ── Left-click on + button → open add popup ───────────────────────────────
+  bool open_add_popup = false;
+  if(!es.drag_active && kb_active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hov_plus>=0){
+    es.add_ci=hov_plus;
+    es.add_label[0]='\0'; es.add_desc[0]='\0'; es.add_focus=true;
+    open_add_popup=true;
+  }
+
+  // ── Right-click ───────────────────────────────────────────────────────────
+  bool open_col_ctx=false;
+  if(kb_hovered && !es.drag_active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
+    g_consumed_right_click=true;
+    if(hov_ci>=0 && hov_ri>=0){
+      // Edit existing card
+      es.ctx_ci=hov_ci; es.ctx_ri=hov_ri;
+      const auto &card=cols[hov_ci].cards[hov_ri];
+      std::strncpy(es.edit_label,card.label.c_str(),255); es.edit_label[255]='\0';
+      std::strncpy(es.edit_desc, card.description.c_str(),511); es.edit_desc[511]='\0';
+      es.edit_focus=true;
+      ImGui::OpenPopup("##kb_edit");
+    } else {
+      // Right-click on empty column area → column context menu
+      for(int i=0;i<nc;++i){
+        float cx=orig.x+pad+i*(col_w+hgap);
+        if(mouse.x>=cx&&mouse.x<cx+col_w){ es.add_ci=i; open_col_ctx=true; break; }
+      }
+    }
+  }
+  if(open_col_ctx) ImGui::OpenPopup("##kb_col_ctx");
+  if(open_add_popup) ImGui::OpenPopup("##kb_add");
 
   // ── Draw columns ─────────────────────────────────────────────────────────
   for(int i=0;i<nc;++i){
@@ -2440,38 +2499,38 @@ void render_kanban(const KanbanDiagram &d, int id)
     float cy=body_top+vgap;
     int nj=(int)cols[i].cards.size();
     for(int j=0;j<nj;++j){
-      // Drop indicator: horizontal bar before this card
-      if(es.drag_active && es.drop_ci==i && es.drop_ri==j){
+      if(es.drag_active && es.drop_ci==i && es.drop_ri==j)
         dl->AddRectFilled(ImVec2(x+4,cy-vgap*0.5f-1),ImVec2(x+col_w-4,cy-vgap*0.5f+1),series_color(i,0.9f),2);
-      }
       bool is_dragging=(es.drag_active && i==es.drag_ci && j==es.drag_ri);
       bool is_hovered=(hov_ci==i && hov_ri==j && !es.drag_active);
-      ImU32 card_fill = is_hovered ? hcol : fill;
-      ImU32 card_bord = is_hovered ? series_color(i,0.8f) : bord;
-      float alpha = is_dragging ? 0.35f : 1.0f;
-      // Faded original slot while dragging
       if(is_dragging){
         dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),
           ImGui::ColorConvertFloat4ToU32({0.5f,0.5f,0.5f,0.15f}),3);
         dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),bord,3,0,1.0f);
       } else {
-        dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),card_fill,3);
-        dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),card_bord,3);
+        dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),is_hovered?hcol:fill,3);
+        dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),is_hovered?series_color(i,0.8f):bord,3);
         const auto &card=cols[i].cards[j];
         std::string lbl=card.label.size()>18?card.label.substr(0,17)+"…":card.label;
         ImVec2 cs=ImGui::CalcTextSize(lbl.c_str());
         dl->AddText(ImVec2(x+4+(col_w-8-cs.x)*0.5f,cy+(card_h-cs.y)*0.5f),tcol,lbl.c_str());
-        // description dot indicator
-        if(!card.description.empty()){
+        if(!card.description.empty())
           dl->AddCircleFilled(ImVec2(x+col_w-10,cy+card_h-8),3.0f,series_color(i,0.7f));
-        }
       }
       cy+=card_h+vgap;
     }
-    // Drop indicator at end of column
-    if(es.drag_active && es.drop_ci==i && es.drop_ri>=nj){
+    if(es.drag_active && es.drop_ci==i && es.drop_ri>=nj)
       dl->AddRectFilled(ImVec2(x+4,cy-vgap*0.5f-1),ImVec2(x+col_w-4,cy-vgap*0.5f+1),series_color(i,0.9f),2);
-    }
+
+    // ── + button ─────────────────────────────────────────────────────────
+    bool plus_hov=(hov_plus==i);
+    ImU32 plus_fill = series_color(i, plus_hov?0.18f:0.07f);
+    ImU32 plus_bord = series_color(i, plus_hov?0.6f:0.25f);
+    ImU32 plus_text = series_color(i, plus_hov?0.95f:0.45f);
+    dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+plus_h),plus_fill,3);
+    dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+plus_h),plus_bord,3);
+    ImVec2 ps=ImGui::CalcTextSize("+");
+    dl->AddText(ImVec2(x+4+(col_w-8-ps.x)*0.5f,cy+(plus_h-ps.y)*0.5f),plus_text,"+");
   }
 
   // ── Floating drag card ────────────────────────────────────────────────────
@@ -2490,26 +2549,21 @@ void render_kanban(const KanbanDiagram &d, int id)
   // ── Hover tooltip ─────────────────────────────────────────────────────────
   if(hov_ci>=0 && hov_ri>=0 && !es.drag_active){
     const auto &card=cols[hov_ci].cards[hov_ri];
-    if(!card.description.empty()){
-      ImGui::SetTooltip("%s", card.description.c_str());
-    } else {
-      ImGui::SetTooltip("%s", card.label.c_str());
-    }
+    ImGui::SetTooltip("%s", card.description.empty() ? card.label.c_str() : card.description.c_str());
   }
 
-  // ── Right-click context menu ──────────────────────────────────────────────
-  if(kb_hovered && !es.drag_active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)){
-    g_consumed_right_click=true;
-    if(hov_ci>=0 && hov_ri>=0){
-      es.ctx_ci=hov_ci; es.ctx_ri=hov_ri;
-      const auto &card=cols[hov_ci].cards[hov_ri];
-      std::strncpy(es.edit_label,card.label.c_str(),255); es.edit_label[255]='\0';
-      std::strncpy(es.edit_desc, card.description.c_str(),511); es.edit_desc[511]='\0';
-      es.edit_focus=true;
-      ImGui::OpenPopup("##kb_edit");
+  // ── Column context popup (right-click empty area) ─────────────────────────
+  bool open_add_from_ctx = false;
+  if(ImGui::BeginPopup("##kb_col_ctx")){
+    if(ImGui::MenuItem("Add card")){
+      es.add_label[0]='\0'; es.add_desc[0]='\0'; es.add_focus=true;
+      open_add_from_ctx=true;
     }
+    ImGui::EndPopup();
   }
+  if(open_add_from_ctx) ImGui::OpenPopup("##kb_add");
 
+  // ── Card edit popup (right-click card) ────────────────────────────────────
   if(ImGui::BeginPopup("##kb_edit")){
     if(es.ctx_ci>=0 && es.ctx_ci<(int)d.columns.size()
        && es.ctx_ri>=0 && es.ctx_ri<(int)d.columns[es.ctx_ci].cards.size()){
@@ -2525,10 +2579,47 @@ void render_kanban(const KanbanDiagram &d, int id)
       ImGui::Separator();
       bool confirm = ImGui::Button("OK") ||
                      (ImGui::IsKeyPressed(ImGuiKey_Enter) && !ImGui::IsItemActive());
-      if(confirm){
+      if(confirm && es.edit_label[0]){
         KanbanDiagram nd=d;
-        nd.columns[es.ctx_ci].cards[es.ctx_ri].label      = es.edit_label;
-        nd.columns[es.ctx_ci].cards[es.ctx_ri].description = es.edit_desc;
+        nd.columns[es.ctx_ci].cards[es.ctx_ri].label       = es.edit_label;
+        nd.columns[es.ctx_ci].cards[es.ctx_ri].description  = es.edit_desc;
+        g_pending_edit={id,serialize_kanban(nd)};
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+      ImGui::SameLine();
+      if(ImGui::Button("Delete")){
+        KanbanDiagram nd=d;
+        nd.columns[es.ctx_ci].cards.erase(nd.columns[es.ctx_ci].cards.begin()+es.ctx_ri);
+        g_pending_edit={id,serialize_kanban(nd)};
+        ImGui::CloseCurrentPopup();
+      }
+    }
+    ImGui::EndPopup();
+  }
+
+  // ── Add card popup ────────────────────────────────────────────────────────
+  if(ImGui::BeginPopup("##kb_add")){
+    if(es.add_ci>=0 && es.add_ci<(int)d.columns.size()){
+      ImGui::TextDisabled("New card — %s", d.columns[es.add_ci].label.c_str());
+      ImGui::Separator();
+      ImGui::Text("Label:");
+      if(es.add_focus){ ImGui::SetKeyboardFocusHere(); es.add_focus=false; }
+      ImGui::SetNextItemWidth(220);
+      bool enter=ImGui::InputText("##kb_add_lbl",es.add_label,256,ImGuiInputTextFlags_EnterReturnsTrue);
+      ImGui::Text("Description:");
+      ImGui::SetNextItemWidth(220);
+      ImGui::InputTextMultiline("##kb_add_desc",es.add_desc,512,ImVec2(220,60));
+      ImGui::Separator();
+      bool confirm=ImGui::Button("Add") || (enter && !ImGui::IsItemActive());
+      if(confirm && es.add_label[0]){
+        KanbanDiagram nd=d;
+        KanbanCard nc_card;
+        nc_card.id=next_card_id(d);
+        nc_card.label=es.add_label;
+        nc_card.description=es.add_desc;
+        nd.columns[es.add_ci].cards.push_back(nc_card);
         g_pending_edit={id,serialize_kanban(nd)};
         ImGui::CloseCurrentPopup();
       }
