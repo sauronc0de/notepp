@@ -1850,6 +1850,7 @@ struct PacketEditState {
   bool         drag_active  = false;
   int          drag_fi      = -1;
   std::vector<PacketField> drag_fields;
+  std::vector<int>         drag_colors; // original index per slot — keeps colors stable
 };
 static std::unordered_map<int, PacketEditState> s_pkt_states;
 
@@ -1958,7 +1959,8 @@ void render_packet(const PacketDiagram &d, int id)
     ImVec2 pp = {mouse.x - dp.x, mouse.y - dp.y};
     for (auto &r : frects)
       if (pp.x >= r.x && pp.x < r.x + r.w && pp.y >= r.y && pp.y < r.y + fh)
-        { es.drag_active = true; es.drag_fi = r.fi; es.drag_fields = d.fields; break; }
+        { es.drag_active = true; es.drag_fi = r.fi; es.drag_fields = d.fields;
+          es.drag_colors.resize(d.fields.size()); std::iota(es.drag_colors.begin(), es.drag_colors.end(), 0); break; }
   }
 
   // Drag update / end
@@ -1976,17 +1978,25 @@ void render_packet(const PacketDiagram &d, int id)
         nd.total_bits = 0; for (auto &f : nd.fields) nd.total_bits = std::max(nd.total_bits, f.end + 1);
         g_pending_edit = {id, serialize_packet(nd)};
       }
-      es.drag_active = false; es.drag_fi = -1; es.drag_fields.clear();
+      es.drag_active = false; es.drag_fi = -1; es.drag_fields.clear(); es.drag_colors.clear();
     } else if (hovered_fi >= 0 && hovered_fi != es.drag_fi &&
                hovered_fi < (int)es.drag_fields.size()) {
-      // Swap entire field (name + bit count), then recompute sequential positions
+      // Swap entire field (name + bit count) and its color slot, then recompute positions
       std::swap(es.drag_fields[es.drag_fi], es.drag_fields[hovered_fi]);
+      if (es.drag_fi < (int)es.drag_colors.size() && hovered_fi < (int)es.drag_colors.size())
+        std::swap(es.drag_colors[es.drag_fi], es.drag_colors[hovered_fi]);
       rebuild_bits(es.drag_fields);
       es.drag_fi = hovered_fi;
     }
   } else if (hovered_fi >= 0) {
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
   }
+
+  // Stable color index: during drag, map current slot back to original index
+  // so colors travel with the field, not with the slot.
+  auto ci = [&](int fi) -> int {
+    return (es.drag_active && fi < (int)es.drag_colors.size()) ? es.drag_colors[fi] : fi;
+  };
 
   // ── Draw list + colors ────────────────────────────────────────────────────
   ImDrawList *dl   = ImGui::GetWindowDrawList();
@@ -2038,10 +2048,9 @@ void render_packet(const PacketDiagram &d, int id)
       int fs = std::max(f.start, rs), fe = std::min(f.end, re);
       if (fs > fe) continue;
       auto [vfx, vfw] = vr(fs, fe);
-      float alpha = (es.drag_active && fi == es.drag_fi) ? 0.65f : 0.42f;
-      dl->AddRectFilled(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, alpha), 3.0f);
-      dl->AddRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(fi, 0.80f), 3.0f, 0, 1.5f);
-      if (fi == hovered_fi || (es.drag_active && fi == es.drag_fi))
+      dl->AddRectFilled(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(ci(fi), 0.42f), 3.0f);
+      dl->AddRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh), series_color(ci(fi), 0.80f), 3.0f, 0, 1.5f);
+      if (fi == hovered_fi)
         dl->AddRect(ImVec2(vfx-1,fy-1), ImVec2(vfx+vfw+1,fy+fh+1), hcol, 4.0f, 0, 2.0f);
     }
 
@@ -2071,7 +2080,7 @@ void render_packet(const PacketDiagram &d, int id)
         dl->AddRectFilled(ImVec2(lx2-lp, ly2-lp), ImVec2(lx2+ts.x+lp, ly2+ts.y+lp), lbg, 2.5f);
         dl->AddText(ImVec2(lx2, ly2), tcol, f.name.c_str());
       } else if (ext[fi]) {
-        dl->AddCircleFilled(ImVec2(vfx+vfw*0.5f, fy+fh-5.0f), 2.5f, series_color(fi, 0.9f));
+        dl->AddCircleFilled(ImVec2(vfx+vfw*0.5f, fy+fh-5.0f), 2.5f, series_color(ci(fi), 0.9f));
         if (ImGui::IsMouseHoveringRect(ImVec2(vfx, fy), ImVec2(vfx+vfw, fy+fh)))
           ImGui::SetTooltip("%s", f.name.c_str());
       }
@@ -2086,7 +2095,7 @@ void render_packet(const PacketDiagram &d, int id)
       if (!ext[fi]) continue;
       float iw = sq + lgap + ImGui::CalcTextSize(wf[fi].name.c_str()).x + igap;
       if (lx + iw > right_edge && lx > orig.x + outer) { lx = orig.x + outer; ly += 18.0f; }
-      dl->AddRectFilled(ImVec2(lx, ly+2), ImVec2(lx+sq, ly+sq+2), series_color(fi, 0.85f), 2.0f);
+      dl->AddRectFilled(ImVec2(lx, ly+2), ImVec2(lx+sq, ly+sq+2), series_color(ci(fi), 0.85f), 2.0f);
       dl->AddText(ImVec2(lx+sq+lgap, ly), tcol, wf[fi].name.c_str());
       lx += iw;
     }
