@@ -160,7 +160,7 @@ bool parse_packet(std::string_view src, PacketDiagram &out);
 void render_packet(const PacketDiagram &d, int id);
 
 // ── Kanban ───────────────────────────────────────────────────────────────────
-struct KanbanCard { std::string id, label; };
+struct KanbanCard { std::string id, label, description; };
 struct KanbanCol  { std::string id, label; std::vector<KanbanCard> cards; };
 struct KanbanDiagram { std::vector<KanbanCol> columns; };
 bool parse_kanban(std::string_view src, KanbanDiagram &out);

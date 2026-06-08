@@ -1515,16 +1515,18 @@ packet-beta
 
 ### 15.18 Kanban Board
 
-**Keyword:** `kanban`  · Columns are top-level items; cards are indented.
+**Keyword:** `kanban`  · Columns are top-level items; cards are indented. Cards support an optional `: description` suffix shown as a tooltip on hover (small dot in corner = has description).
+
+**Interactions:** drag & drop cards between/within columns · right-click to edit label & description · hover for tooltip.
 
 ````markdown
 ```mermaid
 kanban
   todo[To Do]
-    t1[Write tests]
-    t2[Update docs]
+    t1[Write tests]: Write unit tests for the new API endpoints
+    t2[Update docs]: Update README with new features
   inprogress[In Progress]
-    t3[Implement feature]
+    t3[Implement feature]: Core logic implementation
   done[Done]
     t4[Code review]
     t5[Deploy to staging]
