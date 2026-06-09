@@ -1851,6 +1851,10 @@ struct PacketEditState {
   int          drag_fi      = -1;
   std::vector<PacketField> drag_fields;
   std::vector<int>         drag_colors; // original index per slot — keeps colors stable
+  bool  resize_active    = false;
+  int   resize_fi        = -1;
+  int   resize_orig_bits = 0;
+  float resize_start_x   = 0.0f;
 };
 static std::unordered_map<int, PacketEditState> s_pkt_states;
 
@@ -1859,8 +1863,8 @@ void render_packet(const PacketDiagram &d, int id)
   ImGui::PushID(id);
   auto &es = s_pkt_states[id];
 
-  // Working fields — during drag we show the live-swapped order
-  const std::vector<PacketField> &wf = es.drag_active ? es.drag_fields : d.fields;
+  // Working fields — during drag/resize we show the live state
+  const std::vector<PacketField> &wf = (es.drag_active || es.resize_active) ? es.drag_fields : d.fields;
   const int NF = (int)wf.size();
 
   const PacketConfig &cfg = d.config;
@@ -1870,7 +1874,9 @@ void render_packet(const PacketDiagram &d, int id)
   const float sq = 10.0f, lgap = 5.0f, igap = 10.0f;
   const float outer = 4.0f;
 
-  int total  = std::max(d.total_bits, 1);
+  int wf_total = 0;
+  for (auto &f : wf) wf_total = std::max(wf_total, f.end + 1);
+  int total  = std::max(std::max(wf_total, d.total_bits), 1);
   int bpr    = std::max(1, cfg.bitsPerRow);
   int n_rows = (total + bpr - 1) / bpr;
   float cw   = (float)bpr * bit_w + outer * 2.0f;
@@ -1922,8 +1928,8 @@ void render_packet(const PacketDiagram &d, int id)
     return {vfx, vfw};
   };
 
-  // Pre-compute field rects for hit-testing (hover + drag)
-  struct FR { int fi; float x, y, w; };
+  // Pre-compute field rects for hit-testing (hover + drag + resize)
+  struct FR { int fi, fe; float x, y, w; };
   std::vector<FR> frects;
   frects.reserve(NF * n_rows);
   {
@@ -1935,7 +1941,7 @@ void render_packet(const PacketDiagram &d, int id)
         int fs = std::max(wf[fi].start, rs), fe = std::min(wf[fi].end, re);
         if (fs > fe) continue;
         auto [vfx, vfw] = vis_rect(rs, re, fs, fe);
-        frects.push_back({fi, vfx, fy0, vfw});
+        frects.push_back({fi, fe, vfx, fy0, vfw});
       }
     }
   }
@@ -1945,29 +1951,93 @@ void render_packet(const PacketDiagram &d, int id)
   const bool pkt_hovered = ImGui::IsItemHovered();
   const bool pkt_active  = ImGui::IsItemActive();
 
-  // ── Hover + drag detection ────────────────────────────────────────────────
+  // ── Hover + drag + resize detection ──────────────────────────────────────
   const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const float edge_thresh = 6.0f;
+
   int hovered_fi = -1;
   for (auto &r : frects)
     if (mouse.x >= r.x && mouse.x < r.x + r.w && mouse.y >= r.y && mouse.y < r.y + fh)
       { hovered_fi = r.fi; break; }
-  if (!pkt_hovered && !es.drag_active) hovered_fi = -1;
+  if (!pkt_hovered && !es.drag_active && !es.resize_active) hovered_fi = -1;
 
-  // Drag start (require 5 px movement to distinguish from click)
-  if (!es.drag_active && pkt_active && ImGui::IsMouseDragging(0, 5.0f)) {
-    ImVec2 dp = ImGui::GetMouseDragDelta(0);
-    ImVec2 pp = {mouse.x - dp.x, mouse.y - dp.y};
-    for (auto &r : frects)
-      if (pp.x >= r.x && pp.x < r.x + r.w && pp.y >= r.y && pp.y < r.y + fh)
-        { es.drag_active = true; es.drag_fi = r.fi; es.drag_fields = d.fields;
-          es.drag_colors.resize(d.fields.size()); std::iota(es.drag_colors.begin(), es.drag_colors.end(), 0); break; }
+  // Detect right-edge hover (for resize cursor + resize drag start)
+  int edge_fi = -1;
+  if (!es.drag_active && !es.resize_active) {
+    for (auto &r : frects) {
+      if (r.fe != wf[r.fi].end) continue; // only last segment of the field
+      float right = r.x + r.w;
+      if (mouse.x >= right - edge_thresh && mouse.x <= right + edge_thresh &&
+          mouse.y >= r.y && mouse.y < r.y + fh)
+        { edge_fi = r.fi; break; }
+    }
+    if (!pkt_hovered) edge_fi = -1;
   }
 
-  // Drag update / end
+  // Drag/resize start (require 5 px movement to distinguish from click)
+  if (!es.drag_active && !es.resize_active && pkt_active && ImGui::IsMouseDragging(0, 5.0f)) {
+    ImVec2 dp = ImGui::GetMouseDragDelta(0);
+    ImVec2 pp = {mouse.x - dp.x, mouse.y - dp.y};
+    // Check right-edge drag → resize
+    bool started = false;
+    for (auto &r : frects) {
+      if (r.fe != wf[r.fi].end) continue;
+      float right = r.x + r.w;
+      if (pp.x >= right - edge_thresh && pp.x <= right + edge_thresh &&
+          pp.y >= r.y && pp.y < r.y + fh) {
+        es.resize_active    = true;
+        es.resize_fi        = r.fi;
+        es.resize_orig_bits = wf[r.fi].end - wf[r.fi].start + 1;
+        es.resize_start_x   = pp.x;
+        es.drag_fields      = d.fields;
+        es.drag_colors.resize(d.fields.size());
+        std::iota(es.drag_colors.begin(), es.drag_colors.end(), 0);
+        started = true;
+        break;
+      }
+    }
+    // Fall back to field-swap drag
+    if (!started) {
+      for (auto &r : frects)
+        if (pp.x >= r.x && pp.x < r.x + r.w && pp.y >= r.y && pp.y < r.y + fh)
+          { es.drag_active = true; es.drag_fi = r.fi; es.drag_fields = d.fields;
+            es.drag_colors.resize(d.fields.size()); std::iota(es.drag_colors.begin(), es.drag_colors.end(), 0); break; }
+    }
+  }
+
+  // Resize update / end
+  if (es.resize_active) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    int fi = es.resize_fi;
+    float delta_x   = mouse.x - es.resize_start_x;
+    int   delta_bits = (int)std::round(delta_x / bit_w);
+    int   new_bits   = std::max(1, es.resize_orig_bits + delta_bits);
+    // Rebuild drag_fields from d.fields with updated bit count for fi
+    es.drag_fields = d.fields;
+    if (fi < (int)es.drag_fields.size()) {
+      int new_end = es.drag_fields[fi].start + new_bits - 1;
+      int diff    = new_end - es.drag_fields[fi].end;
+      es.drag_fields[fi].end = new_end;
+      for (int k = fi + 1; k < (int)es.drag_fields.size(); ++k) {
+        es.drag_fields[k].start += diff;
+        es.drag_fields[k].end   += diff;
+      }
+    }
+    if (!ImGui::IsMouseDown(0)) {
+      if (new_bits != es.resize_orig_bits && fi < (int)d.fields.size()) {
+        PacketDiagram nd = d; nd.fields = es.drag_fields;
+        nd.total_bits = nd.fields.empty() ? 0 : nd.fields.back().end + 1;
+        g_pending_edit = {id, serialize_packet(nd)};
+      }
+      es.resize_active = false; es.resize_fi = -1;
+      es.drag_fields.clear(); es.drag_colors.clear();
+    }
+  }
+
+  // Field-swap drag update / end
   if (es.drag_active) {
     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
     if (!ImGui::IsMouseDown(0)) {
-      // Commit if any field name or bit count changed
       bool changed = false;
       for (int i = 0; i < (int)d.fields.size() && i < (int)es.drag_fields.size(); ++i)
         if (d.fields[i].name != es.drag_fields[i].name ||
@@ -1981,13 +2051,16 @@ void render_packet(const PacketDiagram &d, int id)
       es.drag_active = false; es.drag_fi = -1; es.drag_fields.clear(); es.drag_colors.clear();
     } else if (hovered_fi >= 0 && hovered_fi != es.drag_fi &&
                hovered_fi < (int)es.drag_fields.size()) {
-      // Swap entire field (name + bit count) and its color slot, then recompute positions
       std::swap(es.drag_fields[es.drag_fi], es.drag_fields[hovered_fi]);
       if (es.drag_fi < (int)es.drag_colors.size() && hovered_fi < (int)es.drag_colors.size())
         std::swap(es.drag_colors[es.drag_fi], es.drag_colors[hovered_fi]);
       rebuild_bits(es.drag_fields);
       es.drag_fi = hovered_fi;
     }
+  } else if (es.resize_active) {
+    // cursor already set above
+  } else if (edge_fi >= 0) {
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
   } else if (hovered_fi >= 0) {
     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
   }
@@ -2085,6 +2158,20 @@ void render_packet(const PacketDiagram &d, int id)
     }
   }
 
+  // ── Resize edge highlight ─────────────────────────────────────────────────
+  {
+    int edge_hl = es.resize_active ? es.resize_fi : edge_fi;
+    if (edge_hl >= 0) {
+      const ImU32 ecol = ImGui::GetColorU32(ImGuiCol_Text, 0.85f);
+      for (auto &r : frects) {
+        if (r.fi != edge_hl || r.fe != wf[r.fi].end) continue;
+        float rx = r.x + r.w;
+        dl->AddLine(ImVec2(rx, r.y - 1), ImVec2(rx, r.y + fh + 1), ecol, 2.5f);
+        break;
+      }
+    }
+  }
+
   // ── Legend ────────────────────────────────────────────────────────────────
   if (any_ext && cfg.showLegend) {
     float lx = orig.x + outer, ly = y_base + (float)n_rows * row_step + py;
@@ -2100,15 +2187,22 @@ void render_packet(const PacketDiagram &d, int id)
   }
 
   // ── Hover tooltip ─────────────────────────────────────────────────────────
-  if (pkt_hovered && hovered_fi >= 0 && !es.drag_active) {
-    const auto &hf = d.fields[hovered_fi];
+  if (es.resize_active) {
+    int fi = es.resize_fi;
+    if (fi < (int)es.drag_fields.size()) {
+      const auto &hf = es.drag_fields[fi];
+      int nbits = hf.end - hf.start + 1;
+      ImGui::SetTooltip("%s\n%db", hf.name.c_str(), nbits);
+    }
+  } else if (pkt_hovered && hovered_fi >= 0 && !es.drag_active) {
+    const auto &hf = wf[hovered_fi];
     int nbits = hf.end - hf.start + 1;
     ImGui::SetTooltip("%s\n[%d-%d]  %db", hf.name.c_str(), hf.start, hf.end, nbits);
   }
 
   // ── Context menu trigger (right-click) ────────────────────────────────────
   bool open_rename = false, open_add = false;
-  if (pkt_hovered && !es.drag_active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+  if (pkt_hovered && !es.drag_active && !es.resize_active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
     g_consumed_right_click = true;
     if (hovered_fi >= 0) {
       es.ctx_fi = hovered_fi;
