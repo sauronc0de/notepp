@@ -696,6 +696,13 @@ void set_dockers_enabled(bool enabled)
     io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
 }
 
+ImGuiID saved_window_dock_id(const char *window_name)
+{
+  if(window_name == nullptr || window_name[0] == '\0') return 0;
+  ImGuiWindowSettings *settings = ImGui::FindWindowSettingsByID(ImHashStr(window_name));
+  return settings != nullptr ? settings->DockId : 0;
+}
+
 void load_drawings_state()
 {
   g_folder_drawings.clear();
@@ -954,6 +961,8 @@ int App::run()
     init_sdl_gl();
     init_imgui();
     load_state();
+    if(std::filesystem::exists(imgui_ini_file_))
+      ImGui::LoadIniSettingsFromDisk(imgui_ini_file_.string().c_str());
 
     // Extra frames to render after the last event or interaction, so hover effects
     // and frame-delayed state (popup close, tooltip fade) settle cleanly.
@@ -1090,6 +1099,7 @@ void App::init_imgui()
   ImGui::CreateContext();
 
   ImGuiIO &io = ImGui::GetIO();
+  io.IniFilename = nullptr;
 
   // Pick a font family that has Bold/Italic files available.
   io.Fonts->AddFontDefault();
@@ -1308,6 +1318,7 @@ void App::load_state()
                     n.has_layout = json_find_bool(nobj, "has_layout", false);
                     n.hidden = json_find_bool(nobj, "hidden", false);
                     n.always_on_top = json_find_bool(nobj, "always_on_top", false);
+                    n.dock_id = (ImGuiID)json_find_int(nobj, "dock_id", 0);
                     n.use_custom_color = json_find_bool(nobj, "use_custom_color", false);
                     n.color_r = (float)json_find_int(nobj, "color_r", 0) / 255.0f;
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
@@ -1503,6 +1514,7 @@ void App::save_index()
           << ", \"has_layout\": " << (n.has_layout ? "true" : "false")
           << ", \"hidden\": " << (n.hidden ? "true" : "false")
           << ", \"always_on_top\": " << (n.always_on_top ? "true" : "false")
+          << ", \"dock_id\": " << n.dock_id
           << ", \"use_custom_color\": " << (n.use_custom_color ? "true" : "false")
           << ", \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_r)) * 255.0f)
           << ", \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_g)) * 255.0f)
@@ -2642,6 +2654,7 @@ std::string App::capture_workspace_snapshot() const
       note_json["has_layout"] = note.has_layout;
       note_json["hidden"] = note.hidden;
       note_json["always_on_top"] = note.always_on_top;
+      note_json["dock_id"] = note.dock_id;
       note_json["content"] = (note.path == state_file_path_) ? markdown_text_ : read_text_file(note.path);
       notes_json.push_back(std::move(note_json));
     }
@@ -2778,6 +2791,7 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
           note.has_layout = note_json.value("has_layout", false);
           note.hidden = note_json.value("hidden", false);
           note.always_on_top = note_json.value("always_on_top", false);
+          note.dock_id = note_json.value("dock_id", 0u);
           if(note.path.empty()) note.path = make_note_path(folder.name, note.title);
 
           restored_contents[note.path] = note_json.value("content", std::string());
@@ -7889,15 +7903,25 @@ __CURSOR__)MD");
       const std::string window_id = n.title + "###FolderNote_" + n.id;
 
       const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
+      const ImGuiID ini_dock_id = saved_window_dock_id(window_id.c_str());
+      if(force_note_layout_restore_ && n.dock_id == 0 && ini_dock_id != 0)
+      {
+        n.dock_id = ini_dock_id;
+        layout_dirty_ = true;
+      }
+      const bool restore_saved_dock = !request_reset_layout && force_note_layout_restore_ && n.dock_id != 0;
       if(request_reset_layout)
         ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
-      else if(force_note_layout_restore_ && n.dock_id != 0)
+      else if(restore_saved_dock)
         ImGui::SetNextWindowDockID(n.dock_id, ImGuiCond_Always);
       if(n.has_layout)
       {
         const ImGuiCond cond = force_note_layout ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
-        ImGui::SetNextWindowPos(ImVec2(n.pos_x, n.pos_y), cond);
-        ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, n.width), std::max(140.0f, n.height)), cond);
+        if(!restore_saved_dock)
+        {
+          ImGui::SetNextWindowPos(ImVec2(n.pos_x, n.pos_y), cond);
+          ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, n.width), std::max(140.0f, n.height)), cond);
+        }
       }
       else
       {
@@ -7922,7 +7946,12 @@ __CURSOR__)MD");
           note_flags);
       if(search_request_window_focus_ && ni == active_note_idx_) search_request_window_focus_ = false;
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
-      n.dock_id = ImGui::GetWindowDockID();
+      const ImGuiID current_dock_id = ImGui::GetWindowDockID();
+      if(n.dock_id != current_dock_id)
+      {
+        n.dock_id = current_dock_id;
+        layout_dirty_ = true;
+      }
       const bool is_editing_this = editing_mode_ && ni == active_note_idx_;
 
       // Per-note custom font / size
@@ -8734,6 +8763,8 @@ __CURSOR__)MD");
     if(layout_dirty_ && !ImGui::IsAnyMouseDown())
     {
       save_index();
+      capture_to_active_profile();
+      save_profiles();
       layout_dirty_ = false;
     }
     if(state_dirty_)
@@ -8794,11 +8825,26 @@ __CURSOR__)MD");
 
   if(editing_mode_) note_window_height = compute_edit_window_height();
 
+  std::string note_window_label = note_title_ + "###NoteWindow";
+  const ImGuiID active_ini_dock_id = saved_window_dock_id(note_window_label.c_str());
+  if(force_note_layout_restore_ && active_note.dock_id == 0 && active_ini_dock_id != 0)
+  {
+    active_note.dock_id = active_ini_dock_id;
+    layout_dirty_ = true;
+  }
+
+  const bool restore_active_dock = force_note_layout_restore_ && active_note.dock_id != 0;
+  if(restore_active_dock)
+    ImGui::SetNextWindowDockID(active_note.dock_id, ImGuiCond_Always);
+
   if(active_note.has_layout)
   {
     const ImGuiCond cond = force_note_layout_restore_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
-    ImGui::SetNextWindowPos(ImVec2(active_note.pos_x, active_note.pos_y), cond);
-    ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, active_note.width), std::max(140.0f, active_note.height)), cond);
+    if(!restore_active_dock)
+    {
+      ImGui::SetNextWindowPos(ImVec2(active_note.pos_x, active_note.pos_y), cond);
+      ImGui::SetNextWindowSize(ImVec2(std::max(320.0f, active_note.width), std::max(140.0f, active_note.height)), cond);
+    }
   }
   else
   {
@@ -8813,7 +8859,6 @@ __CURSOR__)MD");
       ImVec2(FLT_MAX, pre_viewport_h));
   if(search_request_window_focus_) ImGui::SetNextWindowFocus();
 
-  std::string note_window_label = note_title_ + "###NoteWindow";
   const int active_folder_theme_count = push_folder_imgui_theme(
       make_note_theme(
           active_note.use_custom_color,
@@ -8827,6 +8872,12 @@ __CURSOR__)MD");
       nullptr,
       (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
   if(search_request_window_focus_) search_request_window_focus_ = false;
+  const ImGuiID active_current_dock_id = ImGui::GetWindowDockID();
+  if(active_note.dock_id != active_current_dock_id)
+  {
+    active_note.dock_id = active_current_dock_id;
+    layout_dirty_ = true;
+  }
 
   // Right click on title bar for note window actions.
   static bool open_rename_popup = false;
@@ -9287,6 +9338,8 @@ __CURSOR__)MD");
   if(layout_dirty_ && !ImGui::IsAnyMouseDown())
   {
     save_index();
+    capture_to_active_profile();
+    save_profiles();
     layout_dirty_ = false;
   }
   if(state_dirty_)
