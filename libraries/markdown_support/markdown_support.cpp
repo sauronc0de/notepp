@@ -240,6 +240,18 @@ bool detect_mermaid_type(std::string_view body, std::string &type_out)
     if(line.empty()) continue;
     if(NoteCore::starts_with(line, "%%")) continue;
     if(NoteCore::starts_with(line, "%%{")) continue;
+    if(line == "---")
+    {
+      while(p < body.size())
+      {
+        size_t e2 = body.find('\n', p);
+        if(e2 == std::string_view::npos) e2 = body.size();
+        const std::string_view fm_line = NoteCore::trim(body.substr(p, e2 - p));
+        p = (e2 < body.size()) ? e2 + 1 : e2;
+        if(fm_line == "---") break;
+      }
+      continue;
+    }
 
     const size_t sp = line.find_first_of(" \t");
     const std::string_view token = (sp == std::string_view::npos) ? line : line.substr(0, sp);

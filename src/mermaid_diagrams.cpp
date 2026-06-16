@@ -31,6 +31,118 @@ static std::string strip_quotes(std::string_view s)
   return std::string(s);
 }
 
+static size_t find_unquoted(std::string_view s, char ch, size_t start = 0)
+{
+  char quote = 0;
+  for(size_t i = start; i < s.size(); ++i) {
+    const char c = s[i];
+    if(quote) {
+      if(c == quote) quote = 0;
+    } else if(c == '"' || c == '\'') {
+      quote = c;
+    } else if(c == ch) {
+      return i;
+    }
+  }
+  return std::string_view::npos;
+}
+
+static std::vector<std::string> split_csv_items(std::string_view s)
+{
+  std::vector<std::string> items;
+  size_t start = 0;
+  char quote = 0;
+  for(size_t i = 0; i <= s.size(); ++i) {
+    const char c = i < s.size() ? s[i] : ',';
+    if(i < s.size()) {
+      if(quote) {
+        if(c == quote) quote = 0;
+      } else if(c == '"' || c == '\'') {
+        quote = c;
+      } else if(c != ',') {
+        continue;
+      }
+    }
+
+    std::string item = strip_quotes(tr(s.substr(start, i - start)));
+    if(!item.empty()) items.push_back(std::move(item));
+    start = i + 1;
+  }
+  return items;
+}
+
+static std::string_view strip_leading_quoted_label(std::string_view s)
+{
+  s = tr(s);
+  if(s.size() < 2 || (s.front() != '"' && s.front() != '\'')) return s;
+  const char quote = s.front();
+  const size_t close = s.find(quote, 1);
+  if(close == std::string_view::npos) return s;
+  return tr(s.substr(close + 1));
+}
+
+static bool parse_bool_value(std::string_view s, bool defv)
+{
+  const std::string v = lc(tr(s));
+  if(v == "true") return true;
+  if(v == "false") return false;
+  return defv;
+}
+
+static float parse_float_value(std::string_view s, float defv)
+{
+  std::string v(strip_quotes(tr(s)));
+  char *end = nullptr;
+  const float parsed = std::strtof(v.c_str(), &end);
+  return end != v.c_str() ? parsed : defv;
+}
+
+static int count_leading_spaces(std::string_view s)
+{
+  int n = 0;
+  while(n < (int)s.size() && s[(size_t)n] == ' ') ++n;
+  return n;
+}
+
+static bool split_yaml_pair(std::string_view line, std::string_view &key, std::string_view &value)
+{
+  const size_t col = line.find(':');
+  if(col == std::string_view::npos) return false;
+  key = tr(line.substr(0, col));
+  value = tr(line.substr(col + 1));
+  return !key.empty();
+}
+
+static std::string parse_leading_label(std::string_view &s)
+{
+  s = tr(s);
+  if(s.empty() || s.front() == '[') return {};
+  if(s.front() == '"' || s.front() == '\'') {
+    const char quote = s.front();
+    const size_t close = s.find(quote, 1);
+    if(close == std::string_view::npos) return {};
+    std::string label = strip_quotes(s.substr(0, close + 1));
+    s = tr(s.substr(close + 1));
+    return label;
+  }
+
+  const size_t br = find_unquoted(s, '[');
+  const size_t ar = s.find("-->");
+  if(ar != std::string_view::npos && (br == std::string_view::npos || ar < br)) {
+    std::string_view lhs = tr(s.substr(0, ar));
+    const size_t sp = lhs.find_last_of(" \t");
+    if(sp == std::string_view::npos) return {};
+    std::string label = strip_quotes(tr(lhs.substr(0, sp)));
+    s = tr(s.substr(sp + 1));
+    return label;
+  }
+
+  size_t end = br == std::string_view::npos ? s.size() : br;
+  std::string label = strip_quotes(tr(s.substr(0, end)));
+  s = tr(s.substr(end));
+  return label;
+}
+
 // iterate lines, trimmed, skipping empty, %% and // comments
 struct Lines {
   std::string_view src;
@@ -48,6 +160,28 @@ struct Lines {
     return false;
   }
 };
+
+static bool read_bracket_list(Lines &lines, std::string_view first, std::string &inner)
+{
+  inner.clear();
+  const size_t open = find_unquoted(first, '[');
+  if(open == std::string_view::npos) return false;
+
+  std::string_view rest = first.substr(open + 1);
+  while(true) {
+    const size_t close = find_unquoted(rest, ']');
+    if(close != std::string_view::npos) {
+      inner += std::string(rest.substr(0, close));
+      return true;
+    }
+
+    inner += std::string(rest);
+    std::string_view next;
+    if(!lines.next(next)) return false;
+    inner += '\n';
+    rest = next;
+  }
+}
 
 // split "A --> B : label" at first occurrence of any arrow
 static bool split_arrow(std::string_view line, std::string_view &lhs,
@@ -1509,30 +1643,121 @@ void render_sankey(const SankeyDiagram &d, int id)
 // ═══════════════════════════════════════════════════════════════════════════
 // XY CHART
 // ═══════════════════════════════════════════════════════════════════════════
+static void apply_xy_axis_config(XYAxisConfig &cfg, std::string_view key, std::string_view value)
+{
+  if(key == "showLabel") cfg.show_label = parse_bool_value(value, cfg.show_label);
+  else if(key == "labelPadding") cfg.label_padding = parse_float_value(value, cfg.label_padding);
+  else if(key == "showTitle") cfg.show_title = parse_bool_value(value, cfg.show_title);
+  else if(key == "titlePadding") cfg.title_padding = parse_float_value(value, cfg.title_padding);
+  else if(key == "showTick") cfg.show_tick = parse_bool_value(value, cfg.show_tick);
+  else if(key == "tickLength") cfg.tick_length = parse_float_value(value, cfg.tick_length);
+  else if(key == "tickWidth") cfg.tick_width = parse_float_value(value, cfg.tick_width);
+  else if(key == "showAxisLine") cfg.show_axis_line = parse_bool_value(value, cfg.show_axis_line);
+  else if(key == "axisLineWidth") cfg.axis_line_width = parse_float_value(value, cfg.axis_line_width);
+}
+
+static void parse_xychart_frontmatter(std::string_view src, XYDiagram &out)
+{
+  size_t p = 0;
+  bool in_xy = false;
+  int xy_indent = -1;
+  XYAxisConfig *axis = nullptr;
+  int axis_indent = -1;
+
+  while(p < src.size()) {
+    size_t e = src.find('\n', p);
+    if(e == std::string_view::npos) e = src.size();
+    std::string_view raw = src.substr(p, e - p);
+    if(!raw.empty() && raw.back() == '\r') raw.remove_suffix(1);
+    p = (e < src.size()) ? e + 1 : e;
+    const std::string_view line = tr(raw);
+    if(line.empty()) continue;
+    if(line != "---") return;
+    break;
+  }
+
+  while(p < src.size()) {
+    size_t e = src.find('\n', p);
+    if(e == std::string_view::npos) e = src.size();
+    std::string_view raw = src.substr(p, e - p);
+    if(!raw.empty() && raw.back() == '\r') raw.remove_suffix(1);
+    p = (e < src.size()) ? e + 1 : e;
+
+    const std::string_view line = tr(raw);
+    if(line == "---") break;
+    if(line.empty() || sw(line, "#")) continue;
+
+    const int indent = count_leading_spaces(raw);
+    std::string_view key, value;
+    if(!split_yaml_pair(line, key, value)) continue;
+
+    if((key == "xyChart" || key == "xychart") && value.empty()) {
+      in_xy = true;
+      xy_indent = indent;
+      axis = nullptr;
+      continue;
+    }
+    if(!in_xy) continue;
+    if(indent <= xy_indent) {
+      in_xy = false;
+      axis = nullptr;
+      continue;
+    }
+    if(axis && indent <= axis_indent) axis = nullptr;
+
+    if((key == "xAxis" || key == "xaxis") && value.empty()) {
+      axis = &out.config.x_axis;
+      axis_indent = indent;
+      continue;
+    }
+    if((key == "yAxis" || key == "yaxis") && value.empty()) {
+      axis = &out.config.y_axis;
+      axis_indent = indent;
+      continue;
+    }
+    if(axis) {
+      apply_xy_axis_config(*axis, key, value);
+      continue;
+    }
+
+    if(key == "width") out.config.width = std::max(120.0f, parse_float_value(value, out.config.width));
+    else if(key == "height") out.config.height = std::max(120.0f, parse_float_value(value, out.config.height));
+    else if(key == "showTitle") out.config.show_title = parse_bool_value(value, out.config.show_title);
+    else if(key == "showDataLabel") out.config.show_data_label = parse_bool_value(value, out.config.show_data_label);
+    else if(key == "showDataLabelOutsideBar") out.config.show_data_label_outside_bar = parse_bool_value(value, out.config.show_data_label_outside_bar);
+    else if(key == "titlePadding") out.config.title_padding = parse_float_value(value, out.config.title_padding);
+    else if(key == "plotReservedSpacePercent") out.config.plot_reserved_space_percent = parse_float_value(value, out.config.plot_reserved_space_percent);
+    else if(key == "chartOrientation") {
+      const std::string v = lc(strip_quotes(value));
+      if(v == "horizontal") out.horizontal = true;
+      else if(v == "vertical") out.horizontal = false;
+    }
+  }
+}
+
 bool parse_xychart(std::string_view src, XYDiagram &out)
 {
-  out=XYDiagram{}; Lines L{src}; std::string_view line; bool header=false;
+  out=XYDiagram{}; parse_xychart_frontmatter(src,out); Lines L{src}; std::string_view line; bool header=false;
   while(L.next(line)){
     std::string ll=lc(line);
     if(!header){if(sw(ll,"xychart-beta")||sw(ll,"xychart")){header=true;
       if(ll.find("horizontal")!=std::string::npos) out.horizontal=true; continue;} continue;}
     if(sw(ll,"title "))  { out.title=strip_quotes(line.substr(6));continue;}
     if(sw(ll,"x-axis ")){ std::string_view r=tr(line.substr(7));
-      if(r.front()=='['){// categorical
-        size_t e=r.find(']'); if(e!=std::string_view::npos){
-          std::string inner=std::string(r.substr(1,e-1));
-          std::istringstream ss2(inner); std::string tok;
-          while(std::getline(ss2,tok,',')) out.x_labels.push_back(strip_quotes(tr(tok)));
-        }
+      out.x_title=parse_leading_label(r);
+      std::string inner;
+      if(read_bracket_list(L,r,inner)){// categorical, with optional axis label before bracket
+        for(const std::string &tok: split_csv_items(inner)) out.x_labels.push_back(tok);
       } else { // range - just record min/max as labels
-        size_t ar=r.find("-->"); if(ar!=std::string_view::npos){ out.x_labels.push_back(strip_quotes(r.substr(0,ar))); out.x_labels.push_back(strip_quotes(tr(r.substr(ar+3)))); }
+        size_t ar=r.find("-->"); if(ar!=std::string_view::npos){ out.x_labels.push_back(strip_quotes(strip_leading_quoted_label(r.substr(0,ar)))); out.x_labels.push_back(strip_quotes(strip_leading_quoted_label(r.substr(ar+3)))); }
       }
       continue;
     }
     if(sw(ll,"y-axis ")){ std::string_view r=tr(line.substr(7));
+      out.y_title=parse_leading_label(r);
       size_t ar=r.find("-->"); if(ar!=std::string_view::npos){
-        out.y_min=std::strtof(std::string(tr(r.substr(0,ar))).c_str(),nullptr);
-        out.y_max=std::strtof(std::string(tr(r.substr(ar+3))).c_str(),nullptr);
+        out.y_min=std::strtof(std::string(strip_leading_quoted_label(r.substr(0,ar))).c_str(),nullptr);
+        out.y_max=std::strtof(std::string(strip_leading_quoted_label(r.substr(ar+3))).c_str(),nullptr);
         out.y_explicit=true;
       }
       continue;
@@ -1541,17 +1766,15 @@ bool parse_xychart(std::string_view src, XYDiagram &out)
     bool is_bar=sw(ll,"bar "),is_line=sw(ll,"line ");
     if(is_bar||is_line){
       std::string_view r=tr(line.substr(is_bar?4:5));
-      if(!r.empty()&&r.front()=='['){
-        size_t e=r.find(']'); if(e!=std::string_view::npos){
-          std::string inner=std::string(r.substr(1,e-1));
-          XYSeries s; s.is_bar=is_bar;
-          // optional label before bracket
-          std::istringstream ss2(inner); std::string tok;
-          while(std::getline(ss2,tok,',')){ float v=std::strtof(std::string(tr(tok)).c_str(),nullptr); s.data.push_back(v); }
-          if(!s.data.empty()){
-            if(!out.y_explicit){ for(float v:s.data){out.y_max=std::max(out.y_max,v);} }
-            out.series.push_back(s);
-          }
+      std::string inner;
+      if(read_bracket_list(L,r,inner)){
+        XYSeries s; s.is_bar=is_bar;
+        for(const std::string &tok: split_csv_items(inner)){
+          float v=std::strtof(tok.c_str(),nullptr); s.data.push_back(v);
+        }
+        if(!s.data.empty()){
+          if(!out.y_explicit){ for(float v:s.data){out.y_min=std::min(out.y_min,v); out.y_max=std::max(out.y_max,v);} }
+          out.series.push_back(s);
         }
       }
     }
@@ -1559,7 +1782,7 @@ bool parse_xychart(std::string_view src, XYDiagram &out)
   return header && (!out.series.empty()||!out.x_labels.empty());
 }
 
-void render_xychart(const XYDiagram &d, int id)
+[[maybe_unused]] static void render_xychart_legacy(const XYDiagram &d, int id)
 {
   ImGui::PushID(id);
   const float axis_w=40.0f,axis_h=24.0f,pad=8.0f;
@@ -1623,6 +1846,140 @@ void render_xychart(const XYDiagram &d, int id)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+void render_xychart(const XYDiagram &d, int id)
+{
+  ImGui::PushID(id);
+  const float pad=12.0f;
+  int nc=(int)d.x_labels.size();
+  if(nc==0&&!d.series.empty()) nc=(int)d.series[0].data.size();
+  nc=std::max(nc,1);
+  const int ns=std::max(1,(int)d.series.size());
+  const float cw=std::max(120.0f,d.config.width);
+  const float ch=std::max(120.0f,d.config.height);
+  const ImVec2 orig=ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##xy",ImVec2(cw,ch));
+  ImDrawList *dl=ImGui::GetWindowDrawList();
+  const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
+  const ImU32 gcol=ImGui::GetColorU32(ImGuiCol_Separator);
+  const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
+
+  float top=pad;
+  if(d.config.show_title && !d.title.empty()){
+    ImVec2 ts=ImGui::CalcTextSize(d.title.c_str());
+    dl->AddText(ImVec2(orig.x+(cw-ts.x)*0.5f,orig.y+top),tcol,d.title.c_str());
+    top+=ts.y+d.config.title_padding;
+  }
+
+  float left=pad+44.0f;
+  float right=pad+10.0f;
+  float bottom=pad+24.0f;
+  if(d.config.x_axis.show_label) bottom+=20.0f+d.config.x_axis.label_padding;
+  if(d.config.x_axis.show_title && !d.x_title.empty()) bottom+=20.0f+d.config.x_axis.title_padding;
+  if(d.config.y_axis.show_label) left+=24.0f+d.config.y_axis.label_padding;
+  if(d.config.y_axis.show_title && !d.y_title.empty()) left+=ImGui::CalcTextSize(d.y_title.c_str()).x+d.config.y_axis.title_padding;
+
+  float plot_w=std::max(80.0f,cw-left-right);
+  float plot_h=std::max(60.0f,ch-top-bottom);
+  float ox=orig.x+left, oy=orig.y+top;
+  float range=d.y_max-d.y_min; if(range<=0) range=1.0f;
+
+  for(int g=0;g<=4;++g){
+    float gy=oy+plot_h*(1.0f-g*0.25f);
+    dl->AddLine(ImVec2(ox,gy),ImVec2(ox+plot_w,gy),gcol,1.0f);
+    float val=d.y_min+range*g*0.25f;
+    char buf[16]; std::snprintf(buf,sizeof(buf),"%.0f",val);
+    if(d.config.y_axis.show_label){
+      ImVec2 ts=ImGui::CalcTextSize(buf);
+      dl->AddText(ImVec2(ox-d.config.y_axis.tick_length-ts.x-5,gy-ts.y*0.5f),lcol,buf);
+    }
+    if(d.config.y_axis.show_tick)
+      dl->AddLine(ImVec2(ox-d.config.y_axis.tick_length,gy),ImVec2(ox,gy),tcol,d.config.y_axis.tick_width);
+  }
+
+  if(d.config.y_axis.show_axis_line)
+    dl->AddLine(ImVec2(ox,oy),ImVec2(ox,oy+plot_h),tcol,d.config.y_axis.axis_line_width);
+  if(d.config.x_axis.show_axis_line)
+    dl->AddLine(ImVec2(ox,oy+plot_h),ImVec2(ox+plot_w,oy+plot_h),tcol,d.config.x_axis.axis_line_width);
+
+  const float slot=d.horizontal ? plot_h/(float)nc : plot_w/(float)nc;
+  for(int xi=0;xi<nc;++xi){
+    if(d.config.x_axis.show_tick){
+      if(d.horizontal){
+        const float y=oy+xi*slot+slot*0.5f;
+        dl->AddLine(ImVec2(ox-d.config.x_axis.tick_length,y),ImVec2(ox,y),tcol,d.config.x_axis.tick_width);
+      } else {
+        const float x=ox+xi*slot+slot*0.5f;
+        dl->AddLine(ImVec2(x,oy+plot_h),ImVec2(x,oy+plot_h+d.config.x_axis.tick_length),tcol,d.config.x_axis.tick_width);
+      }
+    }
+  }
+
+  for(int si=0;si<(int)d.series.size();++si){
+    const auto &s=d.series[si];
+    ImU32 sc=series_color(si);
+    std::vector<ImVec2> line_pts;
+    for(int xi=0;xi<(int)s.data.size()&&xi<nc;++xi){
+      const float frac=(s.data[xi]-d.y_min)/range;
+      char val_buf[24]; std::snprintf(val_buf,sizeof(val_buf),"%.0f",s.data[xi]);
+      if(d.horizontal){
+        const float y=oy+xi*slot;
+        const float bh=std::max(1.0f,slot/(float)ns-2.0f);
+        const float y2=y+si*bh+1.0f;
+        const float x2=ox+plot_w*frac;
+        if(s.is_bar){
+          dl->AddRectFilled(ImVec2(ox,y2),ImVec2(x2,y2+bh),series_color(si,0.7f),2);
+          if(d.config.show_data_label){
+            ImVec2 ts=ImGui::CalcTextSize(val_buf);
+            float tx=d.config.show_data_label_outside_bar ? x2+4.0f : std::max(ox+2.0f,x2-ts.x-4.0f);
+            dl->AddText(ImVec2(tx,y2+(bh-ts.y)*0.5f),tcol,val_buf);
+          }
+        } else {
+          line_pts.push_back(ImVec2(x2,y+slot*0.5f));
+        }
+      } else {
+        const float x=ox+xi*slot;
+        const float by=oy+plot_h*(1.0f-frac);
+        if(s.is_bar){
+          const float bw=std::max(1.0f,slot/(float)ns-2.0f);
+          const float bx=x+si*bw+1.0f;
+          dl->AddRectFilled(ImVec2(bx,by),ImVec2(bx+bw,oy+plot_h),series_color(si,0.7f),2);
+          if(d.config.show_data_label){
+            ImVec2 ts=ImGui::CalcTextSize(val_buf);
+            float ty=d.config.show_data_label_outside_bar ? by-ts.y-2.0f : by+3.0f;
+            dl->AddText(ImVec2(bx+(bw-ts.x)*0.5f,ty),tcol,val_buf);
+          }
+        } else {
+          line_pts.push_back(ImVec2(x+slot*0.5f,by));
+        }
+      }
+    }
+    if(!line_pts.empty()&&line_pts.size()>1)
+      for(int k=0;k<(int)line_pts.size()-1;++k) dl->AddLine(line_pts[k],line_pts[k+1],sc,2.0f);
+    for(auto &p:line_pts) dl->AddCircleFilled(p,3,sc);
+  }
+
+  if(d.config.x_axis.show_label){
+    for(int xi=0;xi<nc&&xi<(int)d.x_labels.size();++xi){
+      std::string lbl=d.x_labels[xi];
+      if(lbl.size()>10) lbl=lbl.substr(0,9)+"...";
+      ImVec2 ts=ImGui::CalcTextSize(lbl.c_str());
+      if(d.horizontal)
+        dl->AddText(ImVec2(ox-ts.x-d.config.x_axis.label_padding,oy+xi*slot+(slot-ts.y)*0.5f),lcol,lbl.c_str());
+      else
+        dl->AddText(ImVec2(ox+xi*slot+(slot-ts.x)*0.5f,oy+plot_h+d.config.x_axis.tick_length+d.config.x_axis.label_padding),lcol,lbl.c_str());
+    }
+  }
+  if(d.config.x_axis.show_title && !d.x_title.empty()){
+    ImVec2 ts=ImGui::CalcTextSize(d.x_title.c_str());
+    dl->AddText(ImVec2(ox+(plot_w-ts.x)*0.5f,orig.y+ch-pad-ts.y),tcol,d.x_title.c_str());
+  }
+  if(d.config.y_axis.show_title && !d.y_title.empty()){
+    ImVec2 ts=ImGui::CalcTextSize(d.y_title.c_str());
+    dl->AddText(ImVec2(orig.x+pad,oy+(plot_h-ts.y)*0.5f),tcol,d.y_title.c_str());
+  }
+  ImGui::PopID();
+}
+
 // BLOCK DIAGRAM
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_block(std::string_view src, BlockDiagram &out)

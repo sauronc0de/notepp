@@ -125,14 +125,39 @@ bool parse_sankey(std::string_view src, SankeyDiagram &out);
 void render_sankey(const SankeyDiagram &d, int id);
 
 // ── XY Chart ─────────────────────────────────────────────────────────────────
+struct XYAxisConfig {
+  bool show_label = true;
+  bool show_title = true;
+  bool show_tick = true;
+  bool show_axis_line = true;
+  float label_padding = 5.0f;
+  float title_padding = 5.0f;
+  float tick_length = 5.0f;
+  float tick_width = 2.0f;
+  float axis_line_width = 2.0f;
+};
+struct XYChartConfig {
+  float width = 700.0f;
+  float height = 500.0f;
+  bool show_title = true;
+  bool show_data_label = false;
+  bool show_data_label_outside_bar = false;
+  float title_padding = 10.0f;
+  float plot_reserved_space_percent = 50.0f;
+  XYAxisConfig x_axis;
+  XYAxisConfig y_axis;
+};
 struct XYSeries { std::string label; bool is_bar = true; std::vector<float> data; };
 struct XYDiagram {
   std::string title;
+  std::string x_title;
+  std::string y_title;
   std::vector<std::string> x_labels;
   float y_min = 0.0f, y_max = 1.0f;
   bool y_explicit = false;
   std::vector<XYSeries> series;
   bool horizontal = false;
+  XYChartConfig config;
 };
 bool parse_xychart(std::string_view src, XYDiagram &out);
 void render_xychart(const XYDiagram &d, int id);
