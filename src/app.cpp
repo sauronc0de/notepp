@@ -689,11 +689,9 @@ void set_detached_note_windows_enabled(bool enabled)
 
 void set_dockers_enabled(bool enabled)
 {
+  (void)enabled;
   ImGuiIO &io = ImGui::GetIO();
-  if(enabled)
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  else
-    io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 }
 
 ImGuiID saved_window_dock_id(const char *window_name)
@@ -701,6 +699,11 @@ ImGuiID saved_window_dock_id(const char *window_name)
   if(window_name == nullptr || window_name[0] == '\0') return 0;
   ImGuiWindowSettings *settings = ImGui::FindWindowSettingsByID(ImHashStr(window_name));
   return settings != nullptr ? settings->DockId : 0;
+}
+
+bool imgui_docking_enabled()
+{
+  return (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DockingEnable) != 0;
 }
 
 void load_drawings_state()
@@ -1462,6 +1465,7 @@ void App::apply_folder_settings(int folder_idx)
 {
   if(folder_idx < 0 || folder_idx >= (int)folders_.size()) return;
   const FolderMeta &f = folders_[(size_t)folder_idx];
+  const bool was_docking_enabled = dockers_enabled_;
   layout_locked_ = f.layout_locked;
   detached_note_windows_enabled_ = f.detached_note_windows;
   dockers_enabled_ = f.dockers_enabled;
@@ -1469,6 +1473,8 @@ void App::apply_folder_settings(int folder_idx)
   grid_visible_ = f.grid_visible;
   set_dockers_enabled(dockers_enabled_);
   set_detached_note_windows_enabled(detached_note_windows_enabled_);
+  if(dockers_enabled_ && !was_docking_enabled)
+    force_note_layout_restore_ = true;
   if(!drawings_visible_)
     request_cancel_draw_tools_ = true;
 }
@@ -3366,8 +3372,8 @@ bool App::frame_begin()
 {
   {
     const ImGuiIO &_io = ImGui::GetIO();
-    if(bool(_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) != dockers_enabled_)
-      set_dockers_enabled(dockers_enabled_);
+    if((_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) == 0)
+      set_dockers_enabled(true);
     if(bool(_io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != detached_note_windows_enabled_)
       set_detached_note_windows_enabled(detached_note_windows_enabled_);
   }
@@ -7904,12 +7910,14 @@ __CURSOR__)MD");
 
       const bool force_note_layout = request_reset_layout || force_note_layout_restore_;
       const ImGuiID ini_dock_id = saved_window_dock_id(window_id.c_str());
-      if(force_note_layout_restore_ && n.dock_id == 0 && ini_dock_id != 0)
+      const bool can_restore_dock = dockers_enabled_ && imgui_docking_enabled();
+      if(can_restore_dock && force_note_layout_restore_ && n.dock_id == 0 && ini_dock_id != 0)
       {
         n.dock_id = ini_dock_id;
         layout_dirty_ = true;
       }
-      const bool restore_saved_dock = !request_reset_layout && force_note_layout_restore_ && n.dock_id != 0;
+      const bool restore_saved_dock =
+          can_restore_dock && !request_reset_layout && force_note_layout_restore_ && n.dock_id != 0;
       if(request_reset_layout)
         ImGui::SetNextWindowDockID(0, ImGuiCond_Always);
       else if(restore_saved_dock)
@@ -7935,6 +7943,7 @@ __CURSOR__)MD");
       ImGuiWindowFlags note_flags = 0;
       if(draw_mode || erase_mode) note_flags |= ImGuiWindowFlags_NoInputs;
       if(layout_locked_) note_flags |= ImGuiWindowFlags_NoMove;
+      if(!dockers_enabled_) note_flags |= ImGuiWindowFlags_NoDocking;
       if(search_request_window_focus_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
       if(ni == pending_focus_note_idx) ImGui::SetNextWindowFocus();
       if(refocus_folder_editor && editing_mode_ && ni == active_note_idx_) ImGui::SetNextWindowFocus();
@@ -7947,7 +7956,7 @@ __CURSOR__)MD");
       if(search_request_window_focus_ && ni == active_note_idx_) search_request_window_focus_ = false;
       if(ni == pending_focus_note_idx) pending_focus_note_idx = -1;
       const ImGuiID current_dock_id = ImGui::GetWindowDockID();
-      if(n.dock_id != current_dock_id)
+      if((can_restore_dock || request_reset_layout) && n.dock_id != current_dock_id)
       {
         n.dock_id = current_dock_id;
         layout_dirty_ = true;
@@ -8827,13 +8836,16 @@ __CURSOR__)MD");
 
   std::string note_window_label = note_title_ + "###NoteWindow";
   const ImGuiID active_ini_dock_id = saved_window_dock_id(note_window_label.c_str());
-  if(force_note_layout_restore_ && active_note.dock_id == 0 && active_ini_dock_id != 0)
+  const bool can_restore_active_dock = dockers_enabled_ && imgui_docking_enabled();
+  if(can_restore_active_dock && force_note_layout_restore_ && active_note.dock_id == 0 &&
+     active_ini_dock_id != 0)
   {
     active_note.dock_id = active_ini_dock_id;
     layout_dirty_ = true;
   }
 
-  const bool restore_active_dock = force_note_layout_restore_ && active_note.dock_id != 0;
+  const bool restore_active_dock =
+      can_restore_active_dock && force_note_layout_restore_ && active_note.dock_id != 0;
   if(restore_active_dock)
     ImGui::SetNextWindowDockID(active_note.dock_id, ImGuiCond_Always);
 
@@ -8848,7 +8860,8 @@ __CURSOR__)MD");
   }
   else
   {
-    ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
+    if(can_restore_active_dock)
+      ImGui::SetNextWindowDockID(ImGui::GetID("MyDockSpace"), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520.0f, note_window_height), ImGuiCond_FirstUseEver);
   }
 
@@ -8870,10 +8883,11 @@ __CURSOR__)MD");
   ImGui::Begin(
       note_window_label.c_str(),
       nullptr,
-      (layout_locked_ ? ImGuiWindowFlags_NoMove : 0));
+      (layout_locked_ ? ImGuiWindowFlags_NoMove : 0) |
+          (!dockers_enabled_ ? ImGuiWindowFlags_NoDocking : 0));
   if(search_request_window_focus_) search_request_window_focus_ = false;
   const ImGuiID active_current_dock_id = ImGui::GetWindowDockID();
-  if(active_note.dock_id != active_current_dock_id)
+  if(can_restore_active_dock && active_note.dock_id != active_current_dock_id)
   {
     active_note.dock_id = active_current_dock_id;
     layout_dirty_ = true;
