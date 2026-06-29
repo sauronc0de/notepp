@@ -2790,17 +2790,68 @@ static std::string serialize_kanban(const KanbanDiagram &d)
   return s.str();
 }
 
+static float kanban_column_width(int column_count, float available_width,
+                                 float min_width, float max_width,
+                                 float hgap, float pad)
+{
+  if(column_count <= 0) return min_width;
+
+  const float gap_width = std::max(0, column_count - 1) * hgap;
+  const float fit_width = (available_width - pad * 2.0f - gap_width) /
+                          static_cast<float>(column_count);
+  if(!std::isfinite(fit_width)) return min_width;
+  return std::max(min_width, std::min(fit_width, max_width));
+}
+
+static size_t utf8_codepoint_length(unsigned char lead)
+{
+  if((lead & 0x80) == 0) return 1;
+  if((lead & 0xE0) == 0xC0) return 2;
+  if((lead & 0xF0) == 0xE0) return 3;
+  if((lead & 0xF8) == 0xF0) return 4;
+  return 1;
+}
+
+static std::string ellipsize_to_width(const std::string &text, float max_width)
+{
+  if(text.empty() || ImGui::CalcTextSize(text.c_str()).x <= max_width)
+    return text;
+
+  static constexpr const char *kEllipsis = "...";
+  const float ellipsis_width = ImGui::CalcTextSize(kEllipsis).x;
+  if(max_width <= ellipsis_width) return kEllipsis;
+
+  std::string out;
+  out.reserve(text.size());
+  for(size_t pos = 0; pos < text.size();) {
+    size_t len = utf8_codepoint_length(static_cast<unsigned char>(text[pos]));
+    if(pos + len > text.size()) len = 1;
+    std::string next = out;
+    next.append(text, pos, len);
+    next += kEllipsis;
+    if(ImGui::CalcTextSize(next.c_str()).x > max_width) break;
+    out.append(text, pos, len);
+    pos += len;
+  }
+  out += kEllipsis;
+  return out;
+}
+
 void render_kanban(const KanbanDiagram &d, int id)
 {
   ImGui::PushID(id);
   auto &es = s_kb_states[id];
 
-  const float col_w=160.0f,card_h=32.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
+  const float card_h=32.0f,col_header_h=28.0f,hgap=10.0f,vgap=6.0f,pad=10.0f;
+  const float min_col_w=120.0f,max_col_w=240.0f;
 
   const std::vector<KanbanCol> &cols = es.drag_active ? es.work_cols : d.columns;
   int nc=(int)cols.size();
+  if(nc <= 0){ ImGui::PopID(); return; }
   int max_cards=0; for(auto &c:cols) max_cards=std::max(max_cards,(int)c.cards.size());
-  float cw=nc*(col_w+hgap)+hgap+pad*2;
+  float col_w=kanban_column_width(nc, ImGui::GetContentRegionAvail().x,
+                                  min_col_w, max_col_w, hgap, pad);
+  float cw=nc*col_w+std::max(0,nc-1)*hgap+pad*2;
   // tight height: top-gap + cards + bottom-gap (one extra slot for drop indicator)
   float col_body_h=vgap+(max_cards+1)*(card_h+vgap);
   float ch=col_header_h+col_body_h+pad*2;
@@ -2914,8 +2965,9 @@ void render_kanban(const KanbanDiagram &d, int id)
     float body_top=y+col_header_h;
     ImU32 hc=series_color(i,0.6f);
     dl->AddRectFilled(ImVec2(x,y),ImVec2(x+col_w,y+col_header_h),hc,4);
-    ImVec2 ls=ImGui::CalcTextSize(cols[i].label.c_str());
-    dl->AddText(ImVec2(x+(col_w-ls.x)*0.5f,y+(col_header_h-ls.y)*0.5f),tcol,cols[i].label.c_str());
+    std::string col_label=ellipsize_to_width(cols[i].label, col_w-12.0f);
+    ImVec2 ls=ImGui::CalcTextSize(col_label.c_str());
+    dl->AddText(ImVec2(x+(col_w-ls.x)*0.5f,y+(col_header_h-ls.y)*0.5f),tcol,col_label.c_str());
     dl->AddRectFilled(ImVec2(x,body_top),ImVec2(x+col_w,y+ch-pad*2),series_color(i,0.08f),0);
     dl->AddRect(ImVec2(x,y),ImVec2(x+col_w,y+ch-pad*2),bord,4);
 
@@ -2934,7 +2986,7 @@ void render_kanban(const KanbanDiagram &d, int id)
         dl->AddRectFilled(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),is_hovered?hcol:fill,3);
         dl->AddRect(ImVec2(x+4,cy),ImVec2(x+col_w-4,cy+card_h),is_hovered?series_color(i,0.8f):bord,3);
         const auto &card=cols[i].cards[j];
-        std::string lbl=card.label.size()>18?card.label.substr(0,17)+"…":card.label;
+        std::string lbl=ellipsize_to_width(card.label, col_w-20.0f);
         ImVec2 cs=ImGui::CalcTextSize(lbl.c_str());
         dl->AddText(ImVec2(x+4+(col_w-8-cs.x)*0.5f,cy+(card_h-cs.y)*0.5f),tcol,lbl.c_str());
         if(!card.description.empty())
@@ -2954,7 +3006,7 @@ void render_kanban(const KanbanDiagram &d, int id)
     dl->AddRectFilled(ImVec2(fx,fy),ImVec2(fx+col_w-8,fy+card_h),
       ImGui::ColorConvertFloat4ToU32({0.2f,0.2f,0.2f,0.85f}),3);
     dl->AddRect(ImVec2(fx,fy),ImVec2(fx+col_w-8,fy+card_h),series_color(es.drag_ci,0.9f),3,0,1.5f);
-    std::string lbl=dc.label.size()>18?dc.label.substr(0,17)+"…":dc.label;
+    std::string lbl=ellipsize_to_width(dc.label, col_w-20.0f);
     ImVec2 cs=ImGui::CalcTextSize(lbl.c_str());
     dl->AddText(ImVec2(fx+(col_w-8-cs.x)*0.5f,fy+(card_h-cs.y)*0.5f),tcol,lbl.c_str());
   }
