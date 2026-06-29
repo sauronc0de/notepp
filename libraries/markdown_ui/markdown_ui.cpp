@@ -43,6 +43,15 @@ namespace
 {
 using NoteCore::trim;
 
+constexpr float kDefaultUiHoverPopupContentWidth = 320.0f;
+constexpr float kMinUiHoverPopupContentWidth = 220.0f;
+constexpr float kMaxUiHoverPopupContentWidth = 720.0f;
+
+float clamp_ui_hover_popup_width(float width)
+{
+  return std::clamp(width, kMinUiHoverPopupContentWidth, kMaxUiHoverPopupContentWidth);
+}
+
 struct SourceSpan
 {
   size_t start = 0;
@@ -434,6 +443,14 @@ void upsert_object_field(Value &value, std::string key, Value field_value)
     }
   }
   value.object.emplace_back(std::move(key), std::move(field_value));
+}
+
+float read_ui_hover_popup_width(const Value &widget_value)
+{
+  if(const Value *popup_width = find_object_field(widget_value, "popup_width"))
+    if(popup_width->kind == ValueKind::Number)
+      return clamp_ui_hover_popup_width(static_cast<float>(popup_width->number));
+  return kDefaultUiHoverPopupContentWidth;
 }
 
 std::string escape_string(std::string_view s)
@@ -3020,6 +3037,7 @@ struct InventoryPopupEditorState
 struct InventoryGridEditorState
 {
   int cell_size = 48;
+  int popup_width = static_cast<int>(kDefaultUiHoverPopupContentWidth);
   bool show_selected = false;
 };
 
@@ -3242,11 +3260,15 @@ std::string inventory_slot_fallback_label(const InventorySlotInfo &slot)
   return compact;
 }
 
-void render_inventory_hover_popup(const std::string &popup_id, const InventorySlotInfo &slot)
+void render_inventory_hover_popup(const std::string &popup_id, const InventorySlotInfo &slot, float popup_content_width)
 {
   if(slot.title.empty() && slot.tooltip.empty() && slot.image.empty() && !slot.quantity.has_value() && slot.enabled) return;
 
+  popup_content_width = clamp_ui_hover_popup_width(popup_content_width);
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float popup_window_width = popup_content_width + style.WindowPadding.x * 2.0f;
   ImGui::SetNextWindowBgAlpha(0.96f);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(popup_window_width, 0.0f), ImVec2(popup_window_width, FLT_MAX));
   if(ImGui::BeginTooltip())
   {
     ImGui::PushID(popup_id.c_str());
@@ -3255,19 +3277,25 @@ void render_inventory_hover_popup(const std::string &popup_id, const InventorySl
       const ImTextureID texture = get_widget_image_texture(slot.image);
       if(texture)
       {
-        ImGui::Image(texture, ImVec2(200.0f, 200.0f));
+        constexpr float kPreviewImageSize = 200.0f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (popup_content_width - kPreviewImageSize) * 0.5f);
+        ImGui::Image(texture, ImVec2(kPreviewImageSize, kPreviewImageSize));
         if(!slot.title.empty() || slot.quantity || !slot.enabled || !slot.tooltip.empty())
           ImGui::Separator();
       }
     }
     if(!slot.title.empty())
     {
+      const bool quantity_fits_inline = slot.quantity
+          && ImGui::CalcTextSize(slot.title.c_str()).x + style.ItemSpacing.x + ImGui::CalcTextSize(slot.quantity->c_str()).x <= popup_content_width;
       if(slot.has_mark_color) ImGui::PushStyleColor(ImGuiCol_Text, slot.mark_color);
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + popup_content_width);
       ImGui::TextUnformatted(slot.title.c_str());
+      ImGui::PopTextWrapPos();
       if(slot.has_mark_color) ImGui::PopStyleColor();
       if(slot.quantity)
       {
-        ImGui::SameLine();
+        if(quantity_fits_inline) ImGui::SameLine();
         ImGui::TextDisabled("%s", slot.quantity->c_str());
       }
     }
@@ -3283,7 +3311,7 @@ void render_inventory_hover_popup(const std::string &popup_id, const InventorySl
     if((!slot.title.empty() || slot.quantity || !slot.enabled) && !slot.tooltip.empty()) ImGui::Separator();
     if(!slot.tooltip.empty())
     {
-      MarkdownView::set_render_width(320.0f);
+      MarkdownView::set_render_width(popup_content_width);
       MarkdownView::render(slot.tooltip);
     }
     ImGui::PopID();
@@ -3436,6 +3464,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     const Value *ss = find_object_field(updated, "show_selected");
     if(ss && ss->kind == ValueKind::Bool) show_selected = ss->boolean;
   }
+  const float hover_popup_width = read_ui_hover_popup_width(updated);
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
   if(available_width > 1.0f)
@@ -3448,6 +3477,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   static constexpr const char *kInvXferPayload = "NOTEPP_INV_XFER";
   static std::unordered_map<std::string, int> selected_slot_by_widget;
   static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
+  static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
 
   if(!label.text.empty()) render_styled_label(label);
 
@@ -3508,6 +3538,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   ImGui::BeginDisabled(readonly);
   std::vector<int> cell_lookup = build_inventory_cell_lookup(*items, total_cells);
   bool any_slot_hovered = false;
+  bool request_grid_settings = false;
   if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, needs_scroll ? ImGuiWindowFlags_HorizontalScrollbar : ImGuiWindowFlags_None))
   {
     for(int row = 0; row < rows; ++row)
@@ -3540,7 +3571,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         draw_inventory_slot_preview(slot, min, max, show_selected && (selected_index == index), hovered, cell_size);
 
         if((inventory_slot_has_visual_content(slot) || !slot.enabled) && hovered && !ImGui::IsPopupOpen("##slot_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot);
+          render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot, hover_popup_width);
 
         if(has_content && ImGui::BeginDragDropSource())
         {
@@ -3737,6 +3768,13 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
             state.error.clear();
           }
 
+          if(ImGui::MenuItem("Configure inventory..."))
+          {
+            request_grid_settings = true;
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::Separator();
+
           const float popup_width = std::max(240.0f, std::min(widget_width, 360.0f));
           ImGui::TextDisabled(has_content ? "Inventory cell" : "Empty cell");
           ImGui::SetNextItemWidth(popup_width);
@@ -3843,8 +3881,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       }
     }
 
-    static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
-    if(!readonly && !any_slot_hovered && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+    if(!readonly && (request_grid_settings || (!any_slot_hovered && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))))
     {
       ImGui::OpenPopup("grid_settings");
       ctx.consumed_right_click = true;
@@ -3855,12 +3892,16 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       if(ImGui::IsWindowAppearing())
       {
         gs.cell_size = static_cast<int>(cell_size);
+        gs.popup_width = static_cast<int>(hover_popup_width);
         gs.show_selected = show_selected;
       }
       ImGui::TextDisabled("Grid settings");
       ImGui::SetNextItemWidth(120.0f);
       ImGui::InputInt("Cell size (px)", &gs.cell_size);
       gs.cell_size = std::clamp(gs.cell_size, 8, 256);
+      ImGui::SetNextItemWidth(120.0f);
+      ImGui::InputInt("Popup width (px)", &gs.popup_width);
+      gs.popup_width = static_cast<int>(clamp_ui_hover_popup_width(static_cast<float>(gs.popup_width)));
       ImGui::Checkbox("Show selected cell", &gs.show_selected);
       if(ImGui::Button("Apply"))
       {
@@ -3869,6 +3910,11 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         cs_val.number = static_cast<double>(gs.cell_size);
         cs_val.is_integer = true;
         upsert_object_field(updated, "cell_size", std::move(cs_val));
+        Value pw_val;
+        pw_val.kind = ValueKind::Number;
+        pw_val.number = static_cast<double>(gs.popup_width);
+        pw_val.is_integer = true;
+        upsert_object_field(updated, "popup_width", std::move(pw_val));
         Value ss_val;
         ss_val.kind = ValueKind::Bool;
         ss_val.boolean = gs.show_selected;
@@ -3961,6 +4007,7 @@ struct MapMarkerEditorState
 struct MapSettingsEditorState
 {
   char image[512] = {};
+  int popup_width = static_cast<int>(kDefaultUiHoverPopupContentWidth);
 };
 
 struct MapPanState
@@ -4036,10 +4083,14 @@ static std::string serialize_stroke_pts(const std::vector<ImVec2> &pts)
   return s;
 }
 
-void render_map_marker_tooltip(const MapMarkerInfo &m, const std::string &popup_id)
+void render_map_marker_tooltip(const MapMarkerInfo &m, const std::string &popup_id, float popup_content_width)
 {
   if(m.title.empty() && m.description.empty() && m.image.empty()) return;
+  popup_content_width = clamp_ui_hover_popup_width(popup_content_width);
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float popup_window_width = popup_content_width + style.WindowPadding.x * 2.0f;
   ImGui::SetNextWindowBgAlpha(0.96f);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(popup_window_width, 0.f), ImVec2(popup_window_width, FLT_MAX));
   if(ImGui::BeginTooltip())
   {
     ImGui::PushID(popup_id.c_str());
@@ -4048,15 +4099,22 @@ void render_map_marker_tooltip(const MapMarkerInfo &m, const std::string &popup_
       const ImTextureID tex = get_widget_image_texture(m.image);
       if(tex)
       {
-        ImGui::Image(tex, ImVec2(200.f, 200.f));
+        constexpr float kPreviewImageSize = 200.f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (popup_content_width - kPreviewImageSize) * 0.5f);
+        ImGui::Image(tex, ImVec2(kPreviewImageSize, kPreviewImageSize));
         if(!m.title.empty() || !m.description.empty()) ImGui::Separator();
       }
     }
-    if(!m.title.empty()) ImGui::TextUnformatted(m.title.c_str());
+    if(!m.title.empty())
+    {
+      ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + popup_content_width);
+      ImGui::TextUnformatted(m.title.c_str());
+      ImGui::PopTextWrapPos();
+    }
     if(!m.title.empty() && !m.description.empty()) ImGui::Separator();
     if(!m.description.empty())
     {
-      MarkdownView::set_render_width(320.f);
+      MarkdownView::set_render_width(popup_content_width);
       MarkdownView::render(m.description);
     }
     ImGui::PopID();
@@ -4113,6 +4171,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
     if(f->kind == ValueKind::Number) offset_x = static_cast<float>(f->number);
   if(const Value *f = find_object_field(updated, "offset_y"))
     if(f->kind == ValueKind::Number) offset_y = static_cast<float>(f->number);
+  const float hover_popup_width = read_ui_hover_popup_width(updated);
 
   std::vector<MapMarkerInfo> markers;
   if(Value *items = find_object_field(updated, "markers"))
@@ -4320,7 +4379,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
        && !mdrag.active && !ds.draw_mode && !ds.erase_mode)
     {
       const MapMarkerInfo &hm = markers[static_cast<size_t>(hovered_marker)];
-      render_map_marker_tooltip(hm, "##maptip_" + child_id + "_" + std::to_string(hovered_marker));
+      render_map_marker_tooltip(hm, "##maptip_" + child_id + "_" + std::to_string(hovered_marker), hover_popup_width);
     }
 
     // Scroll zoom (wheel over canvas) — deferred write to avoid per-frame markdown rewrites
@@ -4625,15 +4684,26 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
     {
       MapSettingsEditorState &ss = s_settings_editors[child_id];
       if(ImGui::IsWindowAppearing())
+      {
         std::snprintf(ss.image, sizeof(ss.image), "%s", map_image.c_str());
+        ss.popup_width = static_cast<int>(hover_popup_width);
+      }
 
       ImGui::TextDisabled("Map settings");
       ImGui::SetNextItemWidth(260.f);
       ImGui::InputText("Image path", ss.image, sizeof(ss.image));
-      if(ImGui::Button("Apply image"))
+      ImGui::SetNextItemWidth(120.f);
+      ImGui::InputInt("Popup width (px)", &ss.popup_width);
+      ss.popup_width = static_cast<int>(clamp_ui_hover_popup_width(static_cast<float>(ss.popup_width)));
+      if(ImGui::Button("Apply settings"))
       {
         Value img_val; img_val.kind = ValueKind::String; img_val.str = trim(std::string(ss.image));
         upsert_object_field(updated, "image", std::move(img_val));
+        Value pw_val;
+        pw_val.kind = ValueKind::Number;
+        pw_val.number = static_cast<double>(ss.popup_width);
+        pw_val.is_integer = true;
+        upsert_object_field(updated, "popup_width", std::move(pw_val));
         changed = true;
         ImGui::CloseCurrentPopup();
       }
