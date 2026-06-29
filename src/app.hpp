@@ -133,6 +133,8 @@ private:
   bool frame_begin();
   void frame_ui();
   void frame_end();
+  void configure_frame_limiter(bool software_gl);
+  void limit_frame_rate();
   void save_note_clipboard();
 #if USE_PORTABLE_PATHS
   void switch_project(const std::filesystem::path &new_root);
@@ -152,6 +154,9 @@ private:
   ImFont *font_italic_ = nullptr;
   ImFont *font_bold_ = nullptr;
   std::string default_font_path_;
+  int max_fps_ = 60;
+  unsigned long long min_frame_ticks_ = 0;
+  unsigned long long last_frame_ticks_ = 0;
 
   bool running_ = true;
   bool editing_mode_ = false;
