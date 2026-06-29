@@ -12,6 +12,9 @@
     "--volume=/tmp/.X11-unix:/tmp/.X11-unix", // mount X11 socket
     "--env=XAUTHORITY=/tmp/.docker.xauth"
   ],
+  "mounts": [
+    "source=${localEnv:HOME}/.pi,target=/home/devuser/.pi,type=bind"
+  ],
   "postStartCommand": "sudo chown -R sauroncode:sauroncode /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
   "customizations": {
     "vscode": {
