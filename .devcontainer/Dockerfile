@@ -12,6 +12,7 @@ RUN apt-get update && \
         gh \
         gnupg \
         sudo \
+        nano \
         gcc \
         g++ \
         gcc-multilib \
