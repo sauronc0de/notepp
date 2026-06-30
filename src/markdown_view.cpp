@@ -55,14 +55,67 @@ struct MdFonts
 static MdFonts g_fonts{};
 std::filesystem::path g_assets_path;
 
+struct Texture
+{
+  GLuint id = 0;
+
+  Texture() = default;
+  explicit Texture(GLuint texture_id) noexcept : id(texture_id) {}
+  ~Texture() { reset(); }
+
+  Texture(const Texture &) = delete;
+  Texture &operator=(const Texture &) = delete;
+
+  Texture(Texture &&other) noexcept : id(other.id) { other.id = 0; }
+  Texture &operator=(Texture &&other) noexcept
+  {
+    if(this != &other)
+    {
+      reset();
+      id = other.id;
+      other.id = 0;
+    }
+    return *this;
+  }
+
+  void reset(GLuint texture_id = 0) noexcept
+  {
+    if(id != 0) glDeleteTextures(1, &id);
+    id = texture_id;
+  }
+};
+
 struct TextureRecord
 {
-  GLuint texture_id = 0;
+  Texture texture;
   ImVec2 size = ImVec2(0, 0);
+  std::size_t bytes = 0;
+  unsigned long long last_used = 0;
   bool loaded = false;
 };
 
 static std::unordered_map<std::string, TextureRecord> g_image_cache{};
+static std::size_t g_image_cache_bytes = 0;
+static unsigned long long g_image_cache_clock = 0;
+constexpr int kMaxPreviewTextureSize = 2048;
+constexpr std::size_t kMaxImageCacheBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaxMarkdownCacheEntries = 64;
+
+struct ParsedMarkdownCacheEntry
+{
+  std::size_t content_hash = 0;
+  std::size_t content_size = 0;
+  int width_bucket = 0;
+  ImFont *regular = nullptr;
+  ImFont *italic = nullptr;
+  ImFont *bold = nullptr;
+  std::vector<Chunk> chunks;
+  std::vector<MdSection> sections;
+  unsigned long long last_used = 0;
+};
+
+static std::vector<ParsedMarkdownCacheEntry> g_markdown_cache;
+static unsigned long long g_markdown_cache_clock = 0;
 static float g_render_width = 0.0f;
 static std::filesystem::path g_document_path;
 static bool g_hover_preview_enabled = true;
@@ -638,10 +691,27 @@ static TextureRecord load_texture_from_file(const std::filesystem::path &file)
   SDL_FreeSurface(loaded);
   if(!rgba) return rec;
 
+  SDL_Surface *upload = rgba;
+  if(rgba->w > kMaxPreviewTextureSize || rgba->h > kMaxPreviewTextureSize)
+  {
+    const float scale = std::min(
+        static_cast<float>(kMaxPreviewTextureSize) / static_cast<float>(std::max(1, rgba->w)),
+        static_cast<float>(kMaxPreviewTextureSize) / static_cast<float>(std::max(1, rgba->h)));
+    const int target_w = std::max(1, static_cast<int>(std::floor(static_cast<float>(rgba->w) * scale)));
+    const int target_h = std::max(1, static_cast<int>(std::floor(static_cast<float>(rgba->h) * scale)));
+    SDL_Surface *scaled = SDL_CreateRGBSurfaceWithFormat(0, target_w, target_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if(scaled != nullptr)
+    {
+      SDL_BlitScaled(rgba, nullptr, scaled, nullptr);
+      upload = scaled;
+    }
+  }
+
   GLuint tex = 0;
   glGenTextures(1, &tex);
   if(tex == 0)
   {
+    if(upload != rgba) SDL_FreeSurface(upload);
     SDL_FreeSurface(rgba);
     return rec;
   }
@@ -652,14 +722,54 @@ static TextureRecord load_texture_from_file(const std::filesystem::path &file)
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, rgba->w, rgba->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba->pixels);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, upload->w, upload->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, upload->pixels);
   glBindTexture(GL_TEXTURE_2D, 0);
 
-  rec.texture_id = tex;
-  rec.size = ImVec2((float)rgba->w, (float)rgba->h);
+  rec.texture = Texture(tex);
+  rec.size = ImVec2((float)upload->w, (float)upload->h);
+  rec.bytes = static_cast<std::size_t>(std::max(0, upload->w)) * static_cast<std::size_t>(std::max(0, upload->h)) * 4U;
   rec.loaded = true;
+  if(upload != rgba) SDL_FreeSurface(upload);
   SDL_FreeSurface(rgba);
   return rec;
+}
+
+static void evict_image_cache_if_needed()
+{
+  while(g_image_cache_bytes > kMaxImageCacheBytes && !g_image_cache.empty())
+  {
+    auto victim = g_image_cache.begin();
+    for(auto it = g_image_cache.begin(); it != g_image_cache.end(); ++it)
+    {
+      if(it->second.last_used < victim->second.last_used) victim = it;
+    }
+    g_image_cache_bytes -= std::min(g_image_cache_bytes, victim->second.bytes);
+    g_image_cache.erase(victim);
+  }
+}
+
+static std::unordered_map<std::string, TextureRecord>::iterator cache_texture_record(std::string key, TextureRecord rec)
+{
+  rec.last_used = ++g_image_cache_clock;
+  auto it = g_image_cache.find(key);
+  if(it == g_image_cache.end())
+  {
+    g_image_cache_bytes += rec.bytes;
+    it = g_image_cache.emplace(std::move(key), std::move(rec)).first;
+  }
+  else
+  {
+    g_image_cache_bytes -= std::min(g_image_cache_bytes, it->second.bytes);
+    it->second = std::move(rec);
+    g_image_cache_bytes += it->second.bytes;
+  }
+  evict_image_cache_if_needed();
+  return it;
+}
+
+static void touch_texture_record(TextureRecord &rec)
+{
+  rec.last_used = ++g_image_cache_clock;
 }
 
 // Remove a single leading '>' (and one optional following space) from a line
@@ -900,7 +1010,7 @@ struct MyMarkdown : public imgui_md
 
   static bool fill_image_nfo(const TextureRecord &rec, image_info &nfo)
   {
-    if(!rec.loaded || rec.texture_id == 0) return false;
+    if(!rec.loaded || rec.texture.id == 0) return false;
     const float max_w = std::floor(std::max(8.0f, g_render_width));
     ImVec2 draw_size = rec.size;
     if(draw_size.x > max_w)
@@ -911,7 +1021,7 @@ struct MyMarkdown : public imgui_md
     }
     draw_size.x = std::floor(draw_size.x);
     draw_size.y = std::floor(draw_size.y);
-    nfo.texture_id = (ImTextureID)(uintptr_t)rec.texture_id;
+    nfo.texture_id = (ImTextureID)(uintptr_t)rec.texture.id;
     nfo.size = draw_size;
     nfo.uv0 = ImVec2(0, 0);
     nfo.uv1 = ImVec2(1, 1);
@@ -935,7 +1045,10 @@ struct MyMarkdown : public imgui_md
       // Return immediately if already loaded as a texture
       auto tex_it = g_image_cache.find(m_href);
       if(tex_it != g_image_cache.end())
+      {
+        touch_texture_record(tex_it->second);
         return fill_image_nfo(tex_it->second, nfo);
+      }
 
       if(!url_is_downloadable(m_href)) return false;
 
@@ -958,9 +1071,8 @@ struct MyMarkdown : public imgui_md
       const std::filesystem::path local = fetch_it->second.local_path;
       lk.unlock();
 
-      TextureRecord rec = load_texture_from_file(local);
-      g_image_cache[m_href] = rec;
-      return fill_image_nfo(rec, nfo);
+      auto inserted = cache_texture_record(m_href, load_texture_from_file(local));
+      return fill_image_nfo(inserted->second, nfo);
     }
 
     const std::filesystem::path resolved = resolve_image_path(m_href);
@@ -968,8 +1080,11 @@ struct MyMarkdown : public imgui_md
     auto it = g_image_cache.find(cache_key);
     if(it == g_image_cache.end())
     {
-      TextureRecord rec = load_texture_from_file(resolved);
-      it = g_image_cache.emplace(cache_key, rec).first;
+      it = cache_texture_record(cache_key, load_texture_from_file(resolved));
+    }
+    else
+    {
+      touch_texture_record(it->second);
     }
 
     return fill_image_nfo(it->second, nfo);
@@ -1287,12 +1402,15 @@ MarkdownView::TextureHandle MarkdownView::get_or_load_texture(const std::filesys
   auto it = g_image_cache.find(key);
   if(it == g_image_cache.end())
   {
-    TextureRecord rec = load_texture_from_file(path);
-    it = g_image_cache.emplace(key, rec).first;
+    it = cache_texture_record(key, load_texture_from_file(path));
   }
-  if(!it->second.loaded || it->second.texture_id == 0) return TextureHandle{};
+  else
+  {
+    touch_texture_record(it->second);
+  }
+  if(!it->second.loaded || it->second.texture.id == 0) return TextureHandle{};
   TextureHandle h;
-  h.id = (ImTextureID)(uintptr_t)it->second.texture_id;
+  h.id = (ImTextureID)(uintptr_t)it->second.texture.id;
   h.width = it->second.size.x;
   h.height = it->second.size.y;
   h.valid = true;
@@ -1845,16 +1963,51 @@ void MarkdownView::render(std::string_view markdown)
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
   auto render_with_color_spans = [&](std::string_view text) { render_markdown_block_with_tables(text); };
 
-  // Split into (normal markdown) and (note blocks). You already have this helper from earlier:
-  // std::vector<Chunk> split_note_blocks(std::string_view)
-  int note_idx = 0;
-  for(const Chunk &c : split_note_blocks(markdown))
+  const std::size_t content_hash = std::hash<std::string_view>{}(markdown);
+  const int width_bucket = static_cast<int>(std::floor(std::max(0.0f, g_render_width)));
+  ParsedMarkdownCacheEntry *parsed = nullptr;
+  for(auto &entry : g_markdown_cache)
   {
+    if(entry.content_hash == content_hash && entry.content_size == markdown.size() && entry.width_bucket == width_bucket &&
+       entry.regular == g_fonts.regular && entry.italic == g_fonts.italic && entry.bold == g_fonts.bold)
+    {
+      parsed = &entry;
+      entry.last_used = ++g_markdown_cache_clock;
+      break;
+    }
+  }
+  if(parsed == nullptr)
+  {
+    ParsedMarkdownCacheEntry entry;
+    entry.content_hash = content_hash;
+    entry.content_size = markdown.size();
+    entry.width_bucket = width_bucket;
+    entry.regular = g_fonts.regular;
+    entry.italic = g_fonts.italic;
+    entry.bold = g_fonts.bold;
+    entry.chunks = split_note_blocks(markdown);
+    entry.sections.reserve(entry.chunks.size());
+    for(const Chunk &chunk : entry.chunks)
+      entry.sections.push_back(chunk.is_note ? MdSection{} : parse_sections(chunk.text));
+    entry.last_used = ++g_markdown_cache_clock;
+    g_markdown_cache.push_back(std::move(entry));
+    if(g_markdown_cache.size() > kMaxMarkdownCacheEntries)
+    {
+      auto victim = std::min_element(g_markdown_cache.begin(), g_markdown_cache.end(),
+          [](const ParsedMarkdownCacheEntry &a, const ParsedMarkdownCacheEntry &b) { return a.last_used < b.last_used; });
+      if(victim != g_markdown_cache.end()) g_markdown_cache.erase(victim);
+    }
+    parsed = &g_markdown_cache.back();
+  }
+
+  int note_idx = 0;
+  for(size_t chunk_idx = 0; chunk_idx < parsed->chunks.size(); ++chunk_idx)
+  {
+    const Chunk &c = parsed->chunks[chunk_idx];
     if(!c.is_note)
     {
-      const MdSection root = parse_sections(c.text);
       int ids = 0;
-      render_sections(root, render_with_color_spans, ids);
+      render_sections(parsed->sections[chunk_idx], render_with_color_spans, ids);
       continue;
     }
 

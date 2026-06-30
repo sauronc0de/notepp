@@ -393,6 +393,9 @@ static float g_dbg_swap_ms  = 0.f;
 static float g_dbg_begin_ms = 0.f;
 static float g_dbg_ui_ms    = 0.f;
 static float g_dbg_end_ms   = 0.f;
+static unsigned int g_dbg_disk_reads = 0;
+static unsigned int g_dbg_disk_reads_last_sec = 0;
+static double g_dbg_next_metrics_time = 0.0;
 #endif
 
 struct ExplorerImageEntry
@@ -411,6 +414,9 @@ static std::unordered_map<std::string, FolderImageCache> g_explorer_image_cache;
 
 std::string read_text_file(const std::string &path)
 {
+#ifdef NOTEPP_DEBUG_UI
+  ++g_dbg_disk_reads;
+#endif
   std::ifstream in(path, std::ios::binary);
   if(!in) return {};
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -546,6 +552,9 @@ static ImFont *get_or_load_note_font(const std::string &abs_path, float size)
 static void flush_pending_note_fonts()
 {
   if(!g_note_fonts_dirty) return;
+#ifdef NOTEPP_DEBUG_UI
+  const Uint64 t0 = SDL_GetPerformanceCounter();
+#endif
   ImGuiIO &io = ImGui::GetIO();
   ImGui_ImplOpenGL3_DestroyFontsTexture();
   io.Fonts->Build();
@@ -554,6 +563,10 @@ static void flush_pending_note_fonts()
     g_note_font_cache[key] = font;
   g_note_font_pending.clear();
   g_note_fonts_dirty = false;
+#ifdef NOTEPP_DEBUG_UI
+  const float ms = (float)(SDL_GetPerformanceCounter() - t0) * 1000.f / (float)SDL_GetPerformanceFrequency();
+  std::fprintf(stderr, "Font atlas rebuilt in %.2f ms\n", ms);
+#endif
 }
 
 static std::string copy_font_to_folder(const std::string &src_path,
@@ -1518,7 +1531,12 @@ void App::save_state()
   if(!state_file_path_.empty())
   {
     std::ofstream out(state_file_path_, std::ios::binary | std::ios::trunc);
-    if(out) out << markdown_text_;
+    if(out)
+    {
+      out << markdown_text_;
+      out.close();
+      update_note_cache(state_file_path_, markdown_text_);
+    }
   }
   save_index();
   if(g_drawings_dirty) save_drawings_state();
@@ -2537,19 +2555,29 @@ bool App::sync_project_files()
     }
   }
 
-  // Detect external edits to the currently visible note as well as additions/deletions.
+  // Detect external edits to notes by timestamp. Text is loaded only for changed files.
   // Avoid clobbering in-app edits that are queued to be saved.
-  if(has_active_note() && !state_dirty_ && !state_file_path_.empty())
+  if(!state_dirty_)
   {
-    std::ifstream in(state_file_path_, std::ios::binary);
-    if(in)
+    for(const auto &f : folders_)
     {
-      std::string disk_text((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-      if(disk_text != markdown_text_)
+      for(const auto &n : f.notes)
       {
-        markdown_text_ = std::move(disk_text);
-        changed = true;
+        if(n.path.empty()) continue;
+        auto it = note_content_cache_.find(n.path);
+        const auto write_time = fs::last_write_time(n.path, ec);
+        if(ec)
+        {
+          ec.clear();
+          continue;
+        }
+        if(it != note_content_cache_.end() && it->second.valid && it->second.last_write_time != write_time)
+        {
+          invalidate_note_cache(n.path);
+          changed = true;
+          if(n.path == state_file_path_)
+            markdown_text_ = cached_note_text(n.path);
+        }
       }
     }
   }
@@ -2560,6 +2588,65 @@ bool App::sync_project_files()
     dirty_ = true;
   }
   return changed;
+}
+
+const std::string &App::cached_note_text(const std::string &path)
+{
+  static constexpr std::size_t kMaxNoteContentCacheEntries = 512;
+  auto &entry = note_content_cache_[path];
+  entry.last_used = ++note_content_cache_clock_;
+  std::error_code ec;
+  const auto write_time = std::filesystem::last_write_time(path, ec);
+  if(!entry.valid || (!ec && entry.last_write_time != write_time))
+  {
+#ifdef NOTEPP_DEBUG_UI
+    ++g_dbg_disk_reads;
+#endif
+    std::ifstream in(path, std::ios::binary);
+    if(in)
+    {
+      entry.text.assign((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+      entry.last_write_time = ec ? std::filesystem::file_time_type{} : write_time;
+    }
+    else
+    {
+      entry.text.clear();
+      entry.last_write_time = {};
+    }
+    entry.valid = true;
+  }
+  while(note_content_cache_.size() > kMaxNoteContentCacheEntries)
+  {
+    auto victim = note_content_cache_.end();
+    for(auto it = note_content_cache_.begin(); it != note_content_cache_.end(); ++it)
+    {
+      if(it->first == path) continue;
+      if(victim == note_content_cache_.end() || it->second.last_used < victim->second.last_used)
+        victim = it;
+    }
+    if(victim == note_content_cache_.end()) break;
+    note_content_cache_.erase(victim);
+  }
+  return note_content_cache_.at(path).text;
+}
+
+void App::update_note_cache(const std::string &path, std::string text)
+{
+  if(path.empty()) return;
+  auto &entry = note_content_cache_[path];
+  entry.text = std::move(text);
+  entry.last_used = ++note_content_cache_clock_;
+  std::error_code ec;
+  entry.last_write_time = std::filesystem::last_write_time(path, ec);
+  if(ec) entry.last_write_time = {};
+  entry.valid = true;
+}
+
+void App::invalidate_note_cache(const std::string &path)
+{
+  auto it = note_content_cache_.find(path);
+  if(it != note_content_cache_.end()) it->second.valid = false;
 }
 
 void App::load_note_content_for_active()
@@ -2582,16 +2669,15 @@ void App::load_note_content_for_active()
   state_file_path_ = n.path;
   note_title_ = n.title;
 
-  std::ifstream in(state_file_path_, std::ios::binary);
-  if(in)
+  if(std::filesystem::exists(state_file_path_))
   {
-    markdown_text_.assign((std::istreambuf_iterator<char>(in)),
-                          std::istreambuf_iterator<char>());
+    markdown_text_ = cached_note_text(state_file_path_);
   }
   else
   {
     std::filesystem::create_directories(std::filesystem::path(state_file_path_).parent_path());
     markdown_text_.clear();
+    update_note_cache(state_file_path_, markdown_text_);
     state_dirty_ = true;
   }
   discard_pending_text_history();
@@ -3401,6 +3487,21 @@ void App::render_debug_history_window() const
   ImGui::Text("  ui    : %6.2f ms", g_dbg_ui_ms);
   ImGui::Text("  end   : %6.2f ms", g_dbg_end_ms);
   ImGui::Text("  swap  : %6.2f ms  <--", g_dbg_swap_ms);
+  ImGui::Spacing();
+  const double now = ImGui::GetTime();
+  if(now >= g_dbg_next_metrics_time)
+  {
+    g_dbg_disk_reads_last_sec = g_dbg_disk_reads;
+    g_dbg_disk_reads = 0;
+    g_dbg_next_metrics_time = now + 1.0;
+  }
+  ImGui::SeparatorText("Performance counters");
+  ImGui::Text("disk reads/sec: %u", g_dbg_disk_reads_last_sec);
+  ImGui::Text("visible notes: %d", folder_overview_mode_ && active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size()
+      ? (int)std::count_if(folders_[(size_t)active_folder_idx_].notes.begin(), folders_[(size_t)active_folder_idx_].notes.end(), [](const NoteMeta &n) { return !n.hidden; })
+      : (has_active_note() ? 1 : 0));
+  ImGui::Text("note text cache entries: %d", (int)note_content_cache_.size());
+  ImGui::Text("OpenGL renderer: %s", (const char *)glGetString(GL_RENDERER));
   ImGui::Spacing();
   ImGui::Text("Undo: %d", (int)undo_entries.size());
   ImGui::SameLine();
@@ -6394,11 +6495,8 @@ void App::frame_ui()
   ImGui::PopStyleColor(4);
   ImGui::End();
 
-  auto read_file_text = [](const std::string &path) -> std::string {
-    std::ifstream in(path, std::ios::binary);
-    if(!in) return {};
-    return std::string((std::istreambuf_iterator<char>(in)),
-                       std::istreambuf_iterator<char>());
+  auto read_file_text = [this](const std::string &path) -> const std::string & {
+    return cached_note_text(path);
   };
 
   if(folder_overview_mode_)
@@ -8479,7 +8577,12 @@ __CURSOR__)MD");
           else if(preview_text != preview_before)
           {
             std::ofstream out(n.path, std::ios::binary | std::ios::trunc);
-            if(out) out << preview_text;
+            if(out)
+            {
+              out << preview_text;
+              out.close();
+              update_note_cache(n.path, preview_text);
+            }
           }
 
           record_preview_history_action("Edit preview widget", n.path, preview_before, preview_text, preview_state_before_frame, preview_state_after);
@@ -9098,7 +9201,6 @@ __CURSOR__)MD");
   if(!editing_mode_)
   {
     // Preview mode (interactive)
-    const float start_y = ImGui::GetCursorPosY();
     const std::string preview_before = markdown_text_;
     const std::string preview_state_before = capture_preview_state_snapshot();
     const float preview_w = std::max(8.0f, ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x * 2.0f - ImGui::GetStyle().ScrollbarSize);

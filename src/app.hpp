@@ -37,6 +37,9 @@ private:
   void sync_active_folder_settings();
   void apply_folder_settings(int folder_idx);
   void load_note_content_for_active();
+  const std::string &cached_note_text(const std::string &path);
+  void update_note_cache(const std::string &path, std::string text);
+  void invalidate_note_cache(const std::string &path);
   void set_active_note(int folder_idx, int note_idx);
   void ensure_default_index();
   void open_or_create_readme();
@@ -157,6 +160,15 @@ private:
   int max_fps_ = 60;
   unsigned int file_watch_timer_ = 0;
   bool dirty_ = true;
+  struct NoteContentCacheEntry
+  {
+    std::string text;
+    std::filesystem::file_time_type last_write_time{};
+    unsigned long long last_used = 0;
+    bool valid = false;
+  };
+  std::unordered_map<std::string, NoteContentCacheEntry> note_content_cache_;
+  unsigned long long note_content_cache_clock_ = 0;
   unsigned long long min_frame_ticks_ = 0;
   unsigned long long last_frame_ticks_ = 0;
 
