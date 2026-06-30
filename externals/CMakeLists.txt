@@ -113,29 +113,9 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(md4c_fc)
 
 set(MD4C_INCLUDE_DIR ${md4c_fc_SOURCE_DIR}/src)
+set(MD4C_INCLUDE_DIR ${MD4C_INCLUDE_DIR} PARENT_SCOPE)
 # ------------------------------------------------------------#
 
-
-# ------------------------------------------------------------#
-# 🌐 Added imgui_md (renderer) -------------------------------#
-FetchContent_Declare(
-  imgui_md_fc
-  GIT_REPOSITORY https://github.com/mekhontsev/imgui_md.git
-  GIT_TAG        main
-)
-FetchContent_MakeAvailable(imgui_md_fc)
-
-add_library(imgui_md STATIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui_md/imgui_md.cpp
-)
-
-target_include_directories(imgui_md PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui_md
-  ${MD4C_INCLUDE_DIR}          # <-- makes md4c.h visible
-)
-
-target_link_libraries(imgui_md PUBLIC imgui md4c)
-# ------------------------------------------------------------#
 
 # ------------------------------------------------------------#
 # 🌐 Added Tree-sitter runtime + grammars --------------------#
@@ -231,7 +211,7 @@ file(READ "${tree_sitter_python_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITT
 file(READ "${tree_sitter_bash_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_BASH_HIGHLIGHTS_QUERY)
 
 configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/tree_sitter_queries.hpp.in
+  ${PROJECT_SOURCE_DIR}/src/libraries/markdown_code_highlight/tree_sitter_queries.hpp.in
   ${CMAKE_BINARY_DIR}/generated/tree_sitter_queries.hpp
   @ONLY
 )

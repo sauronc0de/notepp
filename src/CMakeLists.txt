@@ -1,1 +1,1 @@
-add_subdirectory(log)
+# Application sources are declared by the root CMakeLists.txt.

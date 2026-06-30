@@ -59,20 +59,18 @@ find_package(OpenGL REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(PkgConfig REQUIRED)
 
+if(ENABLE_TEST)
+  enable_testing()
+endif()
+
 add_subdirectory(externals)
-add_subdirectory(libraries)
+add_subdirectory(src/libraries)
 add_subdirectory(examples)
 add_subdirectory(src)
 
 set(NOTEPP_SOURCES
   src/main.cpp
-  src/app.cpp
-  src/emoji_picker.cpp
-  src/lang.cpp
-  src/markdown_sections.cpp
-  src/markdown_view.cpp
-  src/undo_redo.cpp
-  src/project_manager.cpp
+  src/app/src/app.cpp
 )
 
 set(NOTEPP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
@@ -107,7 +105,7 @@ else()
 endif()
 
 add_dependencies(${PROJECT_NAME} demo_note_content_gen)
-target_include_directories(${PROJECT_NAME} PUBLIC src "${NOTEPP_GENERATED_DIR}")
+target_include_directories(${PROJECT_NAME} PUBLIC src src/app/inc "${NOTEPP_GENERATED_DIR}")
 
 target_link_libraries(${PROJECT_NAME}
   PRIVATE
@@ -115,6 +113,12 @@ target_link_libraries(${PROJECT_NAME}
     imgui
     imgui_md
     note_core
+    note_history
+    lang
+    emoji_picker
+    markdown_preview
+    markdown_model
+    note_project
     tiny_json
     markdown_support
     markdown_ui
