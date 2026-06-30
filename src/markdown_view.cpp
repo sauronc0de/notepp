@@ -27,6 +27,11 @@
 
 namespace
 {
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
 struct Segment
 {
   std::string text;
@@ -1889,7 +1894,7 @@ void MarkdownView::render(std::string_view markdown)
 
     // Right click on note block -> copy only this note block text
     ImGui::SetCursorScreenPos(rect_min);
-    ImGui::InvisibleButton("##note_block_ctx", ImVec2(rect_max.x - rect_min.x, rect_max.y - rect_min.y));
+    ImGui::InvisibleButton("##note_block_ctx", nonzero_invisible_button_size(rect_max.x - rect_min.x, rect_max.y - rect_min.y));
     if(ImGui::BeginPopupContextItem("##note_block_popup", ImGuiPopupFlags_MouseButtonRight))
     {
       if(ImGui::MenuItem("Copy note block"))

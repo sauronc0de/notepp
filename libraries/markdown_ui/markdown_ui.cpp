@@ -43,6 +43,17 @@ namespace
 {
 using NoteCore::trim;
 
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
+static ImVec2 nonzero_invisible_button_size(ImVec2 size)
+{
+  return nonzero_invisible_button_size(size.x, size.y);
+}
+
+
 constexpr float kDefaultUiHoverPopupContentWidth = 320.0f;
 constexpr float kMinUiHoverPopupContentWidth = 220.0f;
 constexpr float kMaxUiHoverPopupContentWidth = 720.0f;
@@ -2717,7 +2728,7 @@ bool render_list_row(EvalContext &ctx, Value &root, Value &item, const std::vect
 
   const ImVec2 text_size = ImGui::CalcTextSize(name.c_str(), nullptr, false, text_width);
   const float row_height = std::max(text_size.y + style.FramePadding.y * 2.0f, ImGui::GetFrameHeight());
-  ImGui::InvisibleButton("##row", ImVec2(row_width, row_height));
+  ImGui::InvisibleButton("##row", nonzero_invisible_button_size(row_width, row_height));
 
   const bool hovered = ImGui::IsItemHovered();
   const bool active = ImGui::IsItemActive();
@@ -3549,7 +3560,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         if(col != 0) ImGui::SameLine(0.0f, spacing);
 
         ImGui::PushID(index);
-        ImGui::InvisibleButton("##slot", ImVec2(cell_size, cell_size));
+        ImGui::InvisibleButton("##slot", nonzero_invisible_button_size(cell_size, cell_size));
         if(ImGui::IsItemClicked(ImGuiMouseButton_Left)) selected_index = index;
         const bool hovered = ImGui::IsItemHovered();
         if(hovered) any_slot_hovered = true;
@@ -4352,7 +4363,7 @@ void render_map_widget(EvalContext &ctx, const ParsedBlock &block, const Stateme
 
     // Invisible button for all canvas interactions
     ImGui::SetCursorPos(ImVec2(0.f, 0.f));
-    ImGui::InvisibleButton(("##map_canvas_" + child_id).c_str(), canvas_size,
+    ImGui::InvisibleButton(("##map_canvas_" + child_id).c_str(), nonzero_invisible_button_size(canvas_size),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
     const bool canvas_hovered = ImGui::IsItemHovered();
 

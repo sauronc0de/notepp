@@ -40,7 +40,7 @@ private:
   void set_active_note(int folder_idx, int note_idx);
   void ensure_default_index();
   void open_or_create_readme();
-  void sync_project_files();
+  bool sync_project_files();
   /**
    * @brief Clamp active folder/note indices to valid ranges.
    *
@@ -155,6 +155,8 @@ private:
   ImFont *font_bold_ = nullptr;
   std::string default_font_path_;
   int max_fps_ = 60;
+  unsigned int file_watch_timer_ = 0;
+  bool dirty_ = true;
   unsigned long long min_frame_ticks_ = 0;
   unsigned long long last_frame_ticks_ = 0;
 

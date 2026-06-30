@@ -17,6 +17,11 @@
 namespace NoteUi
 {
 
+static ImVec2 nonzero_invisible_button_size(ImVec2 size)
+{
+  return ImVec2(std::max(1.0f, size.x), std::max(1.0f, size.y));
+}
+
 // ---------------------------------------------------------------------------
 // GLSL sources
 // ---------------------------------------------------------------------------
@@ -337,7 +342,7 @@ bool shaded_icon_button(const char *id,
   // Text-only button (tex == 0): hover animation without a shader pass.
   if(!tex)
   {
-    const bool pressed = ImGui::InvisibleButton(id, size);
+    const bool pressed = ImGui::InvisibleButton(id, nonzero_invisible_button_size(size));
     const bool hovered = ImGui::IsItemHovered();
     const ImVec2 p_min = ImGui::GetItemRectMin();
     const ImVec2 p_max = ImGui::GetItemRectMax();
@@ -383,7 +388,7 @@ bool shaded_icon_button(const char *id,
   }
 
   // --- Interaction ---
-  const bool pressed = ImGui::InvisibleButton(id, size);
+  const bool pressed = ImGui::InvisibleButton(id, nonzero_invisible_button_size(size));
   const bool hovered = ImGui::IsItemHovered();
   const ImVec2 p_min = ImGui::GetItemRectMin();
   const ImVec2 p_max = ImGui::GetItemRectMax();

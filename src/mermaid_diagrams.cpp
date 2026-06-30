@@ -18,6 +18,11 @@ namespace MermaidDiagrams
 {
 namespace
 {
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
 // ── parsing helpers ───────────────────────────────────────────────────────────
 static bool sw(std::string_view s, std::string_view p) { return NoteCore::starts_with(s, p); }
 static std::string_view tr(std::string_view s) { return NoteCore::trim(s); }
@@ -400,7 +405,7 @@ void render_sequence(const SequenceDiagram &d, int id)
   float ch = ph + (msg_count+2)*row_h + 16.0f + ph;
 
   const ImVec2 orig = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##seq", ImVec2(cw, ch));
+  ImGui::InvisibleButton("##seq", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const ImU32 fill  = ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord  = ImGui::GetColorU32(ImGuiCol_Border);
@@ -582,7 +587,7 @@ void render_class(const ClassDiagram &d, int id)
   canvas_h=rows*(canvas_h+gap)+gap;
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##cls",ImVec2(canvas_w,canvas_h));
+  ImGui::InvisibleButton("##cls", nonzero_invisible_button_size(canvas_w, canvas_h));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -692,7 +697,7 @@ void render_state(const StateDiagram &d, int id)
   int cols=std::min(3,n), rows=(n+cols-1)/cols;
   float cw=cols*(sw2+hgap)+hgap, ch=rows*(sh+vgap)+vgap+40;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##st",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##st", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -834,7 +839,7 @@ void render_er(const ERDiagram &d, int id)
   }
   float cw=cols*(ew+hgap)+hgap, ch=rows*(maxh+vgap)+vgap;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##er",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##er", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -924,7 +929,7 @@ void render_journey(const JourneyDiagram &d, int id)
   float cw=label_w+total_tasks*(score_w+gap)+gap+100;
   float ch=(d.sections.size()+1)*row_h+40;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##jrn",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##jrn", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   if(!d.title.empty()){
@@ -1026,7 +1031,7 @@ void render_gantt(const GanttDiagram &d, int id)
   float px_per_day=bar_area/max_day;
   float cw=label_w+bar_area+8, ch=axis_h+(flat.size()+d.sections.size())*row_h+8;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##gantt",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##gantt", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
@@ -1118,7 +1123,7 @@ void render_quadrant(const QuadrantDiagram &d, int id)
   const float sz=260.0f,pad=40.0f;
   float cw=sz+pad*2, ch=sz+pad*2+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##quad",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##quad", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
@@ -1222,7 +1227,7 @@ void render_requirement(const RequirementDiagram &d, int id)
   int cols=std::min(3,n), rows=(n+cols-1)/cols;
   float cw=cols*(bw+hgap)+hgap, ch=rows*(bh+vgap)+vgap;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##req",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##req", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -1330,7 +1335,7 @@ void render_git(const GitDiagram &d, int id)
   float cw=pad*2+max_commits*commit_gap;
   float ch=pad*2+nb*branch_gap;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##git",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##git", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   // branch index map
@@ -1451,7 +1456,7 @@ void render_mindmap(const MindmapDiagram &d, int id)
   place(0,0,2*kPi,canvas_r*0.7f);
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##mm",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##mm", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
@@ -1521,7 +1526,7 @@ void render_timeline(const TimelineDiagram &d, int id)
   float cw=np*(period_w+hgap)+hgap+pad*2;
   float ch=pad*2+period_h+max_events*event_h+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##tl",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##tl", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
@@ -1597,7 +1602,7 @@ void render_sankey(const SankeyDiagram &d, int id)
   float cw=ncols*(nw+col_gap)+pad*2;
   float ch=nn*60.0f+pad*2; ch=std::min(ch,400.0f);
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##sk",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##sk", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -1793,7 +1798,7 @@ bool parse_xychart(std::string_view src, XYDiagram &out)
   float plot_w=nc*bar_w, plot_h=180.0f;
   float cw=axis_w+plot_w+pad*2, ch=plot_h+axis_h+pad*2+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##xy",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##xy", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 gcol=ImGui::GetColorU32(ImGuiCol_Separator);
@@ -1857,7 +1862,7 @@ void render_xychart(const XYDiagram &d, int id)
   const float cw=std::max(120.0f,d.config.width);
   const float ch=std::max(120.0f,d.config.height);
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##xy",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##xy", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 gcol=ImGui::GetColorU32(ImGuiCol_Separator);
@@ -2030,7 +2035,7 @@ void render_block(const BlockDiagram &d, int id)
   int rows=(n+cols-1)/cols;
   float cw=cols*(nw+hgap)+hgap, ch=rows*(nh+vgap)+vgap;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##blk",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##blk", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -2304,7 +2309,7 @@ void render_packet(const PacketDiagram &d, int id)
   }
 
   // ── InvisibleButton ───────────────────────────────────────────────────────
-  ImGui::InvisibleButton("##pkt", ImVec2(cw, ch));
+  ImGui::InvisibleButton("##pkt", nonzero_invisible_button_size(cw, ch));
   const bool pkt_hovered = ImGui::IsItemHovered();
   const bool pkt_active  = ImGui::IsItemActive();
 
@@ -2857,7 +2862,7 @@ void render_kanban(const KanbanDiagram &d, int id)
   float ch=col_header_h+col_body_h+pad*2;
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##kb",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##kb", nonzero_invisible_button_size(cw, ch));
   const bool kb_hovered=ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
   const bool kb_active =ImGui::IsItemActive();
   ImDrawList *dl=ImGui::GetWindowDrawList();
@@ -3150,7 +3155,7 @@ void render_architecture(const ArchDiagram &d, int id)
   float cw=cols*(sw2+hgap)+hgap+gpad*2;
   float ch=rows*(sh+vgap)+vgap+gpad*2+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##arch",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##arch", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 fill=ImGui::GetColorU32(ImGuiCol_FrameBg);
@@ -3247,7 +3252,7 @@ void render_radar(const RadarDiagram &d, int id)
   const float r=110.0f,pad=60.0f;
   float cw=r*2+pad*2, ch=r*2+pad*2+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##radar",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##radar", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 gcol=ImGui::GetColorU32(ImGuiCol_Separator);
@@ -3333,7 +3338,7 @@ void render_treemap(const TreemapDiagram &d, int id)
   ImGui::PushID(id);
   const float cw=340.0f, ch=200.0f;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##tm",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##tm", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -3453,7 +3458,7 @@ void render_eventmodeling(const EventModelingDiagram &d, int id)
   int n=(int)d.items.size(); if(n==0){ImGui::Text("(empty event model)");ImGui::PopID();return;}
   float cw=n*(iw+hgap)+hgap+pad*2, ch=ih+pad*2+20;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##em",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##em", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 bord=ImGui::GetColorU32(ImGuiCol_Border);
@@ -3538,7 +3543,7 @@ void render_venn(const VennDiagram &d, int id)
   }
 
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##venn",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##venn", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
 
@@ -3625,7 +3630,7 @@ void render_ishikawa(const IshikawaDiagram &d, int id)
   ImGui::PushID(id);
   const float cw=420.0f,ch=200.0f,effect_w=80.0f;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##ish",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##ish", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
@@ -3700,7 +3705,7 @@ void render_wardley(const WardleyDiagram &d, int id)
   ImGui::PushID(id);
   const float cw=320.0f,ch=240.0f,pad=40.0f;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##wd",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##wd", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 gcol=ImGui::GetColorU32(ImGuiCol_Separator);
@@ -3778,7 +3783,7 @@ void render_treeview(const TreeViewDiagram &d, int id)
   float max_depth=0; for(auto &nd:d.nodes){ int dep=0; int p=nd.parent; while(p>=0){dep++;p=d.nodes[p].parent;} max_depth=std::max(max_depth,(float)dep); }
   float cw=pad+max_depth*indent_w+200.0f, ch=n*row_h+pad*2;
   const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##tv",ImVec2(cw,ch));
+  ImGui::InvisibleButton("##tv", nonzero_invisible_button_size(cw, ch));
   ImDrawList *dl=ImGui::GetWindowDrawList();
   const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);

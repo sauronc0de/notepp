@@ -68,6 +68,11 @@ using MarkdownSupport::normalize_input_text_buffer;
 using MarkdownSupport::render_preview_with_task_checkboxes;
 using MarkdownSupport::render_preview_with_task_checkboxes_ex;
 using MarkdownSupport::rgba_to_hex;
+
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
 using MarkdownSupport::set_all_preview_headers_open;
 using MarkdownSupport::set_preview_document_path;
 using MarkdownSupport::should_push_word_granular_undo;
@@ -100,6 +105,15 @@ using Json = nlohmann::json;
 
 namespace
 {
+constexpr Uint32 kProjectFilesChangedEvent = SDL_USEREVENT + 17;
+
+Uint32 project_file_watch_timer_callback(Uint32 interval, void *)
+{
+  SDL_Event event{};
+  event.type = kProjectFilesChangedEvent;
+  SDL_PushEvent(&event);
+  return interval;
+}
 
 std::string generate_uuid()
 {
@@ -968,6 +982,10 @@ int App::run()
     if(std::filesystem::exists(imgui_ini_file_))
       ImGui::LoadIniSettingsFromDisk(imgui_ini_file_.string().c_str());
 
+    // Low-frequency filesystem invalidation: wakes the event loop to scan for
+    // external note/image changes, but only renders when the scan finds changes.
+    file_watch_timer_ = SDL_AddTimer(1000, project_file_watch_timer_callback, nullptr);
+
     // Extra frames to render after the last event or interaction, so hover effects
     // and frame-delayed state (popup close, tooltip fade) settle cleanly.
     int keep_alive_frames = 2;
@@ -991,7 +1009,9 @@ int App::run()
       const bool animation_active =
           !history_indicator_.text.empty() && history_indicator_.until > ImGui::GetTime();
 
-      if(had_event || imgui_active || animation_active || keep_alive_frames > 0)
+      dirty_ = dirty_ || had_event || state_dirty_ || layout_dirty_ || g_drawings_dirty || animation_active;
+
+      if(dirty_ || imgui_active || keep_alive_frames > 0)
       {
         keep_alive_frames = (had_event || imgui_active || animation_active) ? 2
                                                                             : keep_alive_frames - 1;
@@ -1000,6 +1020,7 @@ int App::run()
         const Uint64 dbg_t2 = SDL_GetPerformanceCounter();
 #endif
         frame_end();
+        dirty_ = imgui_active || animation_active;
         limit_frame_rate();
 #ifdef NOTEPP_DEBUG_UI
         const Uint64 dbg_t3 = SDL_GetPerformanceCounter();
@@ -1016,10 +1037,10 @@ int App::run()
         // viewports are enabled, or ImGui fires a sanity-check assertion.
         if(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
           ImGui::UpdatePlatformWindows();
-        // Block until an event arrives (up to 33 ms) so the thread sleeps instead
-        // of spinning. Push the event back so frame_begin picks it up next iteration.
+        // Block until an event arrives. The file-watch timer may wake us to scan,
+        // but unchanged static notes do not redraw just because time passed.
         SDL_Event ev;
-        if(SDL_WaitEventTimeout(&ev, 33) == 1)
+        if(SDL_WaitEvent(&ev) == 1)
           SDL_PushEvent(&ev);
       }
     }
@@ -1274,6 +1295,12 @@ void App::shutdown()
     std::filesystem::remove(std::filesystem::path(p + ".bak"), ec);
   }
   pending_fs_delete_paths_.clear();
+
+  if(file_watch_timer_ != 0)
+  {
+    SDL_RemoveTimer(file_watch_timer_);
+    file_watch_timer_ = 0;
+  }
 
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
@@ -2105,7 +2132,7 @@ void App::show_profile_modal()
 
       // Invisible button covering canvas for drag/resize interaction
       ImGui::SetCursorScreenPos(canvas_tl);
-      ImGui::InvisibleButton("##pm_canvas", ImVec2(canvas_w, canvas_h));
+      ImGui::InvisibleButton("##pm_canvas", nonzero_invisible_button_size(canvas_w, canvas_h));
       const bool canvas_active = ImGui::IsItemActive();
       const bool canvas_hovered = ImGui::IsItemHovered();
       const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -2381,7 +2408,7 @@ bool App::has_active_note() const
   return active_note_idx_ >= 0 && active_note_idx_ < (int)notes.size();
 }
 
-void App::sync_project_files()
+bool App::sync_project_files()
 {
   namespace fs = std::filesystem;
 
@@ -2510,8 +2537,29 @@ void App::sync_project_files()
     }
   }
 
+  // Detect external edits to the currently visible note as well as additions/deletions.
+  // Avoid clobbering in-app edits that are queued to be saved.
+  if(has_active_note() && !state_dirty_ && !state_file_path_.empty())
+  {
+    std::ifstream in(state_file_path_, std::ios::binary);
+    if(in)
+    {
+      std::string disk_text((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+      if(disk_text != markdown_text_)
+      {
+        markdown_text_ = std::move(disk_text);
+        changed = true;
+      }
+    }
+  }
+
   if(changed)
+  {
     save_index();
+    dirty_ = true;
+  }
+  return changed;
 }
 
 void App::load_note_content_for_active()
@@ -3438,6 +3486,12 @@ bool App::frame_begin()
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
+    if(event.type == kProjectFilesChangedEvent)
+    {
+      if(sync_project_files()) had_event = true;
+      continue;
+    }
+
     had_event = true;
     if(event.type == SDL_DROPFILE && event.drop.file)
     {
@@ -5664,7 +5718,7 @@ void App::frame_ui()
     const float header_h = ImGui::GetTextLineHeightWithSpacing();
     const ImVec2 header_min = ImGui::GetCursorScreenPos();
     const ImVec2 header_max(header_min.x + avail_w, header_min.y + header_h);
-    ImGui::InvisibleButton("##RootHeader", ImVec2(avail_w, header_h));
+    ImGui::InvisibleButton("##RootHeader", nonzero_invisible_button_size(avail_w, header_h));
     ImDrawList *root_dl = ImGui::GetWindowDrawList();
     // Draw faint "Root" label
     root_dl->AddText(

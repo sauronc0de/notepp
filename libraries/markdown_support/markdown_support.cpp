@@ -28,6 +28,11 @@ void set_preview_document_path(std::string_view path);
 
 namespace
 {
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
 bool extract_checklist_prefix(std::string_view line, std::string &prefix_out)
 {
   size_t i = 0;
@@ -273,7 +278,7 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
   ImGui::PushID(id);
   ImGui::BeginGroup();
   const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##pie_canvas", ImVec2(chart_w, chart_h));
+  ImGui::InvisibleButton("##pie_canvas", nonzero_invisible_button_size(chart_w, chart_h));
   ImGui::EndGroup();
 
   ImGui::SameLine();
@@ -1439,7 +1444,7 @@ TableRenderOutcome render_interactive_table(
         const ImVec2 cell_end = ImGui::GetCursorScreenPos();
         const float hitbox_height = std::max(cell_end.y - cell_start.y, ImGui::GetTextLineHeightWithSpacing());
         ImGui::SetCursorScreenPos(cell_start);
-        ImGui::InvisibleButton("##cell_hitbox", ImVec2(hitbox_width, hitbox_height));
+        ImGui::InvisibleButton("##cell_hitbox", nonzero_invisible_button_size(hitbox_width, hitbox_height));
         const bool cell_hovered = ImGui::IsItemHovered();
         ImGui::SetCursorScreenPos(cell_end);
 

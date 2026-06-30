@@ -11,6 +11,11 @@ namespace MermaidFlowchart
 {
 namespace
 {
+static ImVec2 nonzero_invisible_button_size(float w, float h)
+{
+  return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
 static std::string to_lower(std::string_view s)
 {
   std::string out(s);
@@ -231,7 +236,7 @@ void render(const Graph &g, int id)
 
   ImGui::PushID(id);
   ImVec2 origin = ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##flowchart_canvas", ImVec2(canvas_w, canvas_h));
+  ImGui::InvisibleButton("##flowchart_canvas", nonzero_invisible_button_size(canvas_w, canvas_h));
   ImDrawList *dl = ImGui::GetWindowDrawList();
 
   std::vector<ImVec2> pos(g.nodes.size(), origin);
