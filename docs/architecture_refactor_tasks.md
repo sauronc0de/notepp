@@ -256,7 +256,7 @@ tests/
     tools/tasks/build.sh all develop_gui
     ```
 
-- `[x]` Move the Mermaid target source/header files into `src/libraries/mermaid_flowchart/inc` and `src/libraries/mermaid_flowchart/src`.
+- `[x]` Move the Mermaid target source/header files into `src/libraries/mermaid/inc` and `src/libraries/mermaid/src`.
   - Tested: yes
   - Notes: Parser/renderer splitting remains for Phase 4.
 
@@ -274,11 +274,45 @@ tests/
     ctest --preset Test --output-on-failure
     tools/tasks/build.sh all develop_gui
     ```
-  - Notes: Added umbrella headers where a library intentionally keeps more specific implementation/API headers.
+  - Notes: Kept matching public headers simple; avoid extra wrapper headers when a library only needs one public API header.
 
 - `[x]` Rename single-purpose temporary libraries to clearer names.
   - Tested: yes
   - Notes: `app_widgets` became `emoji_picker`; `app_i18n` became `lang`.
+
+
+## 1.6 Simplify single-header library names
+
+- `[x]` Align simple library names with their actual public API headers instead of adding wrapper headers.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
+  - Notes: Renamed `note_core` to `string_utils`, `markdown_model` to `markdown_sections`, and `markdown_preview` to `markdown_view`.
+
+- `[x]` Rename `note_project` implementation files to match the library public API.
+  - Tested: yes
+  - Notes: `project_manager.hpp/.cpp` became `note_project.hpp/.cpp`.
+
+- `[x]` Rename `imgui_md` public header from `.h` to `.hpp`.
+  - Tested: yes
+  - Notes: Removed the extra wrapper header and updated includes.
+
+
+## 1.7 Rename Mermaid library to match purpose
+
+- `[x]` Rename `mermaid_flowchart` library to `mermaid`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
+  - Notes: The library contains all Mermaid diagram support, not only flowcharts. Main public header is now `src/libraries/mermaid/inc/mermaid.hpp`.
 
 ---
 
@@ -303,17 +337,23 @@ tests/
 
 ## 2.2 Note history library
 
-- `[x]` Move `src/undo_redo.hpp` and `src/undo_redo.cpp` to `src/libraries/note_history`.
+- `[x]` Move and rename `src/undo_redo.hpp` and `src/undo_redo.cpp` to `src/libraries/note_history/inc/note_history.hpp` and `src/libraries/note_history/src/note_history.cpp`.
   - Tested: yes
   - Validation:
     ```bash
     tools/tasks/build.sh all develop_gui
     ```
-  - Notes: Added `note_history` static library with public `inc/` and private `src/` layout.
+  - Notes: Added `note_history` static library with matching `note_history.hpp` and `note_history.cpp` files.
 
-- `[ ]` Rename namespace from `UndoRedo` to a project namespace if done safely.
-  - Tested: no
-  - Notes: Optional. Avoid this if it creates unnecessary churn.
+- `[x]` Rename namespace from `UndoRedo` to a project namespace if done safely.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
+  - Notes: Renamed namespace to `NoteHistory` to match the library name.
 
 - `[x]` Add tests for push, undo, redo, clear, stack limit, and labels.
   - Tested: yes
@@ -445,10 +485,10 @@ tests/
 - `[ ]` Create `src/libraries/mermaid`.
   - Tested: no
 
-- `[ ]` Move `src/mermaid_diagrams.hpp`, `src/mermaid_diagrams.cpp`, `src/mermaid_flowchart.hpp`, and `src/mermaid_flowchart.cpp` under `src/libraries/mermaid`.
+- `[ ]` Move `src/mermaid_diagrams.hpp`, `src/mermaid_diagrams.cpp`, `src/mermaid.hpp`, and `src/mermaid.cpp` under `src/libraries/mermaid`.
   - Tested: no
 
-- `[ ]` Update CMake target from current mixed `mermaid_flowchart` target to clearer Mermaid targets.
+- `[ ]` Update CMake target from current mixed `mermaid` target to clearer Mermaid targets.
   - Tested: no
 
 ## 4.2 Define parser result API
@@ -814,7 +854,7 @@ For each implementation task:
 Completion example:
 
 ```md
-- `[x]` Move `src/undo_redo.hpp` and `src/undo_redo.cpp` to `src/libraries/note_history`.
+- `[x]` Move and rename `src/undo_redo.hpp` and `src/undo_redo.cpp` to `src/libraries/note_history/inc/note_history.hpp` and `src/libraries/note_history/src/note_history.cpp`.
   - Tested: yes
   - Validation:
     ```bash
