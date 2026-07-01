@@ -216,6 +216,27 @@ void test_journey_missing_header()
   md::JourneyDiagram d;
   expect_true(!md::parse_journey("section X\n  task1: 5\n", d), "missing header rejected");
 }
+
+void test_gantt_basic_valid()
+{
+  const std::string src =
+      "gantt\n"
+      "  title Plan\n"
+      "  section S1\n"
+      "    T1 :a1, 0, 3\n"
+      "    T2 :a1, after a1, 2\n";
+  md::GanttDiagram d;
+  expect_true(md::parse_gantt(src, d), "valid gantt parses");
+  expect_eq_str(d.title, "Plan", "title");
+  expect_eq_size(d.sections.size(), 1, "one section");
+  expect_eq_size(d.sections[0].tasks.size(), 2, "two tasks");
+}
+
+void test_gantt_missing_header()
+{
+  md::GanttDiagram d;
+  expect_true(!md::parse_gantt("section S1\n  T1 :a1, 0, 3\n", d), "missing header rejected");
+}
 } // namespace
 
 int main()
@@ -236,6 +257,8 @@ int main()
   test_er_with_attributes();
   test_journey_basic_valid();
   test_journey_missing_header();
+  test_gantt_basic_valid();
+  test_gantt_missing_header();
   if(failures != 0)
   {
     std::cerr << failures << " mermaid test expectation(s) failed\n";

@@ -648,8 +648,14 @@ Tasks:
     ```
   - Notes: `src/diagrams/journey_parser.cpp` and `src/diagrams/journey_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests (valid + missing header) added.
 
-- `[ ]` Split gantt diagram parser and renderer.
-  - Tested: no
+- `[x]` Split gantt diagram parser and renderer.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `src/diagrams/gantt_parser.cpp` and `src/diagrams/gantt_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests (valid + missing header) added.
 
 - `[ ]` Split quadrant diagram parser and renderer.
   - Tested: no
