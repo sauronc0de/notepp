@@ -621,11 +621,13 @@ Tasks:
   - Tested: yes
   - Notes: `src/diagrams/sequence_parser.cpp` and `src/diagrams/sequence_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. `render_zenuml` delegates to `render_sequence`.
 
-- `[ ]` Split class diagram parser and renderer.
-  - Tested: no
+- `[x]` Split class diagram parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/class_parser.cpp` and `src/diagrams/class_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed.
 
-- `[ ]` Split state diagram parser and renderer.
-  - Tested: no
+- `[x]` Split state diagram parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/state_parser.cpp` and `src/diagrams/state_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed.
 
 - `[ ]` Split ER diagram parser and renderer.
   - Tested: no
@@ -698,23 +700,29 @@ Tasks:
 
 For each parser, add tests with valid and invalid input:
 
-- `[ ]` Sequence parser valid cases.
-  - Tested: no
+- `[x]` Sequence parser valid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers basic two-participant sequence, notes, and group keywords.
 
-- `[ ]` Sequence parser invalid cases.
-  - Tested: no
+- `[x]` Sequence parser invalid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers missing header and empty participant list.
 
-- `[ ]` Class parser valid cases.
-  - Tested: no
+- `[x]` Class parser valid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers classes with members and inheritance relation.
 
-- `[ ]` Class parser invalid cases.
-  - Tested: no
+- `[x]` Class parser invalid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers missing header and empty class body.
 
-- `[ ]` State parser valid cases.
-  - Tested: no
+- `[x]` State parser valid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers state transitions with start/end markers and labels.
 
-- `[ ]` State parser invalid cases.
-  - Tested: no
+- `[x]` State parser invalid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers missing header.
 
 - `[ ]` ER parser valid cases.
   - Tested: no

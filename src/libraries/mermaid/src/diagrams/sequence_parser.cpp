@@ -103,17 +103,18 @@ bool parse_sequence(std::string_view src, SequenceDiagram &out)
   bool header = false;
   while(L.next(line))
   {
-    std::string ll = lower(line);
+    std::string_view tline = trim(line);
+    std::string ll = lower(tline);
     if(!header)
     {
       if(starts_with(ll, "sequencediagram")) { header = true; continue; }
       continue;
     }
-    if(starts_with(ll, "title ")) { out.title = std::string(trim(line.substr(6))); continue; }
+    if(starts_with(ll, "title ")) { out.title = std::string(trim(tline.substr(6))); continue; }
     if(starts_with(ll, "participant ") || starts_with(ll, "actor "))
     {
       bool actor = starts_with(ll, "actor ");
-      std::string_view rest = trim(line.substr(actor ? 6 : 12));
+      std::string_view rest = trim(tline.substr(actor ? 6 : 12));
       std::string id_s(rest);
       std::string lbl_s = id_s;
       std::size_t as = rest.find(" as ");
@@ -153,14 +154,14 @@ bool parse_sequence(std::string_view src, SequenceDiagram &out)
     }
     if(starts_with(ll, "activate "))
     {
-      std::string a = std::string(trim(line.substr(9)));
+      std::string a = std::string(trim(tline.substr(9)));
       ensure_part(a);
       out.events.push_back({SequenceDiagram::Event::T::Activate, -1, "", "", a});
       continue;
     }
     if(starts_with(ll, "deactivate "))
     {
-      std::string a = std::string(trim(line.substr(11)));
+      std::string a = std::string(trim(tline.substr(11)));
       ensure_part(a);
       out.events.push_back({SequenceDiagram::Event::T::Deactivate, -1, "", "", a});
       continue;
@@ -171,7 +172,7 @@ bool parse_sequence(std::string_view src, SequenceDiagram &out)
       {
         std::size_t kwlen = std::strlen(kw);
         out.events.push_back({SequenceDiagram::Event::T::GroupStart, -1,
-                              std::string(trim(line.substr(kwlen))),
+                              std::string(trim(tline.substr(kwlen))),
                               std::string(kw).substr(0, kwlen - 1), ""});
         goto next_line;
       }
@@ -184,7 +185,7 @@ bool parse_sequence(std::string_view src, SequenceDiagram &out)
     {
       std::string_view lhs, rhs;
       std::string lbl;
-      if(seq_split_arrow(line, lhs, rhs, lbl))
+      if(seq_split_arrow(tline, lhs, rhs, lbl))
       {
         std::string from = std::string(trim(lhs));
         std::string to = std::string(trim(rhs));

@@ -1,0 +1,3 @@
+add_executable(mermaid_tests mermaid_tests.cpp)
+target_link_libraries(mermaid_tests PRIVATE mermaid)
+add_test(NAME mermaid_tests COMMAND mermaid_tests)
