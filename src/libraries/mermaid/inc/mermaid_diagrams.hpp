@@ -2,10 +2,49 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace MermaidDiagrams
 {
+
+// ── Common parser result type ─────────────────────────────────────────────
+//
+// All diagram parsers return the same shape: a parsed value (valid only when
+// the result is `ok()`) plus a diagnostic on failure. The legacy `bool
+// parse_X(...)` functions are kept as thin compatibility wrappers around
+// these new API entries.
+template <typename Diagram>
+struct ParseResult
+{
+    bool        success = false;
+    Diagram     value{};
+    std::string error; // Empty when ok.
+
+    bool ok() const noexcept { return success; }
+};
+
+// Convenience constructor for successful parses.
+template <typename Diagram>
+inline ParseResult<Diagram> make_parsed(Diagram value)
+{
+    ParseResult<Diagram> r;
+    r.success = true;
+    r.value = std::move(value);
+    return r;
+}
+
+// Convenience constructor for failed parses.
+template <typename Diagram>
+inline ParseResult<Diagram> make_parse_error(std::string message)
+{
+    ParseResult<Diagram> r;
+    r.success = false;
+    r.error = std::move(message);
+    return r;
+}
+
+
 // ── Sequence Diagram ─────────────────────────────────────────────────────────
 struct SeqParticipant { std::string id, label; bool is_actor = false; };
 struct SeqMessage {

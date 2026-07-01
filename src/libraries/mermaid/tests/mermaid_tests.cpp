@@ -144,6 +144,23 @@ void test_state_with_label()
   expect_true(md::parse_state(src, d), "valid state with label parses");
   expect_true(!d.states.empty(), "states populated");
 }
+
+void test_parse_result_helpers()
+{
+  // make_parsed produces an ok() result with the value and an empty error.
+  auto ok = md::make_parsed(md::StateDiagram{});
+  expect_true(ok.ok(), "make_parsed yields ok");
+  expect_eq_size(ok.error.size(), 0, "ok result has no error");
+
+  // make_parse_error produces a failed result with the message.
+  auto err = md::make_parse_error<md::StateDiagram>("bad input");
+  expect_true(!err.ok(), "make_parse_error yields not ok");
+  expect_eq_str(err.error, "bad input", "error message preserved");
+
+  // Default-constructed result is not ok.
+  md::ParseResult<md::StateDiagram> def;
+  expect_true(!def.ok(), "default result is not ok");
+}
 } // namespace
 
 int main()
@@ -158,6 +175,7 @@ int main()
   test_state_basic_valid();
   test_state_missing_header();
   test_state_with_label();
+  test_parse_result_helpers();
   if(failures != 0)
   {
     std::cerr << failures << " mermaid test expectation(s) failed\n";
