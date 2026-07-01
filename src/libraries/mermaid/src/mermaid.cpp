@@ -1,4 +1,4 @@
-#include "mermaid_flowchart.hpp"
+#include "mermaid.hpp"
 #include "string_utils.hpp"
 
 #include <algorithm>

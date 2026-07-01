@@ -3,7 +3,7 @@
 #include "markdown_sections.hpp"
 #include "markdown_view.hpp"
 #include "markdown_ui.hpp"
-#include "mermaid_flowchart.hpp"
+#include "mermaid.hpp"
 #include "mermaid_diagrams.hpp"
 #include "string_utils.hpp"
 
