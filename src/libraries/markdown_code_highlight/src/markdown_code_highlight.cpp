@@ -7,7 +7,9 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -51,10 +53,46 @@ struct Registry
   std::vector<LanguageDefinition> languages;
 };
 
+struct HighlightCacheEntry
+{
+  size_t hash = 0;
+  std::string fence_info;
+  std::string source;
+  HighlightedCodeBlock block;
+  uint64_t last_used = 0;
+  size_t cost = 0;
+};
+
+struct HighlightCache
+{
+  std::mutex mutex;
+  std::vector<HighlightCacheEntry> entries;
+  uint64_t tick = 0;
+  size_t stored_cost = 0;
+};
+
+constexpr size_t kMaxHighlightCacheEntries = 512;
+constexpr size_t kMaxHighlightCacheCost = 8U * 1024U * 1024U;
+constexpr size_t kMaxCachedBlockSourceBytes = 256U * 1024U;
+
 Registry &registry()
 {
   static Registry instance;
   return instance;
+}
+
+HighlightCache &highlight_cache()
+{
+  static HighlightCache instance;
+  return instance;
+}
+
+void invalidate_highlight_cache()
+{
+  HighlightCache &cache = highlight_cache();
+  std::scoped_lock lock(cache.mutex);
+  cache.entries.clear();
+  cache.stored_cost = 0;
 }
 
 std::string lower_trimmed(std::string_view text)
@@ -92,6 +130,75 @@ std::string fence_language_token(std::string_view fence_info)
   size_t end = lowered.find_first_of(" \t{");
   const std::string_view token = (end == std::string::npos) ? std::string_view(lowered) : std::string_view(lowered).substr(0, end);
   return normalize_alias(token);
+}
+
+size_t hash_highlight_key(std::string_view fence_info, std::string_view source)
+{
+  size_t seed = std::hash<std::string_view>{}(fence_info);
+  seed ^= std::hash<std::string_view>{}(source) + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+  return seed;
+}
+
+size_t highlight_cache_entry_cost(std::string_view fence_info, std::string_view source, const HighlightedCodeBlock &block)
+{
+  return fence_info.size() + source.size() + block.requested_language.size() + block.resolved_language.size() +
+         block.spans.size() * sizeof(HighlightSpan);
+}
+
+std::optional<HighlightedCodeBlock> find_cached_highlight(std::string_view fence_info, std::string_view source)
+{
+  const size_t hash = hash_highlight_key(fence_info, source);
+  HighlightCache &cache = highlight_cache();
+  std::scoped_lock lock(cache.mutex);
+
+  for(HighlightCacheEntry &entry : cache.entries)
+  {
+    if(entry.hash == hash && entry.fence_info == fence_info && entry.source == source)
+    {
+      entry.last_used = ++cache.tick;
+      return entry.block;
+    }
+  }
+
+  return std::nullopt;
+}
+
+void store_cached_highlight(std::string_view fence_info, std::string_view source, HighlightedCodeBlock block)
+{
+  if(source.size() > kMaxCachedBlockSourceBytes) return;
+
+  const size_t cost = highlight_cache_entry_cost(fence_info, source, block);
+  if(cost > kMaxHighlightCacheCost) return;
+
+  const size_t hash = hash_highlight_key(fence_info, source);
+  HighlightCache &cache = highlight_cache();
+  std::scoped_lock lock(cache.mutex);
+
+  for(HighlightCacheEntry &entry : cache.entries)
+  {
+    if(entry.hash == hash && entry.fence_info == fence_info && entry.source == source)
+    {
+      cache.stored_cost -= entry.cost;
+      entry.block = std::move(block);
+      entry.last_used = ++cache.tick;
+      entry.cost = cost;
+      cache.stored_cost += entry.cost;
+      return;
+    }
+  }
+
+  while(!cache.entries.empty() &&
+        (cache.entries.size() >= kMaxHighlightCacheEntries || cache.stored_cost + cost > kMaxHighlightCacheCost))
+  {
+    const auto lru = std::min_element(cache.entries.begin(), cache.entries.end(), [](const HighlightCacheEntry &a, const HighlightCacheEntry &b) {
+      return a.last_used < b.last_used;
+    });
+    cache.stored_cost -= lru->cost;
+    cache.entries.erase(lru);
+  }
+
+  cache.entries.push_back({hash, std::string(fence_info), std::string(source), std::move(block), ++cache.tick, cost});
+  cache.stored_cost += cost;
 }
 
 void register_builtin_languages()
@@ -291,11 +398,13 @@ void register_language(LanguageDefinition definition)
     if(existing.name == normalized_name)
     {
       existing = std::move(definition);
+      invalidate_highlight_cache();
       return;
     }
   }
 
   r.languages.push_back(std::move(definition));
+  invalidate_highlight_cache();
 }
 
 const LanguageDefinition *find_language(std::string_view fence_info)
@@ -414,7 +523,17 @@ HighlightedCodeBlock highlight_code_block(std::string_view fence_info, std::stri
 
 void render_code_block(std::string_view fence_info, std::string_view source, int imgui_id)
 {
-  const HighlightedCodeBlock highlighted = highlight_code_block(fence_info, source);
+  HighlightedCodeBlock highlighted;
+  if(std::optional<HighlightedCodeBlock> cached = find_cached_highlight(fence_info, source))
+  {
+    highlighted = std::move(*cached);
+  }
+  else
+  {
+    highlighted = highlight_code_block(fence_info, source);
+    store_cached_highlight(fence_info, source, highlighted);
+  }
+
   const RenderTheme theme;
   const std::vector<std::pair<size_t, size_t>> lines = split_lines(source);
 
