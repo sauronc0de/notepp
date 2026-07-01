@@ -1,20 +1,19 @@
-// ── treemap_parser.cpp ─────────────────────────────────────────────────────
+// ── ishikawa_parser.cpp ────────────────────────────────────────────────────
 //
-// Treemap diagram parser for the mermaid library.
+// Ishikawa (fishbone) diagram parser for the mermaid library.
 // Extracted from mermaid_diagrams.cpp.
 
 #include "mermaid_diagrams.hpp"
 
-#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "parser_helpers.hpp"
 
 namespace MermaidDiagrams
 {
-namespace treemapparser
+namespace ishikawaparser
 {
 struct IndentLineCursor
 {
@@ -46,46 +45,56 @@ struct IndentLineCursor
     return false;
   }
 };
-} // namespace treemapparser
+} // namespace ishikawaparser
 
-bool parse_treemap(std::string_view src, TreemapDiagram &out)
+bool parse_ishikawa(std::string_view src, IshikawaDiagram &out)
 {
-  using namespace treemapparser;
-  out = TreemapDiagram{};
+  using namespace ishikawaparser;
+  out = IshikawaDiagram{};
   IndentLineCursor L{src};
   std::string_view line;
   bool header = false;
-  std::vector<int> parent_at_level(20, -1);
   int indent = 0;
   while(L.next(line, indent))
   {
     std::string ll = lc(line);
     if(!header)
     {
-      if(sw(ll, "treemap-beta") || sw(ll, "treemap"))
+      if(sw(ll, "ishikawa"))
       {
         header = true;
         continue;
       }
       continue;
     }
-    if(sw(ll, "title ")) continue;
-    int level = indent / 2;
+    if(sw(ll, "effect "))
+    {
+      out.effect = strip_quotes(line.substr(7));
+      continue;
+    }
+    if(sw(ll, "category "))
+    {
+      out.categories.push_back({strip_quotes(line.substr(9)), {}});
+      continue;
+    }
     std::string_view l = tr(line);
-    if(l.empty()) continue;
-    std::size_t col = l.find(':');
-    std::string name = (col != std::string_view::npos) ? strip_quotes(l.substr(0, col)) : std::string(l);
-    float val = (col != std::string_view::npos) ? std::strtof(std::string(tr(l.substr(col + 1))).c_str(), nullptr) : 0.0f;
-    int par = level > 0 ? parent_at_level[level - 1] : -1;
-    TreemapNode node;
-    node.name = name;
-    node.value = val;
-    node.parent = par;
-    int ni = static_cast<int>(out.nodes.size());
-    if(par >= 0) out.nodes[par].children.push_back(ni);
-    parent_at_level[level] = ni;
-    out.nodes.push_back(node);
+    if(!l.empty() && !sw(lc(l), "cause ") && !sw(lc(l), "sub ") && !out.categories.empty())
+    {
+      IshikawaCause c;
+      c.text = std::string(l);
+      out.categories.back().causes.push_back(c);
+    }
+    if(sw(lc(l), "cause ") || sw(lc(l), "sub "))
+    {
+      std::size_t sp = l.find(' ');
+      if(!out.categories.empty())
+      {
+        IshikawaCause c;
+        c.text = strip_quotes(l.substr(sp));
+        out.categories.back().causes.push_back(c);
+      }
+    }
   }
-  return header && !out.nodes.empty();
+  return header && !out.effect.empty();
 }
 } // namespace MermaidDiagrams

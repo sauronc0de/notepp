@@ -32,6 +32,24 @@ add_library(mermaid STATIC
   src/diagrams/block_renderer.cpp
   src/diagrams/packet_parser.cpp
   src/diagrams/packet_renderer.cpp
+  src/diagrams/kanban_parser.cpp
+  src/diagrams/kanban_renderer.cpp
+  src/diagrams/architecture_parser.cpp
+  src/diagrams/architecture_renderer.cpp
+  src/diagrams/radar_parser.cpp
+  src/diagrams/radar_renderer.cpp
+  src/diagrams/treemap_parser.cpp
+  src/diagrams/treemap_renderer.cpp
+  src/diagrams/eventmodeling_parser.cpp
+  src/diagrams/eventmodeling_renderer.cpp
+  src/diagrams/venn_parser.cpp
+  src/diagrams/venn_renderer.cpp
+  src/diagrams/ishikawa_parser.cpp
+  src/diagrams/ishikawa_renderer.cpp
+  src/diagrams/wardley_parser.cpp
+  src/diagrams/wardley_renderer.cpp
+  src/diagrams/treeview_parser.cpp
+  src/diagrams/treeview_renderer.cpp
 )
 target_include_directories(mermaid PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 target_link_libraries(mermaid PUBLIC string_utils imgui)

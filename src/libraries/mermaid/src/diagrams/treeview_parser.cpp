@@ -1,11 +1,11 @@
-// ── treemap_parser.cpp ─────────────────────────────────────────────────────
+// ── treeview_parser.cpp ────────────────────────────────────────────────────
 //
-// Treemap diagram parser for the mermaid library.
+// Treeview diagram parser for the mermaid library.
 // Extracted from mermaid_diagrams.cpp.
 
 #include "mermaid_diagrams.hpp"
 
-#include <cstdlib>
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -14,7 +14,7 @@
 
 namespace MermaidDiagrams
 {
-namespace treemapparser
+namespace treeviewparser
 {
 struct IndentLineCursor
 {
@@ -46,44 +46,47 @@ struct IndentLineCursor
     return false;
   }
 };
-} // namespace treemapparser
+} // namespace treeviewparser
 
-bool parse_treemap(std::string_view src, TreemapDiagram &out)
+bool parse_treeview(std::string_view src, TreeViewDiagram &out)
 {
-  using namespace treemapparser;
-  out = TreemapDiagram{};
+  using namespace treeviewparser;
+  out = TreeViewDiagram{};
+  bool header = false;
   IndentLineCursor L{src};
   std::string_view line;
-  bool header = false;
-  std::vector<int> parent_at_level(20, -1);
   int indent = 0;
+  std::vector<int> parent_at_level(20, -1);
   while(L.next(line, indent))
   {
     std::string ll = lc(line);
     if(!header)
     {
-      if(sw(ll, "treemap-beta") || sw(ll, "treemap"))
+      if(sw(ll, "treeview"))
       {
         header = true;
         continue;
       }
       continue;
     }
-    if(sw(ll, "title ")) continue;
     int level = indent / 2;
     std::string_view l = tr(line);
     if(l.empty()) continue;
-    std::size_t col = l.find(':');
-    std::string name = (col != std::string_view::npos) ? strip_quotes(l.substr(0, col)) : std::string(l);
-    float val = (col != std::string_view::npos) ? std::strtof(std::string(tr(l.substr(col + 1))).c_str(), nullptr) : 0.0f;
+    while(!l.empty() && (static_cast<unsigned char>(l[0]) == 0xE2 || l[0] == '|' || l[0] == '-' || l[0] == '+' || l[0] == ' ' || l[0] == '`' || l[0] == '\\'))
+    {
+      if(l.size() >= 3 && static_cast<unsigned char>(l[0]) == 0xE2) l = l.substr(3);
+      else l = l.substr(1);
+    }
+    l = tr(l);
+    if(l.empty()) continue;
+    std::string lbl = strip_quotes(l);
     int par = level > 0 ? parent_at_level[level - 1] : -1;
-    TreemapNode node;
-    node.name = name;
-    node.value = val;
+    TVNode node;
+    node.label = lbl;
     node.parent = par;
     int ni = static_cast<int>(out.nodes.size());
     if(par >= 0) out.nodes[par].children.push_back(ni);
-    parent_at_level[level] = ni;
+    parent_at_level[std::min(level, 19)] = ni;
     out.nodes.push_back(node);
   }
   return header && !out.nodes.empty();

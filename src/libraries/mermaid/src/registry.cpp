@@ -102,8 +102,17 @@ MMD_TRAMPOLINES(parse_sankey, render_sankey, SankeyDiagram)
 MMD_TRAMPOLINES(parse_xychart, render_xychart, XYDiagram)
 MMD_TRAMPOLINES(parse_block, render_block, BlockDiagram)
 MMD_TRAMPOLINES(parse_packet, render_packet, PacketDiagram)
+MMD_TRAMPOLINES(parse_kanban, render_kanban, KanbanDiagram)
+MMD_TRAMPOLINES(parse_architecture, render_architecture, ArchDiagram)
+MMD_TRAMPOLINES(parse_radar, render_radar, RadarDiagram)
+MMD_TRAMPOLINES(parse_treemap, render_treemap, TreemapDiagram)
+MMD_TRAMPOLINES(parse_eventmodeling, render_eventmodeling, EventModelingDiagram)
+MMD_TRAMPOLINES(parse_venn, render_venn, VennDiagram)
+MMD_TRAMPOLINES(parse_ishikawa, render_ishikawa, IshikawaDiagram)
+MMD_TRAMPOLINES(parse_wardley, render_wardley, WardleyDiagram)
+MMD_TRAMPOLINES(parse_treeview, render_treeview, TreeViewDiagram)
 
-constexpr std::array<StoredEntry, 20> kEntries = {{
+constexpr std::array<StoredEntry, 35> kEntries = {{
     {"sequencediagram",     "sequencediagram",     &parse_sequence_trampoline,     &render_sequence_trampoline},
     {"classdiagram",        "classdiagram",        &parse_class_trampoline,        &render_class_trampoline},
     {"statediagram",        "statediagram",        &parse_state_trampoline,        &render_state_trampoline},
@@ -124,6 +133,18 @@ constexpr std::array<StoredEntry, 20> kEntries = {{
     {"block",               "block-beta",          &parse_block_trampoline,        &render_block_trampoline},
     {"packet",              "packet",              &parse_packet_trampoline,       &render_packet_trampoline},
     {"packet",              "packet-beta",         &parse_packet_trampoline,       &render_packet_trampoline},
+    {"kanban",              "kanban",              &parse_kanban_trampoline,       &render_kanban_trampoline},
+    {"architecture",        "architecture",        &parse_architecture_trampoline, &render_architecture_trampoline},
+    {"architecture",        "architecture-beta",   &parse_architecture_trampoline, &render_architecture_trampoline},
+    {"radar",               "radar",               &parse_radar_trampoline,        &render_radar_trampoline},
+    {"radar",               "radar-beta",          &parse_radar_trampoline,        &render_radar_trampoline},
+    {"treemap",             "treemap",             &parse_treemap_trampoline,      &render_treemap_trampoline},
+    {"treemap",             "treemap-beta",        &parse_treemap_trampoline,      &render_treemap_trampoline},
+    {"eventmodeling",       "eventmodeling",       &parse_eventmodeling_trampoline, &render_eventmodeling_trampoline},
+    {"venn",                "venn",                &parse_venn_trampoline,         &render_venn_trampoline},
+    {"ishikawa",            "ishikawa",            &parse_ishikawa_trampoline,     &render_ishikawa_trampoline},
+    {"wardley",             "wardley",             &parse_wardley_trampoline,      &render_wardley_trampoline},
+    {"treeview",            "treeview",            &parse_treeview_trampoline,     &render_treeview_trampoline},
 }};
 } // namespace
 

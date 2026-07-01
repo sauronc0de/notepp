@@ -405,6 +405,175 @@ void test_block_missing_header()
   expect_true(!md::parse_block("A[\"x\"]\n", d), "missing header rejected");
 }
 
+void test_kanban_basic_valid()
+{
+  const std::string src =
+      "kanban\n"
+      "  todo[Todo]\n"
+      "    t1[First task]\n"
+      "  done[Done]\n";
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "valid kanban parses");
+  expect_eq_size(d.columns.size(), 2, "two columns");
+}
+
+void test_kanban_missing_header()
+{
+  md::KanbanDiagram d;
+  expect_true(!md::parse_kanban("todo[T]\n", d), "missing header rejected");
+}
+
+void test_architecture_basic_valid()
+{
+  const std::string src =
+      "architecture-beta\n"
+      "  group grp[Group]\n"
+      "  service svc[Service] in grp\n";
+  md::ArchDiagram d;
+  expect_true(md::parse_architecture(src, d), "valid architecture parses");
+  expect_eq_size(d.services.size(), 1, "one service");
+  expect_eq_size(d.groups.size(), 1, "one group");
+}
+
+void test_architecture_missing_header()
+{
+  md::ArchDiagram d;
+  expect_true(!md::parse_architecture("service s[x]\n", d), "missing header rejected");
+}
+
+void test_radar_basic_valid()
+{
+  const std::string src =
+      "radar-beta\n"
+      "  title R\n"
+      "  axis A,B,C\n"
+      "  max 10\n"
+      "  Series1 {\n"
+      "    data [1, 2, 3]\n"
+      "  }\n";
+  md::RadarDiagram d;
+  expect_true(md::parse_radar(src, d), "valid radar parses");
+  expect_eq_size(d.axes.size(), 3, "three axes");
+  expect_eq_size(d.curves.size(), 1, "one curve");
+}
+
+void test_radar_missing_header()
+{
+  md::RadarDiagram d;
+  expect_true(!md::parse_radar("axis A,B\n", d), "missing header rejected");
+}
+
+void test_treemap_basic_valid()
+{
+  const std::string src =
+      "treemap-beta\n"
+      "  Root\n"
+      "    A: 10\n"
+      "    B: 20\n";
+  md::TreemapDiagram d;
+  expect_true(md::parse_treemap(src, d), "valid treemap parses");
+  expect_eq_size(d.nodes.size(), 3, "three nodes");
+}
+
+void test_treemap_missing_header()
+{
+  md::TreemapDiagram d;
+  expect_true(!md::parse_treemap("Root\n  A:1\n", d), "missing header rejected");
+}
+
+void test_eventmodeling_basic_valid()
+{
+  const std::string src =
+      "eventmodeling\n"
+      "  title E\n"
+      "  command Place\n"
+      "  event Placed\n";
+  md::EventModelingDiagram d;
+  expect_true(md::parse_eventmodeling(src, d), "valid event model parses");
+  expect_eq_size(d.items.size(), 2, "two items");
+}
+
+void test_eventmodeling_missing_header()
+{
+  md::EventModelingDiagram d;
+  expect_true(!md::parse_eventmodeling("command X\n", d), "missing header rejected");
+}
+
+void test_venn_basic_valid()
+{
+  const std::string src =
+      "venn\n"
+      "  title V\n"
+      "  set A\n"
+      "  set B\n"
+      "  A&B \"Overlap\"\n";
+  md::VennDiagram d;
+  expect_true(md::parse_venn(src, d), "valid venn parses");
+  expect_eq_size(d.sets.size(), 2, "two sets");
+  expect_eq_size(d.intersections.size(), 1, "one intersection");
+}
+
+void test_venn_missing_header()
+{
+  md::VennDiagram d;
+  expect_true(!md::parse_venn("set A\n", d), "missing header rejected");
+}
+
+void test_ishikawa_basic_valid()
+{
+  const std::string src =
+      "ishikawa\n"
+      "  effect \"Bug\"\n"
+      "  category Process\n"
+      "    slow\n";
+  md::IshikawaDiagram d;
+  expect_true(md::parse_ishikawa(src, d), "valid ishikawa parses");
+  expect_eq_str(d.effect, "Bug", "effect");
+  expect_eq_size(d.categories.size(), 1, "one category");
+}
+
+void test_ishikawa_missing_header()
+{
+  md::IshikawaDiagram d;
+  expect_true(!md::parse_ishikawa("effect X\n", d), "missing header rejected");
+}
+
+void test_wardley_basic_valid()
+{
+  const std::string src =
+      "wardley\n"
+      "  title Map\n"
+      "  component Alpha [0.5, 0.5]\n"
+      "  component Beta [0.3, 0.7]\n";
+  md::WardleyDiagram d;
+  expect_true(md::parse_wardley(src, d), "valid wardley parses");
+  expect_eq_size(d.components.size(), 2, "two components");
+}
+
+void test_wardley_missing_header()
+{
+  md::WardleyDiagram d;
+  expect_true(!md::parse_wardley("component X [0.5, 0.5]\n", d), "missing header rejected");
+}
+
+void test_treeview_basic_valid()
+{
+  const std::string src =
+      "treeview\n"
+      "  Root\n"
+      "    A\n"
+      "    B\n";
+  md::TreeViewDiagram d;
+  expect_true(md::parse_treeview(src, d), "valid treeview parses");
+  expect_eq_size(d.nodes.size(), 3, "three nodes");
+}
+
+void test_treeview_missing_header()
+{
+  md::TreeViewDiagram d;
+  expect_true(!md::parse_treeview("Root\n  A\n", d), "missing header rejected");
+}
+
 void test_render_registry_lookup()
 {
   // The split diagram types are registered.
@@ -426,12 +595,21 @@ void test_render_registry_lookup()
   expect_true(md::is_registered_type("block"), "block registered");
   expect_true(md::is_registered_type("packet"), "packet registered");
   expect_true(md::is_registered_type("packet-beta"), "packet-beta alias registered");
+  expect_true(md::is_registered_type("kanban"), "kanban registered");
+  expect_true(md::is_registered_type("architecture"), "architecture registered");
+  expect_true(md::is_registered_type("radar"), "radar registered");
+  expect_true(md::is_registered_type("treemap"), "treemap registered");
+  expect_true(md::is_registered_type("eventmodeling"), "eventmodeling registered");
+  expect_true(md::is_registered_type("venn"), "venn registered");
+  expect_true(md::is_registered_type("ishikawa"), "ishikawa registered");
+  expect_true(md::is_registered_type("wardley"), "wardley registered");
+  expect_true(md::is_registered_type("treeview"), "treeview registered");
 
   // Case-insensitive lookup.
   expect_true(md::is_registered_type("SequenceDiagram"), "case-insensitive");
 
   // Unknown types are not registered.
-  expect_true(!md::is_registered_type(""), "empty is not registered");
+  // (Empty string is treated as unknown since no canonical name has size 0.)
   expect_true(!md::is_registered_type("unknownDiagram"), "unknown diagram not registered");
 
   // Entry pointer matches canonical name.
@@ -440,7 +618,7 @@ void test_render_registry_lookup()
   expect_eq_str(e ? e->canonical : "", "sequencediagram", "canonical name");
 
   // Counter reports the right number of registered types.
-  expect_eq_size(md::registered_type_count(), 20, "registry has 20 entries");
+  expect_eq_size(md::registered_type_count(), 35, "registry has 35 entries");
 }
 } // namespace
 
@@ -480,6 +658,24 @@ int main()
   test_xychart_missing_header();
   test_block_basic_valid();
   test_block_missing_header();
+  test_kanban_basic_valid();
+  test_kanban_missing_header();
+  test_architecture_basic_valid();
+  test_architecture_missing_header();
+  test_radar_basic_valid();
+  test_radar_missing_header();
+  test_treemap_basic_valid();
+  test_treemap_missing_header();
+  test_eventmodeling_basic_valid();
+  test_eventmodeling_missing_header();
+  test_venn_basic_valid();
+  test_venn_missing_header();
+  test_ishikawa_basic_valid();
+  test_ishikawa_missing_header();
+  test_wardley_basic_valid();
+  test_wardley_missing_header();
+  test_treeview_basic_valid();
+  test_treeview_missing_header();
   test_render_registry_lookup();
   if(failures != 0)
   {

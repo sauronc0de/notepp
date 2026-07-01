@@ -205,4 +205,60 @@ bool parse_sequence(std::string_view src, SequenceDiagram &out)
   }
   return header && !out.participants.empty();
 }
+
+bool parse_zenuml(std::string_view src, SequenceDiagram &out)
+{
+  using namespace seqparser;
+  // ZenUML uses "A.method(B)" syntax — convert to sequence diagram events.
+  out = SequenceDiagram{};
+  std::unordered_map<std::string, int> pidx;
+  auto ensure_part = [&](const std::string &id) {
+    auto it = pidx.find(id);
+    if(it != pidx.end()) return it->second;
+    SeqParticipant p;
+    p.id = id;
+    p.label = id;
+    int n = static_cast<int>(out.participants.size());
+    out.participants.push_back(p);
+    pidx[id] = n;
+    return n;
+  };
+  LineCursor L{src};
+  std::string_view line;
+  bool header = false;
+  while(L.next(line))
+  {
+    std::string ll = lc(line);
+    if(!header)
+    {
+      if(sw(ll, "zenuml")) { header = true; continue; }
+      continue;
+    }
+    if(sw(ll, "title ")) { out.title = std::string(tr(line.substr(6))); continue; }
+    if(sw(ll, "@"))
+    {
+      std::string_view rest = tr(line.substr(1));
+      std::string name = std::string(rest.substr(0, rest.find(' ')));
+      ensure_part(name);
+      continue;
+    }
+    std::size_t dot = line.find('.');
+    std::size_t p1 = line.find('(');
+    std::size_t p2 = line.find(')');
+    if(dot != std::string_view::npos && p1 != std::string_view::npos && p1 > dot)
+    {
+      std::string from = std::string(tr(line.substr(0, dot)));
+      std::string method = std::string(tr(line.substr(dot + 1, p1 - dot - 1)));
+      std::string to = (p2 != std::string_view::npos) ? strip_quotes(line.substr(p1 + 1, p2 - p1 - 1)) : from;
+      if(to.empty()) to = from;
+      ensure_part(from);
+      ensure_part(to);
+      SeqMessage msg{from, to, method, false, true};
+      int mi = static_cast<int>(out.messages.size());
+      out.messages.push_back(msg);
+      out.events.push_back({SequenceDiagram::Event::T::Message, mi, "", "", ""});
+    }
+  }
+  return header && !out.participants.empty();
+}
 } // namespace MermaidDiagrams
