@@ -1,3 +1,9 @@
 add_library(log STATIC src/log.cpp)
 target_include_directories(log PUBLIC inc)
 target_link_libraries(log PUBLIC logger)
+
+if(ENABLE_TEST)
+  add_executable(log_tests tests/log_tests.cpp)
+  target_link_libraries(log_tests PRIVATE log)
+  add_test(NAME log_tests COMMAND log_tests)
+endif()
