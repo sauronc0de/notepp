@@ -931,7 +931,7 @@ For each parser, add tests with valid and invalid input:
 
 - `[~]` Split frame orchestration into `app_frame.cpp`.
   - Tested: partial
-  - Notes: History-indicator rendering (`show_history_indicator`, `render_history_indicator`) extracted to `src/app/src/app_history_indicator.cpp`. The profile modal (`show_profile_modal`) extracted to `src/app/src/app_profile_modal.cpp`. Full frame orchestration split deferred.
+  - Notes: History-indicator rendering (`show_history_indicator`, `render_history_indicator`) extracted to `src/app/src/app_history_indicator.cpp`. The profile modal (`show_profile_modal`) extracted to `src/app/src/app_profile_modal.cpp`. Frame-end rendering (`frame_end`) extracted to `src/app/src/app_frame_end.cpp` with the viewport topmost helpers and swap timing variable duplicated in the new file to keep the file self-contained. Full frame orchestration split deferred.
 
 ## 7.2 App controllers
 
