@@ -95,4 +95,5 @@ RUN set -eux; \
     pi install npm:pi-web-access || true; \
     pi install npm:pi-rpiv-ask-user-question || true; \
     pi install npm:pi-juicesharp/rpiv-todo || true; \
-    pi install npm:pi-subagents || true
+    pi install npm:pi-subagents || true; \
+    pi install npm:@sinamtz/pi-minimax-provider || true
