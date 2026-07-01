@@ -126,7 +126,7 @@ target_link_libraries(${PROJECT_NAME}
     note_project
     tiny_json
     markdown_support
-    markdown_ui
+    markdown_widgets
     markdown_code_highlight
     note_ui
     nfd

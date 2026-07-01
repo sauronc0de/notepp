@@ -751,9 +751,15 @@ For each parser, add tests with valid and invalid input:
 
 ## 5.1 Create markdown widgets library
 
-- `[~]` Rename/move `markdown_ui` to `src/libraries/markdown_widgets`.
-  - Tested: partial
-  - Notes: Library lives at `src/libraries/markdown_ui/`. Rename deferred to keep behavior unchanged.
+- `[x]` Rename/move `markdown_ui` to `src/libraries/markdown_widgets`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all develop_gui
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: Library now lives at `src/libraries/markdown_widgets/`. CMake target, namespace, header, and source file are all renamed. `markdown_support` was updated to use the new namespace and include path.
 
 - `[x]` Keep old public API temporarily for compatibility with the app.
   - Tested: yes

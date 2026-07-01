@@ -2,7 +2,7 @@
 
 #include "markdown_sections.hpp"
 #include "markdown_view.hpp"
-#include "markdown_ui.hpp"
+#include "markdown_widgets.hpp"
 #include "mermaid.hpp"
 #include "mermaid_diagrams.hpp"
 #include "string_utils.hpp"
@@ -740,7 +740,7 @@ std::string capture_preview_state_snapshot_impl()
   Json root = Json::object();
   root["preview"] = g_preview_state_json;
 
-  Json ui_state = Json::parse(MarkdownUi::capture_ui_state_snapshot(), nullptr, false);
+  Json ui_state = Json::parse(MarkdownWidgets::capture_ui_state_snapshot(), nullptr, false);
   if(ui_state.is_discarded() || !ui_state.is_object()) ui_state = Json::object();
   root["ui"] = std::move(ui_state);
   return root.dump();
@@ -777,7 +777,7 @@ void apply_preview_state_snapshot_impl(std::string_view snapshot)
   if(!preview_state.contains("documents") || !preview_state["documents"].is_object())
     preview_state["documents"] = Json::object();
   g_preview_state_json = std::move(preview_state);
-  MarkdownUi::apply_ui_state_snapshot(ui_state.dump());
+  MarkdownWidgets::apply_ui_state_snapshot(ui_state.dump());
 
   std::ofstream out(g_preview_state_file, std::ios::binary | std::ios::trunc);
   if(out) out << g_preview_state_json.dump(2);
@@ -1597,7 +1597,7 @@ void set_preview_document_path(std::string_view path)
 {
   g_preview_document_path.assign(path.data(), path.size());
   MarkdownView::set_document_path(path);
-  MarkdownUi::set_widget_document_path(std::filesystem::path(path));
+  MarkdownWidgets::set_widget_document_path(std::filesystem::path(path));
 }
 
 void set_preview_state_path(const std::filesystem::path &path)
@@ -1720,7 +1720,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       if(closed)
       {
         flush_chunk();
-        const MarkdownUi::RenderResult ui_result = MarkdownUi::try_render_ui_block(markdown, line_start, line_end, block_end);
+        const MarkdownWidgets::RenderResult ui_result = MarkdownWidgets::try_render_ui_block(markdown, line_start, line_end, block_end);
         result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
         result.preview_state_changed = result.preview_state_changed || ui_result.preview_state_changed;
         result.consumed_right_click = result.consumed_right_click || ui_result.consumed_right_click;
@@ -1758,7 +1758,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       if(closed)
       {
         flush_chunk();
-        const std::string resolved = MarkdownUi::resolve_ui_mermaid_template(markdown, body);
+        const std::string resolved = MarkdownWidgets::resolve_ui_mermaid_template(markdown, body);
         std::string mermaid_type;
         if(detect_mermaid_type(resolved, mermaid_type))
           render_mermaid_block(mermaid_type, resolved, static_cast<int>(line_start));

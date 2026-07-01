@@ -1,4 +1,4 @@
-#include "markdown_ui.hpp"
+#include "markdown_widgets.hpp"
 
 #include "markdown_view.hpp"
 #include "string_utils.hpp"
@@ -27,7 +27,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
-namespace MarkdownUi
+namespace MarkdownWidgets
 {
 
 static std::filesystem::path g_widget_document_path;
@@ -5330,4 +5330,4 @@ std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::str
 
   return result;
 }
-} // namespace MarkdownUi
+} // namespace MarkdownWidgets
