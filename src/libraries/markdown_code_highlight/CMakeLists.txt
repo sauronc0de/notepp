@@ -10,3 +10,9 @@ target_link_libraries(
           tree_sitter_python_grammar
           tree_sitter_bash_grammar
 )
+
+if(ENABLE_TEST)
+  add_executable(markdown_code_highlight_tests tests/markdown_code_highlight_tests.cpp)
+  target_link_libraries(markdown_code_highlight_tests PRIVATE markdown_code_highlight)
+  add_test(NAME markdown_code_highlight_tests COMMAND markdown_code_highlight_tests)
+endif()
