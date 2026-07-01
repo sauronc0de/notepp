@@ -1013,8 +1013,14 @@ For each parser, add tests with valid and invalid input:
   - Tested: partial
   - Notes: Build still emits the same pre-existing warnings (MERMAID_DISPATCH macro 'else' indent, unused `wrap_label` in mermaid_diagrams.cpp) introduced prior to this refactor. No new warnings introduced by the refactor.
 
-- `[ ]` Update developer documentation with final architecture layout.
-  - Tested: no
+- `[x]` Update developer documentation with final architecture layout.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: New `docs/architecture.md` describes the current source layout, the architectural rules, the Mermaid library structure, and the markdown widget library.
 
 ---
 
