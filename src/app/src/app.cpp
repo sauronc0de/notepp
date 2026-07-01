@@ -6,7 +6,7 @@
 #include "lang.hpp"
 #include "helpers.hpp"
 #if USE_PORTABLE_PATHS
-#include "project_manager.hpp"
+#include "note_project.hpp"
 #endif
 #include "markdown_sections.hpp"
 #include "markdown_support.hpp"

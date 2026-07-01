@@ -4,4 +4,4 @@ add_library(note_ui STATIC src/note_ui.cpp src/icon_shader.cpp)
 # SDL_opengl.h vs glew.h include-order conflict.
 set_source_files_properties(src/icon_shader.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 target_include_directories(note_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-target_link_libraries(note_ui PUBLIC note_core imgui OpenGL::GL SDL2_image::SDL2_image GLEW::GLEW)
+target_link_libraries(note_ui PUBLIC string_utils imgui OpenGL::GL SDL2_image::SDL2_image GLEW::GLEW)

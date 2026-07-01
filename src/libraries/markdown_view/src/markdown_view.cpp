@@ -23,7 +23,7 @@
 #include <SDL_image.h>
 #include <SDL_opengl.h>
 #include <imgui.h>
-#include "imgui_md.h"
+#include "imgui_md.hpp"
 
 namespace
 {

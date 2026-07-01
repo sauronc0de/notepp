@@ -6,4 +6,4 @@ target_include_directories(markdown_ui
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/app/inc
 )
-target_link_libraries(markdown_ui PUBLIC imgui note_core markdown_preview SDL2_image::SDL2_image OpenGL::GL)
+target_link_libraries(markdown_ui PUBLIC imgui string_utils markdown_view SDL2_image::SDL2_image OpenGL::GL)

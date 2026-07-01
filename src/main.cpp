@@ -1,6 +1,6 @@
 #include "log.hpp"
 #include "app.hpp"
-#include "project_manager.hpp"
+#include "note_project.hpp"
 
 #include <filesystem>
 

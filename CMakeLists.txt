@@ -112,12 +112,12 @@ target_link_libraries(${PROJECT_NAME}
     log
     imgui
     imgui_md
-    note_core
+    string_utils
     note_history
     lang
     emoji_picker
-    markdown_preview
-    markdown_model
+    markdown_view
+    markdown_sections
     note_project
     tiny_json
     markdown_support

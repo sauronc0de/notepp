@@ -6,4 +6,4 @@ target_include_directories(markdown_support
     ${PROJECT_SOURCE_DIR}/src
     ${PROJECT_SOURCE_DIR}/src/app/inc
 )
-target_link_libraries(markdown_support PUBLIC note_core mermaid_flowchart imgui nlohmann_json::nlohmann_json markdown_ui markdown_model markdown_preview)
+target_link_libraries(markdown_support PUBLIC string_utils mermaid_flowchart imgui nlohmann_json::nlohmann_json markdown_ui markdown_sections markdown_view)

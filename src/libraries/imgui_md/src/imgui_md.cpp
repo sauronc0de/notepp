@@ -23,7 +23,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "imgui_md.h"
+#include "imgui_md.hpp"
 
 imgui_md::imgui_md()
 {
