@@ -666,20 +666,25 @@ Tasks:
     ```
   - Notes: `src/diagrams/quadrant_parser.cpp` and `src/diagrams/quadrant_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added (valid + missing header). The original `line.substr(8)` off-by-one for `x-axis`/`y-axis` prefix is preserved as-is and noted in the test.
 
-- `[ ]` Split requirement diagram parser and renderer.
-  - Tested: no
+- `[x]` Split requirement diagram parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/requirement_parser.cpp` and `src/diagrams/requirement_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added (valid + missing header).
 
-- `[ ]` Split git graph parser and renderer.
-  - Tested: no
+- `[x]` Split git graph parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/git_parser.cpp` and `src/diagrams/git_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added.
 
-- `[ ]` Split mindmap parser and renderer.
-  - Tested: no
+- `[x]` Split mindmap parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/mindmap_parser.cpp` and `src/diagrams/mindmap_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added.
 
-- `[ ]` Split timeline parser and renderer.
-  - Tested: no
+- `[x]` Split timeline parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/timeline_parser.cpp` and `src/diagrams/timeline_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added.
 
-- `[ ]` Split sankey parser and renderer.
-  - Tested: no
+- `[x]` Split sankey parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/sankey_parser.cpp` and `src/diagrams/sankey_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added.
 
 - `[ ]` Split XY chart parser and renderer.
   - Tested: no
