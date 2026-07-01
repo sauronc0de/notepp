@@ -71,6 +71,8 @@ add_subdirectory(src)
 set(NOTEPP_SOURCES
   src/main.cpp
   src/app/src/app.cpp
+  src/app/src/app_sdl.cpp
+  src/app/src/app_imgui.cpp
   src/app/src/app_frame_limiter.cpp
   src/app/src/app_history_indicator.cpp
   src/app/src/app_profile_modal.cpp

@@ -876,11 +876,20 @@ For each parser, add tests with valid and invalid input:
   - Tested: partial
   - Notes: Frame-limiter functions (`configure_frame_limiter`, `limit_frame_rate`) extracted to `src/app/src/app_frame_limiter.cpp`. Full lifecycle split deferred.
 
-- `[ ]` Split SDL/OpenGL setup into `app_sdl.cpp`.
-  - Tested: no
+- `[x]` Split SDL/OpenGL setup into `app_sdl.cpp`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all develop_gui
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `App::init_sdl_gl` moved to `src/app/src/app_sdl.cpp`. The `kGlslVersion` constant was relocated to `app_imgui.cpp`. Added `string_utils.hpp` include to `app_history_indicator.cpp` for unity build compatibility.
 
-- `[ ]` Split ImGui/font setup into `app_imgui.cpp`.
-  - Tested: no
+- `[x]` Split ImGui/font setup into `app_imgui.cpp`.
+  - Tested: yes
+  - Validation: same as above.
+  - Notes: `App::init_imgui` moved to `src/app/src/app_imgui.cpp`. Sources registered in the root `CMakeLists.txt`.
 
 - `[~]` Split frame orchestration into `app_frame.cpp`.
   - Tested: partial

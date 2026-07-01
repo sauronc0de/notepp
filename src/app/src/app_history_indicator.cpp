@@ -1,6 +1,7 @@
 #include "app.hpp"
 
 #include "note_ui.hpp"
+#include "string_utils.hpp"
 
 #include <imgui.h>
 
