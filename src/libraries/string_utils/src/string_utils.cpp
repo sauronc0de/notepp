@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cctype>
 
-namespace NoteCore
+namespace StringUtils
 {
 std::string_view ltrim(std::string_view s)
 {
@@ -61,5 +61,5 @@ float clamp01f(float v)
   if(v > 1.0f) return 1.0f;
   return v;
 }
-} // namespace NoteCore
+} // namespace StringUtils
 

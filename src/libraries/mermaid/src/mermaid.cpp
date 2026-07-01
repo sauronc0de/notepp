@@ -31,7 +31,7 @@ static bool is_ident_char(char c)
 
 static bool parse_header(std::string_view line, Direction &dir)
 {
-  line = NoteCore::trim(line);
+  line = StringUtils::trim(line);
   if(line.empty()) return false;
 
   size_t sp = line.find_first_of(" \t");
@@ -45,7 +45,7 @@ static bool parse_header(std::string_view line, Direction &dir)
     return true;
   }
 
-  std::string d = to_lower(NoteCore::trim(line.substr(sp + 1)));
+  std::string d = to_lower(StringUtils::trim(line.substr(sp + 1)));
   if(d == "tb" || d == "td")
     dir = Direction::TB;
   else if(d == "bt")
@@ -75,21 +75,21 @@ static bool split_edge(std::string_view line, std::string_view &lhs, std::string
   }
   if(best == std::string_view::npos) return false;
 
-  lhs = NoteCore::trim(line.substr(0, best));
-  rhs = NoteCore::trim(line.substr(best + best_len));
+  lhs = StringUtils::trim(line.substr(0, best));
+  rhs = StringUtils::trim(line.substr(best + best_len));
 
-  if(NoteCore::starts_with(rhs, "|"))
+  if(StringUtils::starts_with(rhs, "|"))
   {
     size_t e = rhs.find('|', 1);
     if(e != std::string_view::npos)
-      rhs = NoteCore::trim(rhs.substr(e + 1));
+      rhs = StringUtils::trim(rhs.substr(e + 1));
   }
   return !lhs.empty() && !rhs.empty();
 }
 
 static bool parse_node_ref(std::string_view s, std::string &id, std::string &label)
 {
-  s = NoteCore::trim(s);
+  s = StringUtils::trim(s);
   if(s.empty()) return false;
 
   size_t i = 0;
@@ -111,7 +111,7 @@ static bool parse_node_ref(std::string_view s, std::string &id, std::string &lab
       size_t j = s.rfind(close);
       if(j != std::string_view::npos && j > i + 1)
       {
-        std::string_view inner = NoteCore::trim(s.substr(i + 1, j - i - 1));
+        std::string_view inner = StringUtils::trim(s.substr(i + 1, j - i - 1));
         if(!inner.empty()) label.assign(inner);
       }
     }
@@ -148,10 +148,10 @@ bool parse(std::string_view src, Graph &out)
   {
     size_t e = src.find('\n', p);
     if(e == std::string_view::npos) e = src.size();
-    std::string_view line = NoteCore::trim(src.substr(p, e - p));
+    std::string_view line = StringUtils::trim(src.substr(p, e - p));
     p = (e < src.size()) ? e + 1 : e;
 
-    if(line.empty() || NoteCore::starts_with(line, "%%")) continue;
+    if(line.empty() || StringUtils::starts_with(line, "%%")) continue;
 
     if(!header_seen)
     {
@@ -160,7 +160,7 @@ bool parse(std::string_view src, Graph &out)
       continue;
     }
 
-    if(NoteCore::starts_with(line, "subgraph") || line == "end") continue;
+    if(StringUtils::starts_with(line, "subgraph") || line == "end") continue;
 
     std::string_view lhs, rhs;
     if(!split_edge(line, lhs, rhs)) continue;

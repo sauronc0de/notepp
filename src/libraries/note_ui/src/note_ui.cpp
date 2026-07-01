@@ -15,7 +15,7 @@ namespace NoteUi
 {
 ImVec4 folder_accent_color(bool use_custom_color, float color_r, float color_g, float color_b, const ImGuiStyle &style)
 {
-  if(use_custom_color) return ImVec4(NoteCore::clamp01f(color_r), NoteCore::clamp01f(color_g), NoteCore::clamp01f(color_b), 1.0f);
+  if(use_custom_color) return ImVec4(StringUtils::clamp01f(color_r), StringUtils::clamp01f(color_g), StringUtils::clamp01f(color_b), 1.0f);
   (void)style;
   return ImVec4(0.26f, 0.59f, 0.98f, 1.0f);
 }
@@ -33,7 +33,7 @@ std::unordered_map<std::string, IconEntry> g_toolbar_icon_cache;
 
 ImVec4 mix_color(ImVec4 a, ImVec4 b, float t)
 {
-  t = NoteCore::clamp01f(t);
+  t = StringUtils::clamp01f(t);
   return ImVec4(
       a.x + (b.x - a.x) * t,
       a.y + (b.y - a.y) * t,

@@ -79,8 +79,8 @@ using MarkdownSupport::should_push_word_granular_undo;
 using MarkdownSupport::summarize_preview_header_states;
 using MarkdownSupport::word_bounds_from_double_click;
 
-using NoteCore::clamp01f;
-using NoteCore::sanitize_note_filename;
+using StringUtils::clamp01f;
+using StringUtils::sanitize_note_filename;
 
 using NoteUi::clear_toolbar_icon_cache;
 using NoteUi::shaded_icon_button;
@@ -4236,7 +4236,7 @@ void App::frame_ui()
     search_dialog.truncated = false;
 
     const std::string query_text(search_dialog.query);
-    const std::string query_trim = std::string(NoteCore::trim(query_text));
+    const std::string query_trim = std::string(StringUtils::trim(query_text));
     if(query_trim.empty()) return;
 
     const std::string query_lower = to_lower_ascii(query_trim);
@@ -4422,7 +4422,7 @@ void App::frame_ui()
     ImGui::Separator();
 
     ImGui::BeginChild("##search_results", ImVec2(620.0f, 360.0f), true);
-    if(NoteCore::trim(current_query).empty())
+    if(StringUtils::trim(current_query).empty())
     {
       ImGui::TextDisabled("%s", Lang::t("Type to search."));
     }

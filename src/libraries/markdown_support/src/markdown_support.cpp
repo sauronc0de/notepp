@@ -90,7 +90,7 @@ bool is_empty_checklist_line(std::string_view line)
   if(mark != ' ' && mark != 'x' && mark != 'X') return false;
   i += 3;
   if(i < line.size() && line[i] == ' ') ++i;
-  return NoteCore::trim(line.substr(i)).empty();
+  return StringUtils::trim(line.substr(i)).empty();
 }
 
 bool is_empty_quote_line(std::string_view line)
@@ -100,7 +100,7 @@ bool is_empty_quote_line(std::string_view line)
   if(i >= line.size() || line[i] != '>') return false;
   ++i;
   if(i < line.size() && line[i] == ' ') ++i;
-  return NoteCore::trim(line.substr(i)).empty();
+  return StringUtils::trim(line.substr(i)).empty();
 }
 
 bool is_word_char(char c)
@@ -146,32 +146,32 @@ bool parse_mermaid_pie(std::string_view body, MermaidPieChart &out)
   {
     size_t e = body.find('\n', p);
     if(e == std::string_view::npos) e = body.size();
-    std::string_view line = NoteCore::trim(body.substr(p, e - p));
+    std::string_view line = StringUtils::trim(body.substr(p, e - p));
     p = (e < body.size()) ? e + 1 : e;
 
     if(line.empty()) continue;
 
     if(!saw_pie)
     {
-      if(!NoteCore::starts_with(line, "pie")) return false;
+      if(!StringUtils::starts_with(line, "pie")) return false;
       saw_pie = true;
-      const std::string_view rest = NoteCore::trim(line.substr(3));
-      if(NoteCore::starts_with(rest, "title "))
-        out.title = std::string(NoteCore::trim(rest.substr(6)));
+      const std::string_view rest = StringUtils::trim(line.substr(3));
+      if(StringUtils::starts_with(rest, "title "))
+        out.title = std::string(StringUtils::trim(rest.substr(6)));
       continue;
     }
 
-    if(NoteCore::starts_with(line, "title "))
+    if(StringUtils::starts_with(line, "title "))
     {
-      out.title = std::string(NoteCore::trim(line.substr(6)));
+      out.title = std::string(StringUtils::trim(line.substr(6)));
       continue;
     }
 
     const size_t col = line.find(':');
     if(col == std::string_view::npos) continue;
 
-    std::string_view left = NoteCore::trim(line.substr(0, col));
-    const std::string_view right = NoteCore::trim(line.substr(col + 1));
+    std::string_view left = StringUtils::trim(line.substr(0, col));
+    const std::string_view right = StringUtils::trim(line.substr(col + 1));
     if(left.empty() || right.empty()) continue;
 
     if(left.size() >= 2 && left.front() == '"' && left.back() == '"')
@@ -201,7 +201,7 @@ void render_mermaid_placeholder(std::string_view type, std::string_view body, in
 
 bool is_known_mermaid_type(std::string_view token)
 {
-  const std::string t = NoteCore::to_lower_copy(token);
+  const std::string t = StringUtils::to_lower_copy(token);
   return t == "flowchart" || t == "graph" ||
          t == "sequencediagram" ||
          t == "classdiagram" ||
@@ -239,19 +239,19 @@ bool detect_mermaid_type(std::string_view body, std::string &type_out)
   {
     size_t e = body.find('\n', p);
     if(e == std::string_view::npos) e = body.size();
-    const std::string_view line = NoteCore::trim(body.substr(p, e - p));
+    const std::string_view line = StringUtils::trim(body.substr(p, e - p));
     p = (e < body.size()) ? e + 1 : e;
 
     if(line.empty()) continue;
-    if(NoteCore::starts_with(line, "%%")) continue;
-    if(NoteCore::starts_with(line, "%%{")) continue;
+    if(StringUtils::starts_with(line, "%%")) continue;
+    if(StringUtils::starts_with(line, "%%{")) continue;
     if(line == "---")
     {
       while(p < body.size())
       {
         size_t e2 = body.find('\n', p);
         if(e2 == std::string_view::npos) e2 = body.size();
-        const std::string_view fm_line = NoteCore::trim(body.substr(p, e2 - p));
+        const std::string_view fm_line = StringUtils::trim(body.substr(p, e2 - p));
         p = (e2 < body.size()) ? e2 + 1 : e2;
         if(fm_line == "---") break;
       }
@@ -339,7 +339,7 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
 
 void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
 {
-  const std::string mt = NoteCore::to_lower_copy(mermaid_type);
+  const std::string mt = StringUtils::to_lower_copy(mermaid_type);
 
   // ── already-rendered types ──────────────────────────────────────────────
   if(mt == "pie")
@@ -570,7 +570,7 @@ std::string first_non_empty_filter(const Json &arr)
   {
     if(!v.is_string()) continue;
     const std::string s = v.get<std::string>();
-    if(!NoteCore::trim(s).empty()) return s;
+    if(!StringUtils::trim(s).empty()) return s;
   }
   return {};
 }
@@ -816,7 +816,7 @@ void apply_preview_state_snapshot_impl(std::string_view snapshot)
 std::vector<std::string> split_md_table_cells(std::string_view line)
 {
   std::vector<std::string> cells;
-  std::string_view t = NoteCore::trim(line);
+  std::string_view t = StringUtils::trim(line);
   if(t.empty() || t.find('|') == std::string_view::npos) return cells;
 
   if(!t.empty() && t.front() == '|') t.remove_prefix(1);
@@ -827,7 +827,7 @@ std::vector<std::string> split_md_table_cells(std::string_view line)
   {
     size_t sep = t.find('|', start);
     const size_t end = (sep == std::string_view::npos) ? t.size() : sep;
-    cells.emplace_back(NoteCore::trim(t.substr(start, end - start)));
+    cells.emplace_back(StringUtils::trim(t.substr(start, end - start)));
     if(sep == std::string_view::npos) break;
     start = sep + 1;
   }
@@ -841,7 +841,7 @@ bool is_md_table_separator(std::string_view line, size_t expected_cols)
 
   for(const std::string &p : parts)
   {
-    std::string_view s = NoteCore::trim(p);
+    std::string_view s = StringUtils::trim(p);
     if(s.empty()) return false;
     if(s.front() == ':') s.remove_prefix(1);
     if(!s.empty() && s.back() == ':') s.remove_suffix(1);
@@ -864,8 +864,8 @@ bool try_parse_markdown_table(
   out = ParsedMarkdownTable{};
 
   const std::string_view header_line(markdown.data() + line_start, line_end - line_start);
-  const std::string_view header_trim = NoteCore::trim(header_line);
-  if(header_trim.empty() || NoteCore::starts_with(header_trim, ">")) return false;
+  const std::string_view header_trim = StringUtils::trim(header_line);
+  if(header_trim.empty() || StringUtils::starts_with(header_trim, ">")) return false;
 
   std::vector<std::string> header = split_md_table_cells(header_line);
   if(header.size() < 2) return false;
@@ -889,8 +889,8 @@ bool try_parse_markdown_table(
     if(!row_has_newline) row_end = markdown.size();
 
     const std::string_view row_line(markdown.data() + scan, row_end - scan);
-    const std::string_view row_trim = NoteCore::trim(row_line);
-    if(row_trim.empty() || NoteCore::starts_with(row_trim, ">")) break;
+    const std::string_view row_trim = StringUtils::trim(row_line);
+    if(row_trim.empty() || StringUtils::starts_with(row_trim, ">")) break;
 
     std::vector<std::string> row_cells = split_md_table_cells(row_line);
     if(row_cells.size() != header.size()) break;
@@ -928,7 +928,7 @@ std::string normalize_table_cell_value(std::string_view in)
     else
       out.push_back(c);
   }
-  const std::string_view t = NoteCore::trim(out);
+  const std::string_view t = StringUtils::trim(out);
   return std::string(t);
 }
 
@@ -1032,8 +1032,8 @@ std::vector<int> build_row_display_order(
   std::vector<int> order(rows.size());
   std::iota(order.begin(), order.end(), 0);
 
-  const std::string contains_lower = to_lower_ascii_copy(NoteCore::trim(state.contains_filter));
-  const std::string not_contains_lower = to_lower_ascii_copy(NoteCore::trim(state.not_contains_filter));
+  const std::string contains_lower = to_lower_ascii_copy(StringUtils::trim(state.contains_filter));
+  const std::string not_contains_lower = to_lower_ascii_copy(StringUtils::trim(state.not_contains_filter));
 
   if(!contains_lower.empty() || !not_contains_lower.empty())
   {
@@ -1190,7 +1190,7 @@ void render_filter_dialog(
 
   if(apply)
   {
-    const std::string value = std::string(NoteCore::trim(g_filter_dialog_state.buffer));
+    const std::string value = std::string(StringUtils::trim(g_filter_dialog_state.buffer));
     bool changed = false;
     if(g_filter_dialog_state.not_contains)
     {
@@ -1295,10 +1295,10 @@ TableRenderOutcome render_interactive_table(
       ImGuiTableFlags_NoHostExtendX;
 
   auto column_has_contains_filter = [&](int column) {
-    return !NoteCore::trim(state.contains_filter).empty() && state.contains_filter_column == column;
+    return !StringUtils::trim(state.contains_filter).empty() && state.contains_filter_column == column;
   };
   auto column_has_not_contains_filter = [&](int column) {
-    return !NoteCore::trim(state.not_contains_filter).empty() && state.not_contains_filter_column == column;
+    return !StringUtils::trim(state.not_contains_filter).empty() && state.not_contains_filter_column == column;
   };
   auto decorated_header_label = [&](const std::string &label, int column) {
     std::string out = label;
@@ -1534,8 +1534,8 @@ TableRenderOutcome render_interactive_table(
 
         const bool has_any_filter_or_sort =
             state.sort_column >= 0 ||
-            !NoteCore::trim(state.contains_filter).empty() ||
-            !NoteCore::trim(state.not_contains_filter).empty();
+            !StringUtils::trim(state.contains_filter).empty() ||
+            !StringUtils::trim(state.not_contains_filter).empty();
         if(ImGui::MenuItem("Clear filters", nullptr, false, has_any_filter_or_sort))
         {
           reset_table_view_state(state);
@@ -1803,9 +1803,9 @@ void apply_color_wrap_string(std::string &s, int &sel_a, int &sel_b, const std::
 
 std::string rgba_to_hex(ImVec4 c)
 {
-  const int r = static_cast<int>(NoteCore::clamp01f(c.x) * 255.0f + 0.5f);
-  const int g = static_cast<int>(NoteCore::clamp01f(c.y) * 255.0f + 0.5f);
-  const int b = static_cast<int>(NoteCore::clamp01f(c.z) * 255.0f + 0.5f);
+  const int r = static_cast<int>(StringUtils::clamp01f(c.x) * 255.0f + 0.5f);
+  const int g = static_cast<int>(StringUtils::clamp01f(c.y) * 255.0f + 0.5f);
+  const int b = static_cast<int>(StringUtils::clamp01f(c.z) * 255.0f + 0.5f);
 
   char buf[16];
   std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", r, g, b);
@@ -2076,7 +2076,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     if(!has_newline) line_end = markdown.size();
 
     const std::string_view line(markdown.data() + line_start, line_end - line_start);
-    const std::string_view tline = NoteCore::trim(line);
+    const std::string_view tline = StringUtils::trim(line);
 
     int heading_level = 0;
     std::string_view heading_title;
@@ -2133,7 +2133,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(!ln) le = markdown.size();
 
         const std::string_view l(markdown.data() + ls, le - ls);
-        if(NoteCore::trim(l) == "```")
+        if(StringUtils::trim(l) == "```")
         {
           block_end = ln ? le + 1 : le;
           closed = true;
@@ -2169,7 +2169,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(!ln) le = markdown.size();
 
         const std::string_view l(markdown.data() + ls, le - ls);
-        if(NoteCore::trim(l) == "```")
+        if(StringUtils::trim(l) == "```")
         {
           block_end = ln ? le + 1 : le;
           closed = true;
@@ -2209,7 +2209,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(!ln) le = markdown.size();
 
         const std::string_view l(markdown.data() + ls, le - ls);
-        if(NoteCore::trim(l) == "```")
+        if(StringUtils::trim(l) == "```")
         {
           block_end = ln ? le + 1 : le;
           closed = true;
@@ -2253,7 +2253,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
           const bool ln = (le != std::string::npos);
           if(!ln) le = markdown.size();
           const std::string_view l(markdown.data() + ls, le - ls);
-          const std::string_view tl = NoteCore::trim(l);
+          const std::string_view tl = StringUtils::trim(l);
 
           if(tl.empty())
           {

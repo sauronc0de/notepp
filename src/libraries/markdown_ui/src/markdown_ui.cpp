@@ -40,7 +40,7 @@ void set_widget_document_path(std::filesystem::path path)
 
 namespace
 {
-using NoteCore::trim;
+using StringUtils::trim;
 
 static ImVec2 nonzero_invisible_button_size(float w, float h)
 {

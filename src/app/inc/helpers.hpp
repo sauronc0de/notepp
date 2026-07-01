@@ -2,7 +2,7 @@
 
 #include "string_utils.hpp"
 
-using NoteCore::ltrim;
-using NoteCore::rtrim;
-using NoteCore::starts_with;
-using NoteCore::trim;
+using StringUtils::ltrim;
+using StringUtils::rtrim;
+using StringUtils::starts_with;
+using StringUtils::trim;

@@ -24,9 +24,9 @@ static ImVec2 nonzero_invisible_button_size(float w, float h)
 }
 
 // ── parsing helpers ───────────────────────────────────────────────────────────
-static bool sw(std::string_view s, std::string_view p) { return NoteCore::starts_with(s, p); }
-static std::string_view tr(std::string_view s) { return NoteCore::trim(s); }
-static std::string lc(std::string_view s) { return NoteCore::to_lower_copy(s); }
+static bool sw(std::string_view s, std::string_view p) { return StringUtils::starts_with(s, p); }
+static std::string_view tr(std::string_view s) { return StringUtils::trim(s); }
+static std::string lc(std::string_view s) { return StringUtils::to_lower_copy(s); }
 
 static std::string strip_quotes(std::string_view s)
 {
@@ -1506,7 +1506,7 @@ bool parse_timeline(std::string_view src, TimelineDiagram &out)
       std::string rest2=std::string(tr(line.substr(first_col+1)));
       TLPeriod p; p.label=period;
       std::istringstream ss2(rest2); std::string tok;
-      while(std::getline(ss2,tok,':')) { std::string ev=std::string(NoteCore::trim(tok)); if(!ev.empty()) p.events.push_back(ev); }
+      while(std::getline(ss2,tok,':')) { std::string ev=std::string(StringUtils::trim(tok)); if(!ev.empty()) p.events.push_back(ev); }
       out.periods.push_back(p);
     } else if(!line.empty()) {
       // bare period with no events (will be followed by indented events - not standard but let's handle)
