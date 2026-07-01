@@ -322,90 +322,9 @@ static ImVec2 circ_edge(ImVec2 cen, float r, ImVec2 other)
 // ═══════════════════════════════════════════════════════════════════════════
 // GANTT             (see src/diagrams/gantt_parser.cpp / gantt_renderer.cpp)
 // ═══════════════════════════════════════════════════════════════════════════
-
-// QUADRANT CHART
+// QUADRANT CHART    (see src/diagrams/quadrant_parser.cpp / quadrant_renderer.cpp)
 // ═══════════════════════════════════════════════════════════════════════════
-bool parse_quadrant(std::string_view src, QuadrantDiagram &out)
-{
-  out=QuadrantDiagram{}; Lines L{src}; std::string_view line; bool header=false;
-  while(L.next(line)){
-    std::string ll=lc(line);
-    if(!header){if(sw(ll,"quadrantchart")){header=true;continue;} continue;}
-    if(sw(ll,"title "))      {out.title=std::string(tr(line.substr(6)));continue;}
-    if(sw(ll,"x-axis "))     { std::string_view r=tr(line.substr(8)); size_t ar=r.find("-->"); if(ar!=std::string_view::npos){out.x_low=strip_quotes(r.substr(0,ar));out.x_high=strip_quotes(tr(r.substr(ar+3)));}else out.x_low=std::string(r); continue;}
-    if(sw(ll,"y-axis "))     { std::string_view r=tr(line.substr(8)); size_t ar=r.find("-->"); if(ar!=std::string_view::npos){out.y_low=strip_quotes(r.substr(0,ar));out.y_high=strip_quotes(tr(r.substr(ar+3)));}else out.y_low=std::string(r); continue;}
-    if(sw(ll,"quadrant-1 ")){ out.q1=std::string(tr(line.substr(11)));continue;}
-    if(sw(ll,"quadrant-2 ")){ out.q2=std::string(tr(line.substr(11)));continue;}
-    if(sw(ll,"quadrant-3 ")){ out.q3=std::string(tr(line.substr(11)));continue;}
-    if(sw(ll,"quadrant-4 ")){ out.q4=std::string(tr(line.substr(11)));continue;}
-    // point: Name: [x, y]
-    size_t col=line.find(':');
-    if(col!=std::string_view::npos){
-      std::string name=strip_quotes(line.substr(0,col));
-      std::string_view coords=tr(line.substr(col+1));
-      if(!coords.empty()&&coords[0]=='['){
-        size_t ce=coords.find(']'); if(ce!=std::string_view::npos){
-          std::string cs=std::string(coords.substr(1,ce-1));
-          size_t comma=cs.find(',');
-          if(comma!=std::string::npos){
-            float x=std::strtof(cs.substr(0,comma).c_str(),nullptr);
-            float y=std::strtof(cs.substr(comma+1).c_str(),nullptr);
-            out.points.push_back({name,x,y});
-          }
-        }
-      }
-    }
-  }
-  return header;
-}
 
-void render_quadrant(const QuadrantDiagram &d, int id)
-{
-  ImGui::PushID(id);
-  const float sz=260.0f,pad=40.0f;
-  float cw=sz+pad*2, ch=sz+pad*2+20;
-  const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##quad", nonzero_invisible_button_size(cw, ch));
-  ImDrawList *dl=ImGui::GetWindowDrawList();
-  const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
-  const ImU32 lcol=ImGui::GetColorU32(ImGuiCol_TextDisabled);
-  const ImU32 gc=ImGui::GetColorU32(ImGuiCol_Separator);
-  // title
-  if(!d.title.empty()){ImVec2 ts=ImGui::CalcTextSize(d.title.c_str());dl->AddText(ImVec2(orig.x+(cw-ts.x)*0.5f,orig.y+2),tcol,d.title.c_str());}
-  ImVec2 tl(orig.x+pad,orig.y+20+pad);
-  ImVec2 br(tl.x+sz,tl.y+sz);
-  ImVec2 mid(tl.x+sz*0.5f,tl.y+sz*0.5f);
-  // quadrant fills
-  dl->AddRectFilled(tl,mid,ImGui::GetColorU32(ImVec4(0.2f,0.6f,0.2f,0.12f)));
-  dl->AddRectFilled(ImVec2(mid.x,tl.y),ImVec2(br.x,mid.y),ImGui::GetColorU32(ImVec4(0.6f,0.2f,0.2f,0.12f)));
-  dl->AddRectFilled(ImVec2(tl.x,mid.y),mid,ImGui::GetColorU32(ImVec4(0.2f,0.2f,0.6f,0.12f)));
-  dl->AddRectFilled(mid,br,ImGui::GetColorU32(ImVec4(0.6f,0.6f,0.2f,0.12f)));
-  dl->AddRect(tl,br,gc,0,0,1.5f);
-  dl->AddLine(ImVec2(mid.x,tl.y),ImVec2(mid.x,br.y),gc,1.0f);
-  dl->AddLine(ImVec2(tl.x,mid.y),ImVec2(br.x,mid.y),gc,1.0f);
-  // quadrant labels
-  auto ql=[&](float x,float y,const std::string &s){ if(!s.empty()){ ImVec2 ts=ImGui::CalcTextSize(s.c_str()); dl->AddText(ImVec2(x-ts.x*0.5f,y-ts.y*0.5f),lcol,s.c_str()); }};
-  ql(tl.x+sz*0.25f,tl.y+sz*0.25f,d.q2);
-  ql(tl.x+sz*0.75f,tl.y+sz*0.25f,d.q1);
-  ql(tl.x+sz*0.25f,tl.y+sz*0.75f,d.q3);
-  ql(tl.x+sz*0.75f,tl.y+sz*0.75f,d.q4);
-  // axis labels
-  if(!d.x_low.empty()){ImVec2 ts=ImGui::CalcTextSize(d.x_low.c_str());dl->AddText(ImVec2(tl.x,br.y+4),lcol,d.x_low.c_str());}
-  if(!d.x_high.empty()){ImVec2 ts=ImGui::CalcTextSize(d.x_high.c_str());dl->AddText(ImVec2(br.x-ts.x,br.y+4),lcol,d.x_high.c_str());}
-  if(!d.y_low.empty()){ImVec2 ts=ImGui::CalcTextSize(d.y_low.c_str());dl->AddText(ImVec2(tl.x-ts.x-4,br.y-ts.y),lcol,d.y_low.c_str());}
-  if(!d.y_high.empty()){ImVec2 ts=ImGui::CalcTextSize(d.y_high.c_str());dl->AddText(ImVec2(tl.x-ts.x-4,tl.y),lcol,d.y_high.c_str());}
-  // points
-  for(int i=0;i<(int)d.points.size();++i){
-    auto &p=d.points[i];
-    float px=tl.x+p.x*sz, py=br.y-p.y*sz;
-    ImU32 pc=series_color(i);
-    dl->AddCircleFilled(ImVec2(px,py),5,pc);
-    dl->AddText(ImVec2(px+7,py-8),tcol,p.name.c_str());
-  }
-  ImGui::PopID();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // REQUIREMENT DIAGRAM
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_requirement(std::string_view src, RequirementDiagram &out)

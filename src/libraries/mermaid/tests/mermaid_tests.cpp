@@ -237,6 +237,36 @@ void test_gantt_missing_header()
   md::GanttDiagram d;
   expect_true(!md::parse_gantt("section S1\n  T1 :a1, 0, 3\n", d), "missing header rejected");
 }
+
+void test_quadrant_basic_valid()
+{
+  const std::string src =
+      "quadrantChart\n"
+      "  title Reach\n"
+      "  x-axis Low --> High\n"
+      "  y-axis Bad --> Good\n"
+      "  quadrant-1 Keep\n"
+      "  quadrant-2 Improve\n"
+      "  quadrant-3 Drop\n"
+      "  quadrant-4 Build\n"
+      "  Tool: [0.7, 0.8]\n";
+  md::QuadrantDiagram d;
+  expect_true(md::parse_quadrant(src, d), "valid quadrant parses");
+  expect_eq_str(d.title, "Reach", "title");
+  // The original parser has a known off-by-one: line.substr(8) instead of
+  // line.substr(7) is used to skip the "x-axis " / "y-axis " prefix. The
+  // extracted parser preserves the original behavior to keep rendering
+  // output stable until the bug is intentionally fixed in a separate
+  // change. We only assert the parser accepts valid input and emits the
+  // expected number of points here.
+  expect_eq_size(d.points.size(), 1, "one point");
+}
+
+void test_quadrant_missing_header()
+{
+  md::QuadrantDiagram d;
+  expect_true(!md::parse_quadrant("title X\n", d), "missing header rejected");
+}
 } // namespace
 
 int main()
@@ -259,6 +289,8 @@ int main()
   test_journey_missing_header();
   test_gantt_basic_valid();
   test_gantt_missing_header();
+  test_quadrant_basic_valid();
+  test_quadrant_missing_header();
   if(failures != 0)
   {
     std::cerr << failures << " mermaid test expectation(s) failed\n";

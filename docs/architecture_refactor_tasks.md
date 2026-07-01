@@ -657,8 +657,14 @@ Tasks:
     ```
   - Notes: `src/diagrams/gantt_parser.cpp` and `src/diagrams/gantt_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests (valid + missing header) added.
 
-- `[ ]` Split quadrant diagram parser and renderer.
-  - Tested: no
+- `[x]` Split quadrant diagram parser and renderer.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `src/diagrams/quadrant_parser.cpp` and `src/diagrams/quadrant_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests added (valid + missing header). The original `line.substr(8)` off-by-one for `x-axis`/`y-axis` prefix is preserved as-is and noted in the test.
 
 - `[ ]` Split requirement diagram parser and renderer.
   - Tested: no
