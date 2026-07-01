@@ -364,6 +364,47 @@ void test_sankey_missing_header()
   expect_true(!md::parse_sankey("A,B,5\n", d), "missing header rejected");
 }
 
+void test_xychart_basic_valid()
+{
+  const std::string src =
+      "xychart-beta\n"
+      "  title \"Chart\"\n"
+      "  x-axis [A, B, C]\n"
+      "  y-axis \"Val\" 0 --> 100\n"
+      "  bar [10, 20, 30]\n";
+  md::XYDiagram d;
+  expect_true(md::parse_xychart(src, d), "valid xychart parses");
+  expect_eq_str(d.title, "Chart", "title");
+  expect_eq_size(d.x_labels.size(), 3, "three x labels");
+  expect_eq_size(d.series.size(), 1, "one series");
+}
+
+void test_xychart_missing_header()
+{
+  md::XYDiagram d;
+  expect_true(!md::parse_xychart("title X\n  bar [1,2]\n", d), "missing header rejected");
+}
+
+void test_block_basic_valid()
+{
+  const std::string src =
+      "block-beta\n"
+      "  columns 2\n"
+      "  A[\"One\"]\n"
+      "  B[\"Two\"]\n"
+      "  A --> B\n";
+  md::BlockDiagram d;
+  expect_true(md::parse_block(src, d), "valid block parses");
+  expect_eq_size(d.nodes.size(), 2, "two nodes");
+  expect_eq_size(d.edges.size(), 1, "one edge");
+}
+
+void test_block_missing_header()
+{
+  md::BlockDiagram d;
+  expect_true(!md::parse_block("A[\"x\"]\n", d), "missing header rejected");
+}
+
 void test_render_registry_lookup()
 {
   // The split diagram types are registered.
@@ -431,6 +472,10 @@ int main()
   test_timeline_missing_header();
   test_sankey_basic_valid();
   test_sankey_missing_header();
+  test_xychart_basic_valid();
+  test_xychart_missing_header();
+  test_block_basic_valid();
+  test_block_missing_header();
   test_render_registry_lookup();
   if(failures != 0)
   {

@@ -74,6 +74,7 @@ set(NOTEPP_SOURCES
   src/app/src/app_sdl.cpp
   src/app/src/app_imgui.cpp
   src/app/src/app_frame_limiter.cpp
+  src/app/src/app_frame_end.cpp
   src/app/src/app_history_indicator.cpp
   src/app/src/app_profile_modal.cpp
 )
