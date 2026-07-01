@@ -161,6 +161,40 @@ void test_parse_result_helpers()
   md::ParseResult<md::StateDiagram> def;
   expect_true(!def.ok(), "default result is not ok");
 }
+
+void test_er_basic_valid()
+{
+  const std::string src =
+      "erDiagram\n"
+      "  CUSTOMER ||--o{ ORDER : places\n"
+      "  ORDER ||--|{ LINE-ITEM : contains\n";
+  md::ERDiagram d;
+  expect_true(md::parse_er(src, d), "valid ER parses");
+  expect_eq_size(d.entities.size(), 3, "three entities");
+  expect_eq_size(d.relations.size(), 2, "two relations");
+}
+
+void test_er_missing_header()
+{
+  const std::string src = "CUSTOMER ||--o{ ORDER : places\n";
+  md::ERDiagram d;
+  expect_true(!md::parse_er(src, d), "missing header rejected");
+}
+
+void test_er_with_attributes()
+{
+  const std::string src =
+      "erDiagram\n"
+      "  CUSTOMER {\n"
+      "    string name PK\n"
+      "    string email\n"
+      "  }\n";
+  md::ERDiagram d;
+  expect_true(md::parse_er(src, d), "valid ER with attrs parses");
+  expect_eq_size(d.entities.size(), 1, "one entity");
+  expect_eq_size(d.entities[0].attrs.size(), 2, "two attributes");
+  expect_true(d.entities[0].attrs[0].pk, "first attr is PK");
+}
 } // namespace
 
 int main()
@@ -176,6 +210,9 @@ int main()
   test_state_missing_header();
   test_state_with_label();
   test_parse_result_helpers();
+  test_er_basic_valid();
+  test_er_missing_header();
+  test_er_with_attributes();
   if(failures != 0)
   {
     std::cerr << failures << " mermaid test expectation(s) failed\n";

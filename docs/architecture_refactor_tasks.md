@@ -629,8 +629,15 @@ Tasks:
   - Tested: yes
   - Notes: `src/diagrams/state_parser.cpp` and `src/diagrams/state_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed.
 
-- `[ ]` Split ER diagram parser and renderer.
-  - Tested: no
+- `[x]` Split ER diagram parser and renderer.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all develop_gui
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `src/diagrams/er_parser.cpp` and `src/diagrams/er_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Parser uses an internal `LineCursor` with line trimming to match original behavior.
 
 - `[ ]` Split journey diagram parser and renderer.
   - Tested: no
@@ -724,11 +731,13 @@ For each parser, add tests with valid and invalid input:
   - Tested: yes
   - Notes: `mermaid_tests.cpp` covers missing header.
 
-- `[ ]` ER parser valid cases.
-  - Tested: no
+- `[x]` ER parser valid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers basic two-entity relations and attribute blocks with PK markers.
 
-- `[ ]` ER parser invalid cases.
-  - Tested: no
+- `[x]` ER parser invalid cases.
+  - Tested: yes
+  - Notes: `mermaid_tests.cpp` covers missing header.
 
 - `[ ]` Add the same valid/invalid parser test pattern for every Mermaid diagram type.
   - Tested: no
