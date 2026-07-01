@@ -170,6 +170,37 @@ tests/
 - `[ ]` Ensure vendor/external targets do not inherit project warning policy unnecessarily.
   - Tested: no
 
+
+## 0.4 Library-local unit test coverage
+
+- `[x]` Add `string_utils` unit tests.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+
+- `[x]` Add `tiny_json` unit tests.
+  - Tested: yes
+  - Validation: same as above.
+
+- `[x]` Add `lang` unit tests.
+  - Tested: yes
+  - Validation: same as above.
+
+- `[x]` Add `log` library smoke tests.
+  - Tested: yes
+  - Validation: same as above.
+
+- `[x]` Rename `string_utils` namespace to `StringUtils` to match the library name.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    tools/tasks/build.sh all develop_gui
+    ```
+
 ---
 
 # Phase 1: Move Libraries Under `src/`
