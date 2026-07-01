@@ -762,8 +762,14 @@ For each parser, add tests with valid and invalid input:
 
 ## 4.5 Mermaid rendering registry
 
-- `[ ]` Create a Mermaid render registry that maps diagram type to parser/renderer.
-  - Tested: no
+- `[x]` Create a Mermaid render registry that maps diagram type to parser/renderer.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: New `src/libraries/mermaid/src/registry.cpp` exposes `find_registry_entry`, `is_registered_type`, and `registered_type_count`. The 12 already-split diagram types plus 2 aliases (statediagram-v2, sankey-beta) are registered. A unit test confirms lookup, case-insensitivity, and counter. The legacy `MERMAID_DISPATCH` chain in `markdown_support` is preserved for now.
 
 - `[x]` Keep renderer API separate from parser API.
   - Tested: yes

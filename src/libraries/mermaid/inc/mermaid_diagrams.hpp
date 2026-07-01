@@ -309,4 +309,34 @@ extern PendingEdit g_pending_edit;
 // so the note-level "Copy all" popup does not open on the same click.
 extern bool g_consumed_right_click;
 
+// ── Render registry ──────────────────────────────────────────────────────────
+//
+// The registry maps a canonical diagram type (e.g. "sequencediagram") to its
+// parser, renderer, and accepted aliases (e.g. {"statediagram",
+// "statediagram-v2"}). It lets callers dispatch a diagram body without a
+// long if/else chain and makes it easy to add a new diagram type without
+// touching the call site.
+//
+// The parser/renderer function pointers are typed using a void* indirection
+// to keep the registry uniform across diagrams with different value types.
+// The caller is expected to know the diagram type and cast the diagram value
+// accordingly. For the common case, prefer the higher-level dispatch
+// function below which encapsulates the per-type cast.
+struct RegistryEntry
+{
+    const char *      canonical;     // canonical type name (e.g. "sequencediagram")
+    bool (*parse_any)(std::string_view, void *);  // writes parsed diagram into *out
+    void (*render_any)(const void *, int);        // renders the parsed diagram
+};
+
+// Look up a registry entry for a diagram type (case-insensitive, accepts
+// aliases). Returns nullptr if the type is not registered.
+const RegistryEntry *find_registry_entry(std::string_view mermaid_type);
+
+// Return true when the type is known to the registry.
+bool is_registered_type(std::string_view mermaid_type);
+
+// Returns the number of registered diagram types. Useful for tests.
+std::size_t registered_type_count();
+
 } // namespace MermaidDiagrams

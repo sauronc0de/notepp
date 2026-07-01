@@ -1,6 +1,7 @@
 add_library(mermaid STATIC
   src/mermaid.cpp
   src/mermaid_diagrams.cpp
+  src/registry.cpp
   src/diagrams/sequence_parser.cpp
   src/diagrams/sequence_renderer.cpp
   src/diagrams/class_parser.cpp
@@ -15,6 +16,16 @@ add_library(mermaid STATIC
   src/diagrams/gantt_renderer.cpp
   src/diagrams/quadrant_parser.cpp
   src/diagrams/quadrant_renderer.cpp
+  src/diagrams/requirement_parser.cpp
+  src/diagrams/requirement_renderer.cpp
+  src/diagrams/git_parser.cpp
+  src/diagrams/git_renderer.cpp
+  src/diagrams/mindmap_parser.cpp
+  src/diagrams/mindmap_renderer.cpp
+  src/diagrams/timeline_parser.cpp
+  src/diagrams/timeline_renderer.cpp
+  src/diagrams/sankey_parser.cpp
+  src/diagrams/sankey_renderer.cpp
 )
 target_include_directories(mermaid PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 target_link_libraries(mermaid PUBLIC string_utils imgui)

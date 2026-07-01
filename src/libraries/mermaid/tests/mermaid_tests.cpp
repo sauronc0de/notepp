@@ -267,6 +267,136 @@ void test_quadrant_missing_header()
   md::QuadrantDiagram d;
   expect_true(!md::parse_quadrant("title X\n", d), "missing header rejected");
 }
+
+void test_requirement_basic_valid()
+{
+  const std::string src =
+      "requirementDiagram\n"
+      "  requirement TestReq {\n"
+      "    id: REQ-001\n"
+      "    text: Sample requirement\n"
+      "    risk: low\n"
+      "  }\n";
+  md::RequirementDiagram d;
+  expect_true(md::parse_requirement(src, d), "valid requirement parses");
+  expect_eq_size(d.reqs.size(), 1, "one requirement");
+  expect_eq_str(d.reqs[0].id, "REQ-001", "id parsed");
+}
+
+void test_requirement_missing_header()
+{
+  md::RequirementDiagram d;
+  expect_true(!md::parse_requirement("requirement X { id: X }\n", d), "missing header rejected");
+}
+
+void test_git_basic_valid()
+{
+  const std::string src =
+      "gitGraph\n"
+      "  commit id: \"c1\"\n"
+      "  commit id: \"c2\"\n"
+      "  branch dev\n"
+      "  commit id: \"c3\"\n";
+  md::GitDiagram d;
+  expect_true(md::parse_git(src, d), "valid git parses");
+  expect_eq_size(d.branches.size(), 2, "main + dev");
+  expect_eq_size(d.commits.size(), 3, "three commits");
+}
+
+void test_git_missing_header()
+{
+  md::GitDiagram d;
+  expect_true(!md::parse_git("commit id: x\n", d), "missing header rejected");
+}
+
+void test_mindmap_basic_valid()
+{
+  const std::string src =
+      "mindmap\n"
+      "  Root\n"
+      "    Child1\n"
+      "    Child2\n";
+  md::MindmapDiagram d;
+  expect_true(md::parse_mindmap(src, d), "valid mindmap parses");
+  expect_eq_size(d.nodes.size(), 3, "three nodes");
+}
+
+void test_mindmap_missing_header()
+{
+  md::MindmapDiagram d;
+  expect_true(!md::parse_mindmap("Root\n  Child\n", d), "missing header rejected");
+}
+
+void test_timeline_basic_valid()
+{
+  const std::string src =
+      "timeline\n"
+      "  title History\n"
+      "  2001 : Event A\n"
+      "  2002 : Event B\n";
+  md::TimelineDiagram d;
+  expect_true(md::parse_timeline(src, d), "valid timeline parses");
+  expect_eq_str(d.title, "History", "title");
+  expect_eq_size(d.periods.size(), 2, "two periods");
+}
+
+void test_timeline_missing_header()
+{
+  md::TimelineDiagram d;
+  expect_true(!md::parse_timeline("title X\n", d), "missing header rejected");
+}
+
+void test_sankey_basic_valid()
+{
+  const std::string src =
+      "sankey-beta\n"
+      "  A,B,5\n"
+      "  B,C,3\n"
+      "  C,D,2\n";
+  md::SankeyDiagram d;
+  expect_true(md::parse_sankey(src, d), "valid sankey parses");
+  expect_eq_size(d.flows.size(), 3, "three flows");
+}
+
+void test_sankey_missing_header()
+{
+  md::SankeyDiagram d;
+  expect_true(!md::parse_sankey("A,B,5\n", d), "missing header rejected");
+}
+
+void test_render_registry_lookup()
+{
+  // The split diagram types are registered.
+  expect_true(md::is_registered_type("sequencediagram"), "sequencediagram registered");
+  expect_true(md::is_registered_type("classdiagram"), "classdiagram registered");
+  expect_true(md::is_registered_type("statediagram"), "statediagram registered");
+  expect_true(md::is_registered_type("statediagram-v2"), "statediagram-v2 alias registered");
+  expect_true(md::is_registered_type("erdiagram"), "erdiagram registered");
+  expect_true(md::is_registered_type("journey"), "journey registered");
+  expect_true(md::is_registered_type("gantt"), "gantt registered");
+  expect_true(md::is_registered_type("quadrantchart"), "quadrantchart registered");
+  expect_true(md::is_registered_type("requirementdiagram"), "requirementdiagram registered");
+  expect_true(md::is_registered_type("gitgraph"), "gitgraph registered");
+  expect_true(md::is_registered_type("mindmap"), "mindmap registered");
+  expect_true(md::is_registered_type("timeline"), "timeline registered");
+  expect_true(md::is_registered_type("sankey"), "sankey registered");
+  expect_true(md::is_registered_type("sankey-beta"), "sankey-beta alias registered");
+
+  // Case-insensitive lookup.
+  expect_true(md::is_registered_type("SequenceDiagram"), "case-insensitive");
+
+  // Unknown types are not registered.
+  expect_true(!md::is_registered_type(""), "empty is not registered");
+  expect_true(!md::is_registered_type("unknownDiagram"), "unknown diagram not registered");
+
+  // Entry pointer matches canonical name.
+  const md::RegistryEntry *e = md::find_registry_entry("sequencediagram");
+  expect_true(e != nullptr, "entry exists for sequencediagram");
+  expect_eq_str(e ? e->canonical : "", "sequencediagram", "canonical name");
+
+  // Counter reports the right number of registered types.
+  expect_eq_size(md::registered_type_count(), 14, "registry has 14 entries");
+}
 } // namespace
 
 int main()
@@ -291,6 +421,17 @@ int main()
   test_gantt_missing_header();
   test_quadrant_basic_valid();
   test_quadrant_missing_header();
+  test_requirement_basic_valid();
+  test_requirement_missing_header();
+  test_git_basic_valid();
+  test_git_missing_header();
+  test_mindmap_basic_valid();
+  test_mindmap_missing_header();
+  test_timeline_basic_valid();
+  test_timeline_missing_header();
+  test_sankey_basic_valid();
+  test_sankey_missing_header();
+  test_render_registry_lookup();
   if(failures != 0)
   {
     std::cerr << failures << " mermaid test expectation(s) failed\n";
