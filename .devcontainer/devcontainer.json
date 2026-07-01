@@ -15,7 +15,7 @@
   "mounts": [
     "source=${localEnv:HOME}/.pi,target=/home/devuser/.pi,type=bind"
   ],
-  "postStartCommand": "sudo chown -R sauroncode:sauroncode /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
+  "postStartCommand": "sudo chown -R devuser:devuser /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
   "customizations": {
     "vscode": {
       "extensions": [

@@ -61,15 +61,15 @@ RUN mkdir -p /etc/apt/keyrings && \
 RUN update-ccache-symlinks && \
     ccache --set-config=cache_dir=/ccache --max-size=8G
 
-RUN useradd -m sauroncode && \
-    echo "sauroncode:1234" | chpasswd && \
-    adduser sauroncode sudo && \
-    usermod -aG plugdev,dialout sauroncode && \
+RUN useradd -m devuser && \
+    echo "devuser:1234" | chpasswd && \
+    adduser devuser sudo && \
+    usermod -aG plugdev,dialout devuser && \
     echo "%sudo ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
 
-USER sauroncode
+USER devuser
 
-ENV HOME=/home/sauroncode
+ENV HOME=/home/devuser
 ENV XDG_RUNTIME_DIR=/tmp
 
 ARG WORKSPACE_DIR
@@ -87,13 +87,9 @@ RUN npm config set prefix "${HOME}/.npm-global"
 
 ###############################################################################
 # Pi AI tooling
+#
+# Install only the pi CLI at image build time. Pi packages/plugins are installed
+# at container startup by docker_entrypoint.sh, after /home/devuser/.pi is bind
+# mounted by devcontainer.json.
 ###############################################################################
-RUN set -eux; \
-    npm install -g @earendil-works/pi-coding-agent; \
-    pi install npm:pi-lmstudio || true; \
-    pi install npm:pi-simplify || true; \
-    pi install npm:pi-web-access || true; \
-    pi install npm:pi-rpiv-ask-user-question || true; \
-    pi install npm:pi-juicesharp/rpiv-todo || true; \
-    pi install npm:pi-subagents || true; \
-    pi install npm:@sinamtz/pi-minimax-provider || true
+RUN npm install -g @earendil-works/pi-coding-agent
