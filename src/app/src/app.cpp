@@ -3214,7 +3214,7 @@ void App::record_workspace_history_action(std::string_view label, std::string be
 
   const std::string action_label = label.empty() ? "Edit workspace" : std::string(label);
   const std::string debug_context = make_history_debug_context();
-  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+  history_.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
       action_label,
       debug_context,
       [this, snapshot = after_snapshot]() { apply_workspace_snapshot(snapshot); },
@@ -3250,7 +3250,7 @@ void App::record_preview_history_action(std::string_view label, std::string_view
   const std::string action_label = label.empty() ? "Edit preview widget" : std::string(label);
   const std::string debug_context = make_history_debug_context(target_note_path);
 
-  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+  history_.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
       action_label,
       debug_context,
       [this, target_note_path, after_text, after_preview_state]() {
@@ -3272,7 +3272,7 @@ void App::record_text_history_action(std::string_view label, const std::string &
   const std::string action_label = label.empty() ? "Edit text" : std::string(label);
   const std::string debug_context = make_history_debug_context(note_path);
 
-  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+  history_.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
       action_label,
       debug_context,
       [this, note_path, after_text, context_snapshot]() { apply_text_history_state(note_path, after_text, context_snapshot); },
@@ -3313,7 +3313,7 @@ void App::flush_pending_text_history()
 
   const std::string action_label = pending.label.empty() ? "Edit text" : pending.label;
   const std::string debug_context = make_history_debug_context(pending.note_path);
-  history_.push_executed(std::make_unique<UndoRedo::LambdaCommand>(
+  history_.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
       action_label,
       debug_context,
       [this, note_path = pending.note_path, after_text = pending.after_text, context = pending.context_snapshot]() {
@@ -3455,8 +3455,8 @@ void App::render_debug_history_window() const
   ImGuiViewport *viewport = ImGui::GetMainViewport();
   if(viewport == nullptr) return;
 
-  const std::vector<UndoRedo::DebugEntry> undo_entries = history_.debug_undo_entries();
-  const std::vector<UndoRedo::DebugEntry> redo_entries = history_.debug_redo_entries();
+  const std::vector<NoteHistory::DebugEntry> undo_entries = history_.debug_undo_entries();
+  const std::vector<NoteHistory::DebugEntry> redo_entries = history_.debug_redo_entries();
 
   ImGui::SetNextWindowViewport(viewport->ID);
   ImGui::SetNextWindowPos(
@@ -3507,7 +3507,7 @@ void App::render_debug_history_window() const
   ImGui::SameLine();
   ImGui::Text("Redo: %d", (int)redo_entries.size());
 
-  auto render_entries = [](const char *title, const std::vector<UndoRedo::DebugEntry> &entries, ImVec4 accent) {
+  auto render_entries = [](const char *title, const std::vector<NoteHistory::DebugEntry> &entries, ImVec4 accent) {
     ImGui::SeparatorText(title);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.08f, 0.09f, 0.11f, 0.45f));
     if(ImGui::BeginChild(title, ImVec2(0.0f, 145.0f), true, ImGuiWindowFlags_AlwaysVerticalScrollbar))
@@ -3520,7 +3520,7 @@ void App::render_debug_history_window() const
       {
         for(size_t i = 0; i < entries.size(); ++i)
         {
-          const UndoRedo::DebugEntry &entry = entries[i];
+          const NoteHistory::DebugEntry &entry = entries[i];
           if(i == 0)
           {
             ImGui::PushStyleColor(ImGuiCol_Text, accent);

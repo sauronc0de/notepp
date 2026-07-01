@@ -1,4 +1,4 @@
-#include "undo_redo.hpp"
+#include "note_history.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -17,20 +17,20 @@ void expect_true(bool condition, std::string_view message)
   std::cerr << "FAIL: " << message << '\n';
 }
 
-std::unique_ptr<UndoRedo::Command> make_command(
+std::unique_ptr<NoteHistory::Command> make_command(
     std::string_view label,
     int &value,
     int execute_delta,
     int undo_delta)
 {
-  return std::make_unique<UndoRedo::LambdaCommand>(
+  return std::make_unique<NoteHistory::LambdaCommand>(
       std::string(label),
       std::string("debug-") + std::string(label),
       [&value, execute_delta]() { value += execute_delta; },
       [&value, undo_delta]() { value += undo_delta; });
 }
 
-void push_executed_command(UndoRedo::HistoryManager &history,
+void push_executed_command(NoteHistory::HistoryManager &history,
                            std::string_view label,
                            int &value,
                            int execute_delta,
@@ -42,7 +42,7 @@ void push_executed_command(UndoRedo::HistoryManager &history,
 
 void test_empty_history()
 {
-  UndoRedo::HistoryManager history;
+  NoteHistory::HistoryManager history;
 
   expect_true(!history.can_undo(), "new history cannot undo");
   expect_true(!history.can_redo(), "new history cannot redo");
@@ -54,7 +54,7 @@ void test_empty_history()
 
 void test_undo_redo_round_trip()
 {
-  UndoRedo::HistoryManager history;
+  NoteHistory::HistoryManager history;
   int value = 0;
 
   push_executed_command(history, "increment", value, 5, -5);
@@ -76,7 +76,7 @@ void test_undo_redo_round_trip()
 
 void test_new_command_clears_redo_stack()
 {
-  UndoRedo::HistoryManager history;
+  NoteHistory::HistoryManager history;
   int value = 0;
 
   push_executed_command(history, "first", value, 1, -1);
@@ -90,7 +90,7 @@ void test_new_command_clears_redo_stack()
 
 void test_stack_limit_keeps_latest_commands()
 {
-  UndoRedo::HistoryManager history(2);
+  NoteHistory::HistoryManager history(2);
   int value = 0;
 
   push_executed_command(history, "one", value, 1, -1);
@@ -105,7 +105,7 @@ void test_stack_limit_keeps_latest_commands()
 
 void test_clear_resets_stacks()
 {
-  UndoRedo::HistoryManager history;
+  NoteHistory::HistoryManager history;
   int value = 0;
 
   push_executed_command(history, "command", value, 1, -1);

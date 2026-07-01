@@ -1,7 +1,7 @@
 #pragma once
 
 #include "emoji_picker.hpp"
-#include "undo_redo.hpp"
+#include "note_history.hpp"
 
 #include <imgui.h>
 
@@ -271,7 +271,7 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
-  UndoRedo::HistoryManager history_;
+  NoteHistory::HistoryManager history_;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;
 
   struct PendingTextHistory

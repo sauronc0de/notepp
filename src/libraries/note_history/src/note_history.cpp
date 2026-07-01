@@ -1,8 +1,8 @@
-#include "undo_redo.hpp"
+#include "note_history.hpp"
 
 #include <utility>
 
-namespace UndoRedo
+namespace NoteHistory
 {
 LambdaCommand::LambdaCommand(std::string label, std::string debug_context, Fn execute, Fn undo)
     : label_(std::move(label)),
@@ -126,4 +126,4 @@ void HistoryManager::trim_if_needed(std::vector<std::unique_ptr<Command>> &stack
   if(stack.size() < limit_) return;
   stack.erase(stack.begin());
 }
-} // namespace UndoRedo
+} // namespace NoteHistory

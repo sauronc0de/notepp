@@ -1,4 +1,4 @@
-add_library(note_history STATIC src/undo_redo.cpp)
+add_library(note_history STATIC src/note_history.cpp)
 target_include_directories(note_history PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 
 if(ENABLE_TEST)
