@@ -639,8 +639,14 @@ Tasks:
     ```
   - Notes: `src/diagrams/er_parser.cpp` and `src/diagrams/er_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Parser uses an internal `LineCursor` with line trimming to match original behavior.
 
-- `[ ]` Split journey diagram parser and renderer.
-  - Tested: no
+- `[x]` Split journey diagram parser and renderer.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `src/diagrams/journey_parser.cpp` and `src/diagrams/journey_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. Two parser tests (valid + missing header) added.
 
 - `[ ]` Split gantt diagram parser and renderer.
   - Tested: no

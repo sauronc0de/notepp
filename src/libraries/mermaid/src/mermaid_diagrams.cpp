@@ -316,79 +316,9 @@ static ImVec2 circ_edge(ImVec2 cen, float r, ImVec2 other)
 // ═══════════════════════════════════════════════════════════════════════════
 // ER DIAGRAM         (see src/diagrams/er_parser.cpp    / er_renderer.cpp)
 // ═══════════════════════════════════════════════════════════════════════════
-
+// USER JOURNEY       (see src/diagrams/journey_parser.cpp / journey_renderer.cpp)
 // ═══════════════════════════════════════════════════════════════════════════
-// USER JOURNEY
-// ═══════════════════════════════════════════════════════════════════════════
-bool parse_journey(std::string_view src, JourneyDiagram &out)
-{
-  out=JourneyDiagram{}; Lines L{src}; std::string_view line; bool header=false;
-  while(L.next(line)){
-    std::string ll=lc(line);
-    if(!header){if(sw(ll,"journey")){header=true;continue;} continue;}
-    if(sw(ll,"title "))  { out.title=std::string(tr(line.substr(6)));continue;}
-    if(sw(ll,"section ")){ out.sections.push_back({std::string(tr(line.substr(8))),{}});continue;}
-    // task line: "Task name: score: actor1, actor2"
-    size_t c1=line.find(':');
-    if(c1!=std::string_view::npos){
-      std::string name=std::string(tr(line.substr(0,c1)));
-      std::string_view rest2=tr(line.substr(c1+1));
-      size_t c2=rest2.find(':');
-      int score=3;
-      std::vector<std::string> actors;
-      if(c2!=std::string_view::npos){
-        score=std::atoi(std::string(tr(rest2.substr(0,c2))).c_str());
-        std::string_view ac=tr(rest2.substr(c2+1));
-        std::string acs=std::string(ac);
-        std::istringstream ss(acs); std::string tok;
-        while(std::getline(ss,tok,',')) actors.push_back(std::string(tr(tok)));
-      } else { score=std::atoi(std::string(rest2).c_str()); }
-      if(out.sections.empty()) out.sections.push_back({"",{}});
-      out.sections.back().tasks.push_back({name,score,actors});
-    }
-  }
-  return header;
-}
 
-void render_journey(const JourneyDiagram &d, int id)
-{
-  ImGui::PushID(id);
-  const float row_h=28.0f, label_w=120.0f, score_w=16.0f, gap=4.0f;
-  int total_tasks=0; for(auto &s:d.sections) total_tasks+=(int)s.tasks.size();
-  float cw=label_w+total_tasks*(score_w+gap)+gap+100;
-  float ch=(d.sections.size()+1)*row_h+40;
-  const ImVec2 orig=ImGui::GetCursorScreenPos();
-  ImGui::InvisibleButton("##jrn", nonzero_invisible_button_size(cw, ch));
-  ImDrawList *dl=ImGui::GetWindowDrawList();
-  const ImU32 tcol=ImGui::GetColorU32(ImGuiCol_Text);
-  if(!d.title.empty()){
-    ImVec2 ts=ImGui::CalcTextSize(d.title.c_str());
-    dl->AddText(ImVec2(orig.x+(cw-ts.x)*0.5f,orig.y+4),tcol,d.title.c_str());
-  }
-  float y=orig.y+30; float x0=orig.x+label_w;
-  int sec_idx=0;
-  for(auto &sec:d.sections){
-    float x=x0;
-    // section label
-    ImU32 sc=series_color(sec_idx++,0.7f);
-    dl->AddRectFilled(ImVec2(orig.x,y),ImVec2(orig.x+label_w-4,y+row_h),sc,3);
-    ImVec2 ls=ImGui::CalcTextSize(sec.name.c_str());
-    dl->AddText(ImVec2(orig.x+2,y+(row_h-ls.y)*0.5f),tcol,sec.name.c_str());
-    for(auto &t:sec.tasks){
-      float bar_h=t.score*4.0f;
-      float by=y+row_h-bar_h;
-      dl->AddRectFilled(ImVec2(x,by),ImVec2(x+score_w,y+row_h),sc,2);
-      ImVec2 ns=ImGui::CalcTextSize(t.name.c_str());
-      // name vertical
-      dl->AddText(ImVec2(x+(score_w-8)*0.5f,y+row_h+2),ImGui::GetColorU32(ImGuiCol_TextDisabled),std::to_string(t.score).c_str());
-      x+=score_w+gap;
-    }
-    y+=row_h;
-  }
-  ImGui::PopID();
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // GANTT
 // ═══════════════════════════════════════════════════════════════════════════
 bool parse_gantt(std::string_view src, GanttDiagram &out)
