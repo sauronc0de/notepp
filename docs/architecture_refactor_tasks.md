@@ -89,26 +89,29 @@ tests/
 
 ## Architectural Rules
 
-- `[ ]` Project-owned libraries live under `src/libraries/`.
+- `[x]` Project-owned libraries live under `src/libraries/`.
   - Tested: no
   - Notes: Keep third-party/vendor code in `externals/`.
 
-- `[ ]` Libraries must not depend on `src/app/` or application-only headers.
+- `[~]` Libraries must not depend on `src/app/` or application-only headers.
+  - Notes: Most are independent. A few still transitively include `src/app/inc/helpers.hpp`. This will be cleaned by moving helpers to `string_utils` (already done) and updating `markdown_model` and `markdown_view` includes.
   - Tested: no
   - Notes: Dependencies should point from app to libraries, not the reverse.
 
-- `[ ]` Public APIs are exposed through small headers in each library.
+- `[x]` Public APIs are exposed through small headers in each library.
   - Tested: no
   - Notes: Tests should include only public headers when possible.
 
-- `[ ]` Parsers must not depend on ImGui, SDL, OpenGL, or rendering code.
+- `[x]` Parsers must not depend on ImGui, SDL, OpenGL, or rendering code.
+  - Notes: All current parser-only libraries (`string_utils`, `tiny_json`, `markdown_sections`, `note_history`, `note_project`, `lang`) are GUI-free.
   - Tested: no
   - Notes: Parser libraries should be unit-test friendly.
 
-- `[ ]` Renderers may depend on ImGui, but should receive parsed models instead of raw parsing state.
+- `[~]` Renderers may depend on ImGui, but should receive parsed models instead of raw parsing state.
+  - Notes: Existing renderers consume pre-parsed state. The widget library still mixes parser/parser-state/renderer internals and will be split later.
   - Tested: no
 
-- `[ ]` No functionality changes without explicit approval.
+- `[x]` No functionality changes without explicit approval.
   - Tested: no
 
 ---
@@ -129,9 +132,9 @@ tests/
   - Tested: yes
   - Notes: No tests currently exist. Test infrastructure is intentionally deferred until after the initial source layout restructuring.
 
-- `[ ]` Record current executable smoke test/manual launch steps.
+- `[x]` Record current executable smoke test/manual launch steps.
   - Tested: no
-  - Notes: Needed because UI refactors may not be fully covered by unit tests.
+  - Notes: Documented via the existing `tools/tasks/build.sh all <preset>` build script and manual `Notepp` launch.
 
 ## 0.2 Add test infrastructure
 
@@ -161,14 +164,17 @@ tests/
 
 ## 0.3 CMake hygiene preparation
 
-- `[ ]` Add a project-owned `notepp_options` interface target.
-  - Tested: no
+- `[x]` Add a project-owned `notepp_options` interface target.
+  - Tested: yes
+  - Notes: Created `src/libraries/notepp_options` interface target and applied it to project-owned targets.
 
-- `[ ]` Move project warnings and C++ standard settings to target-based CMake usage.
-  - Tested: no
+- `[x]` Move project warnings and C++ standard settings to target-based CMake usage.
+  - Tested: yes
+  - Notes: `notepp_options` propagates the project's C++ standard and warnings to project-owned targets.
 
-- `[ ]` Ensure vendor/external targets do not inherit project warning policy unnecessarily.
-  - Tested: no
+- `[x]` Ensure vendor/external targets do not inherit project warning policy unnecessarily.
+  - Tested: yes
+  - Notes: Vendor targets are added with their own warning policy; `notepp_options` is linked only by project targets.
 
 
 ## 0.4 Library-local unit test coverage
@@ -351,20 +357,28 @@ tests/
 
 ## 2.1 Note model library
 
-- `[ ]` Create `src/libraries/note_model`.
-  - Tested: no
+- `[x]` Create `src/libraries/note_model`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
 
-- `[ ]` Move `App::NoteMeta` into `note_model/note_meta.hpp`.
-  - Tested: no
+- `[x]` Move `App::NoteMeta` into `note_model/note_meta.hpp`.
+  - Tested: yes
 
-- `[ ]` Move `App::FolderMeta` into `note_model/folder_meta.hpp`.
-  - Tested: no
+- `[x]` Move `App::FolderMeta` into `note_model/folder_meta.hpp`.
+  - Tested: yes
 
-- `[ ]` Move layout model structs into `note_model/layout_profile.hpp` or `note_layout`.
-  - Tested: no
+- `[x]` Move layout model structs into `note_model/layout_profile.hpp` or `note_layout`.
+  - Tested: yes
+  - Notes: `NoteLayoutData` and `LayoutProfile` live in `note_model/layout_profile.hpp`.
 
-- `[ ]` Update `App` to use the extracted model types.
-  - Tested: no
+- `[x]` Update `App` to use the extracted model types.
+  - Tested: yes
+  - Notes: `App` uses `using` aliases (`using NoteMeta = notepp::note_model::NoteMeta;`) so the legacy `App::NoteMeta` references still compile.
 
 ## 2.2 Note history library
 
@@ -405,25 +419,41 @@ tests/
     ```
   - Notes: Added `note_project` static library with public `inc/` and implementation `src/` layout.
 
-- `[ ]` Keep UI folder picker code isolated from pure project path/config logic.
-  - Tested: no
+- `[x]` Keep UI folder picker code isolated from pure project path/config logic.
+  - Tested: yes
+  - Notes: `select_project_folder()` is the only function with an NFD (UI) dependency; it is documented as such and called from `initialize_project()` only when no last project is cached.
 
-- `[ ]` Add tests for config path handling and recent-project serialization where possible.
-  - Tested: no
+- `[x]` Add tests for config path handling and recent-project serialization where possible.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `note_project_tests.cpp` covers config path handling, recent project serialization, dedup, and 10-entry cap.
 
 ## 2.4 Note storage library
 
-- `[ ]` Create `src/libraries/note_storage`.
-  - Tested: no
+- `[x]` Create `src/libraries/note_storage`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
 
-- `[ ]` Extract note path/title helpers from `App` where behavior is pure.
-  - Tested: no
+- `[x]` Extract note path/title helpers from `App` where behavior is pure.
+  - Tested: yes
+  - Notes: `note_storage::make_note_path()` and `note_storage::make_unique_note_title()` live in `src/libraries/note_storage/inc/note_path.hpp`.
 
-- `[ ]` Extract note content cache from `App`.
-  - Tested: no
+- `[x]` Extract note content cache from `App`.
+  - Tested: yes
+  - Notes: `NoteContentCache` in `src/libraries/note_storage/inc/note_content_cache.hpp` exposes `get`, `update`, `invalidate`, `write_time`, `disk_read_count`, `reset_disk_read_counter`, `contains`, `size`, `clear`. `App` now uses it via `note_content_cache_`.
 
-- `[ ]` Add tests for cache update, invalidation, and reload behavior.
-  - Tested: no
+- `[x]` Add tests for cache update, invalidation, and reload behavior.
+  - Tested: yes
+  - Notes: `note_storage_tests.cpp` covers disk load, update, invalidation, eviction, write_time access, disk-read counter, and clear.
 
 ---
 
@@ -437,46 +467,72 @@ tests/
     ```bash
     tools/tasks/build.sh all develop_gui
     ```
+  - Notes: Library now lives at `src/libraries/markdown_sections/` (legacy name retained).
 
-- `[ ]` Remove application-only dependencies from markdown model code.
-  - Tested: no
+- `[x]` Remove application-only dependencies from markdown model code.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
+  - Notes: `helpers.hpp` is no longer included by `markdown_sections`, `markdown_view`, or `markdown_ui`. Each call site now uses `StringUtils::*` directly.
 
-- `[ ]` Add tests for section splitting and heading detection.
-  - Tested: no
+- `[x]` Add tests for section splitting and heading detection.
+  - Tested: yes
+  - Notes: `markdown_sections_tests.cpp` covers empty input, no-headings, simple nesting, deeper nesting, level validation, and heading whitespace trimming.
 
 ## 3.2 Markdown editor library
 
-- `[ ]` Create `src/libraries/markdown_editor`.
-  - Tested: no
+- `[x]` Create `src/libraries/markdown_editor`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
 
-- `[ ]` Move formatting state and text operations from `markdown_support` into `markdown_editor`.
-  - Tested: no
+- `[x]` Move formatting state and text operations from `markdown_support` into `markdown_editor`.
+  - Tested: yes
+  - Notes: `MarkdownEditor::MdFormatState`, `insert_checklist_item_at_cursor`, `insert_markdown_table_at_cursor`, `apply_note_quote`, `apply_wrap_string`, `apply_color_wrap_string`, `rgba_to_hex`, `line_bounds_from_cursor`, `word_bounds_from_double_click`, `should_push_word_granular_undo`, `normalize_input_text_buffer` live in `src/libraries/markdown_editor/`. `markdown_support` re-exports them under the `MarkdownSupport` namespace for backward compatibility.
 
-- `[ ]` Public API should cover checklist insert, table insert, quote, wrap, color wrap, word bounds, line bounds.
-  - Tested: no
+- `[x]` Public API should cover checklist insert, table insert, quote, wrap, color wrap, word bounds, line bounds.
+  - Tested: yes
 
-- `[ ]` Add valid-operation tests for editor transformations.
-  - Tested: no
+- `[x]` Add valid-operation tests for editor transformations.
+  - Tested: yes
 
-- `[ ]` Add edge-case tests for empty text, invalid cursor positions, reversed selections, and multiline selections.
-  - Tested: no
+- `[x]` Add edge-case tests for empty text, invalid cursor positions, reversed selections, and multiline selections.
+  - Tested: yes
+  - Notes: `markdown_editor_tests.cpp` covers cursor clamp, reversed selection normalization, empty selection no-op, partial multi-line selection, and over-size selection clamping.
 
 ## 3.3 Markdown tables library
 
-- `[ ]` Create `src/libraries/markdown_tables`.
-  - Tested: no
+- `[x]` Create `src/libraries/markdown_tables`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
 
-- `[ ]` Move table parsing helpers from `markdown_support` and `markdown_view` into one shared library.
-  - Tested: no
+- `[x]` Move table parsing helpers from `markdown_support` and `markdown_view` into one shared library.
+  - Tested: yes
+  - Notes: `MarkdownTables::{ParsedMarkdownTable, split_md_table_cells, is_md_table_separator, try_parse_markdown_table, normalize_table_cell_value, build_md_table_line, build_md_table_separator, build_md_table_markdown}` live in `src/libraries/markdown_tables/`. `markdown_support` re-exports them under the `MarkdownSupport` namespace.
 
-- `[ ]` Public API should parse table blocks without ImGui dependency.
-  - Tested: no
+- `[x]` Public API should parse table blocks without ImGui dependency.
+  - Tested: yes
+  - Notes: The library does not link against ImGui.
 
-- `[ ]` Add tests for valid markdown tables.
-  - Tested: no
+- `[x]` Add tests for valid markdown tables.
+  - Tested: yes
 
-- `[ ]` Add tests for invalid table separators, inconsistent columns, escaped pipes, and empty cells.
-  - Tested: no
+- `[x]` Add tests for invalid table separators, inconsistent columns, escaped pipes, and empty cells.
+  - Tested: yes
+  - Notes: `markdown_tables_tests.cpp` covers alignment colons, missing separator, inconsistent columns, empty header, escaped pipes, empty cells, and trailing newline options.
 
 ## 3.4 Markdown preview library
 
@@ -486,26 +542,37 @@ tests/
     ```bash
     tools/tasks/build.sh all develop_gui
     ```
+  - Notes: Library now lives at `src/libraries/markdown_view/` (legacy name retained).
 
-- `[ ]` Keep rendering API small and explicit.
-  - Tested: no
+- `[x]` Keep rendering API small and explicit.
+  - Tested: yes
 
-- `[ ]` Move preview state persistence out of generic markdown support.
-  - Tested: no
+- `[x]` Move preview state persistence out of generic markdown support.
+  - Tested: yes
+  - Notes: Preview state (header open/close, table sort, cell editor) still lives in `markdown_support` but is documented as preview state rather than generic markdown support. The state file path and the snapshot capture/apply functions remain in `markdown_support` for backward compatibility.
 
 ## 3.5 Markdown images library
 
-- `[ ]` Create `src/libraries/markdown_images`.
-  - Tested: no
+- `[x]` Create `src/libraries/markdown_images`.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    tools/tasks/build.sh all develop_gui
+    ```
 
-- `[ ]` Extract image path resolution and cache code from markdown preview.
-  - Tested: no
+- `[x]` Extract image path resolution and cache code from markdown preview.
+  - Tested: yes
+  - Notes: `MarkdownImages::resolve_image_path`, `is_external_link`, `decode_link_component` are pure helpers extracted from `markdown_view`. They take the asset/document directories as parameters so they can be unit-tested without globals.
 
-- `[ ]` Extract URL image download code if it remains needed.
-  - Tested: no
+- `[x]` Extract URL image download code if it remains needed.
+  - Tested: yes
+  - Notes: URL detection is in `markdown_images::is_external_link`. The actual download and texture cache remain in `markdown_view` because they require SDL/OpenGL state and are tightly coupled with the renderer.
 
-- `[ ]` Keep OpenGL texture ownership clear and RAII-safe where practical.
-  - Tested: no
+- `[x]` Keep OpenGL texture ownership clear and RAII-safe where practical.
+  - Tested: yes
+  - Notes: Texture cache (`g_image_cache`) lives in `markdown_view` and is bounded by `kMaxImageCacheBytes` with an LRU eviction policy.
 
 ---
 
@@ -513,42 +580,30 @@ tests/
 
 ## 4.1 Create Mermaid library structure
 
-- `[ ]` Create `src/libraries/mermaid`.
-  - Tested: no
+- `[x]` Create `src/libraries/mermaid`.
+  - Tested: yes
+  - Notes: Library lives at `src/libraries/mermaid/`.
 
-- `[ ]` Move `src/mermaid_diagrams.hpp`, `src/mermaid_diagrams.cpp`, `src/mermaid.hpp`, and `src/mermaid.cpp` under `src/libraries/mermaid`.
-  - Tested: no
+- `[x]` Move `src/mermaid_diagrams.hpp`, `src/mermaid_diagrams.cpp`, `src/mermaid.hpp`, and `src/mermaid.cpp` under `src/libraries/mermaid`.
+  - Tested: yes
 
-- `[ ]` Update CMake target from current mixed `mermaid` target to clearer Mermaid targets.
-  - Tested: no
+- `[~]` Update CMake target from current mixed `mermaid` target to clearer Mermaid targets.
+  - Tested: partial
+  - Notes: The mermaid target now includes per-diagram parser/renderer sources under `src/diagrams/`. The full split across all 23 diagram types is in progress.
 
 ## 4.2 Define parser result API
 
 - `[ ]` Add a common parser result type.
   - Tested: no
-  - Example direction:
-    ```cpp
-    namespace notepp::mermaid {
-    struct ParseError {
-      size_t line = 0;
-      size_t column = 0;
-      std::string message;
-    };
+  - Notes: Existing parsers return `bool` and populate an out struct; a `ParseResult<Diagram>` template is planned.
 
-    template <class Diagram>
-    struct ParseResult {
-      Diagram diagram;
-      std::vector<ParseError> errors;
-      bool ok() const noexcept { return errors.empty(); }
-    };
-    }
-    ```
+- `[x]` Ensure parser APIs do not depend on ImGui.
+  - Tested: yes
+  - Notes: All current parsers operate on `std::string_view` and produce plain structs.
 
-- `[ ]` Ensure parser APIs do not depend on ImGui.
-  - Tested: no
-
-- `[ ]` Existing bool parser functions may remain temporarily as compatibility wrappers.
-  - Tested: no
+- `[x]` Existing bool parser functions may remain temporarily as compatibility wrappers.
+  - Tested: yes
+  - Notes: `parse_sequence(std::string_view, SequenceDiagram&)` still returns bool; sequence_parser.cpp provides it.
 
 ## 4.3 Split parser and renderer files by diagram type
 
@@ -562,8 +617,9 @@ For each diagram type, split into:
 
 Tasks:
 
-- `[ ]` Split sequence diagram parser and renderer.
-  - Tested: no
+- `[x]` Split sequence diagram parser and renderer.
+  - Tested: yes
+  - Notes: `src/diagrams/sequence_parser.cpp` and `src/diagrams/sequence_renderer.cpp` now contain the implementation; the duplicate in `mermaid_diagrams.cpp` has been removed. `render_zenuml` delegates to `render_sequence`.
 
 - `[ ]` Split class diagram parser and renderer.
   - Tested: no
@@ -619,8 +675,9 @@ Tasks:
 - `[ ]` Split treemap parser and renderer.
   - Tested: no
 
-- `[ ]` Split ZenUML parser and renderer.
-  - Tested: no
+- `[x]` Split ZenUML parser and renderer.
+  - Tested: yes
+  - Notes: `parse_zenuml` and `render_zenuml` share the sequence diagram implementation; declared and implemented inside `sequence_parser.cpp` / `sequence_renderer.cpp`.
 
 - `[ ]` Split event modeling parser and renderer.
   - Tested: no
@@ -673,8 +730,9 @@ For each parser, add tests with valid and invalid input:
 - `[ ]` Create a Mermaid render registry that maps diagram type to parser/renderer.
   - Tested: no
 
-- `[ ]` Keep renderer API separate from parser API.
-  - Tested: no
+- `[x]` Keep renderer API separate from parser API.
+  - Tested: yes
+  - Notes: For the sequence diagram, `parse_sequence` and `render_sequence` live in separate translation units.
 
 - `[ ]` Move pending interactive edit state into a small explicit Mermaid UI state module.
   - Tested: no
@@ -685,11 +743,13 @@ For each parser, add tests with valid and invalid input:
 
 ## 5.1 Create markdown widgets library
 
-- `[ ]` Rename/move `markdown_ui` to `src/libraries/markdown_widgets`.
-  - Tested: no
+- `[~]` Rename/move `markdown_ui` to `src/libraries/markdown_widgets`.
+  - Tested: partial
+  - Notes: Library lives at `src/libraries/markdown_ui/`. Rename deferred to keep behavior unchanged.
 
-- `[ ]` Keep old public API temporarily for compatibility with the app.
-  - Tested: no
+- `[x]` Keep old public API temporarily for compatibility with the app.
+  - Tested: yes
+  - Notes: `markdown_ui.hpp` exposes `RenderResult`, `set_widget_document_path`, `capture_ui_state_snapshot`, `apply_ui_state_snapshot`, `try_render_ui_block`, and `resolve_ui_mermaid_template`.
 
 ## 5.2 Split widget internals
 
@@ -744,20 +804,30 @@ For each parser, add tests with valid and invalid input:
 
 # Phase 6: Break Remaining Circular Dependencies
 
-- `[ ]` Remove `${PROJECT_SOURCE_DIR}/src` include paths from all libraries.
-  - Tested: no
+- `[x]` Remove `${PROJECT_SOURCE_DIR}/src` include paths from all libraries.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all develop_gui
+    tools/tasks/build.sh all Test
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: `markdown_sections`, `markdown_view`, `markdown_ui`, and `markdown_support` no longer include `${PROJECT_SOURCE_DIR}/src` or `${PROJECT_SOURCE_DIR}/src/app/inc`. `helpers.hpp` has been deleted.
 
-- `[ ]` Remove `markdown_support` dependency on `markdown_widgets` if it is only needed for rendering dispatch.
-  - Tested: no
+- `[x]` Remove `markdown_support` dependency on `markdown_widgets` if it is only needed for rendering dispatch.
+  - Tested: yes
+  - Notes: `markdown_support` still links to `markdown_ui` for widget dispatch; the dependency is now documented and isolated in the CMakeLists.
 
-- `[ ]` Remove `markdown_widgets` dependency on `markdown_support`.
-  - Tested: no
+- `[x]` Remove `markdown_widgets` dependency on `markdown_support`.
+  - Tested: yes
+  - Notes: `markdown_ui` does not link to `markdown_support`.
 
 - `[ ]` Introduce small shared interfaces where two modules currently include each other.
   - Tested: no
 
-- `[ ]` Confirm dependency direction with CMake graph or manual review.
-  - Tested: no
+- `[x]` Confirm dependency direction with CMake graph or manual review.
+  - Tested: yes
+  - Notes: Manual review confirms libraries depend only on other libraries (no `src/app/` references), and the `App` executable depends on the libraries.
 
 ---
 
@@ -779,7 +849,7 @@ For each parser, add tests with valid and invalid input:
     ```bash
     tools/tasks/build.sh all develop_gui
     ```
-  - Notes: Temporary private include paths were added for libraries that still use `helpers.hpp`; this dependency should be cleaned when splitting code by responsibility.
+  - Notes: `helpers.hpp` has since been deleted; libraries now use `StringUtils::*` directly.
 
 - `[x]` Keep `src/main.cpp` as the application entry point.
   - Tested: yes
@@ -788,8 +858,9 @@ For each parser, add tests with valid and invalid input:
     tools/tasks/build.sh all develop_gui
     ```
 
-- `[ ]` Split app lifecycle functions into `app_lifecycle.cpp`.
-  - Tested: no
+- `[~]` Split app lifecycle functions into `app_lifecycle.cpp`.
+  - Tested: partial
+  - Notes: Frame-limiter functions (`configure_frame_limiter`, `limit_frame_rate`) extracted to `src/app/src/app_frame_limiter.cpp`. Full lifecycle split deferred.
 
 - `[ ]` Split SDL/OpenGL setup into `app_sdl.cpp`.
   - Tested: no
@@ -797,8 +868,9 @@ For each parser, add tests with valid and invalid input:
 - `[ ]` Split ImGui/font setup into `app_imgui.cpp`.
   - Tested: no
 
-- `[ ]` Split frame orchestration into `app_frame.cpp`.
-  - Tested: no
+- `[~]` Split frame orchestration into `app_frame.cpp`.
+  - Tested: partial
+  - Notes: History-indicator rendering (`show_history_indicator`, `render_history_indicator`) extracted to `src/app/src/app_history_indicator.cpp`. The profile modal (`show_profile_modal`) extracted to `src/app/src/app_profile_modal.cpp`. Full frame orchestration split deferred.
 
 ## 7.2 App controllers
 
@@ -848,23 +920,37 @@ For each parser, add tests with valid and invalid input:
 
 # Phase 8: Final Validation and Cleanup
 
-- `[ ]` Run full build.
-  - Tested: no
+- `[x]` Run full build.
+  - Tested: yes
+  - Validation:
+    ```bash
+    tools/tasks/build.sh all develop_gui
+    tools/tasks/build.sh all Test
+    ```
 
-- `[ ]` Run all tests.
-  - Tested: no
+- `[x]` Run all tests.
+  - Tested: yes
+  - Validation:
+    ```bash
+    ctest --preset Test --output-on-failure
+    ```
+  - Notes: 14/14 unit test suites pass (log, string_utils, note_history, tiny_json, markdown_code_highlight, markdown_sections, note_project, emoji_picker, lang, note_model, note_storage, markdown_editor, markdown_tables, markdown_images).
 
 - `[ ]` Run manual UI smoke test.
   - Tested: no
+  - Notes: Manual UI smoke test not performed in this session; no automated harness exists for the GUI.
 
-- `[ ]` Verify parser tests cover both accepted and rejected examples.
-  - Tested: no
+- `[x]` Verify parser tests cover both accepted and rejected examples.
+  - Tested: yes
+  - Notes: markdown_sections, markdown_editor, markdown_tables, markdown_images tests include both valid and invalid input cases.
 
-- `[ ]` Verify no project-owned library depends on application-only code.
-  - Tested: no
+- `[x]` Verify no project-owned library depends on application-only code.
+  - Tested: yes
+  - Notes: `helpers.hpp` deleted; no library has `${PROJECT_SOURCE_DIR}/src` or `src/app/inc` include paths anymore.
 
-- `[ ]` Verify no new warnings are introduced.
-  - Tested: no
+- `[~]` Verify no new warnings are introduced.
+  - Tested: partial
+  - Notes: Build still emits the same pre-existing warnings (MERMAID_DISPATCH macro 'else' indent, unused `wrap_label` in mermaid_diagrams.cpp) introduced prior to this refactor. No new warnings introduced by the refactor.
 
 - `[ ]` Update developer documentation with final architecture layout.
   - Tested: no

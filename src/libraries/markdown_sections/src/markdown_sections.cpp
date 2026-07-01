@@ -1,17 +1,17 @@
 #include "markdown_sections.hpp"
 
-#include "helpers.hpp"
+#include "string_utils.hpp"
 
 bool parse_heading_line(std::string_view line, int &level_out, std::string_view &title_out)
 {
-  line = ltrim(line);
+  line = StringUtils::ltrim(line);
   int level = 0;
   while(level < 6 && level < (int)line.size() && line[(size_t)level] == '#') level++;
   if(level == 0) return false;
 
   if((size_t)level >= line.size() || line[(size_t)level] != ' ') return false;
 
-  std::string_view title = trim(line.substr((size_t)level + 1));
+  std::string_view title = StringUtils::trim(line.substr((size_t)level + 1));
   if(title.empty()) title = "(untitled)";
 
   level_out = level;

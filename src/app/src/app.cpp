@@ -4,7 +4,6 @@
 #endif
 #include "demo_note_content.hpp"
 #include "lang.hpp"
-#include "helpers.hpp"
 #if USE_PORTABLE_PATHS
 #include "note_project.hpp"
 #endif
@@ -1135,55 +1134,6 @@ void App::init_sdl_gl()
 #endif
 }
 
-void App::configure_frame_limiter(bool software_gl)
-{
-  // Always cap rendering. VSync is not reliable in software/virtualized GL, and may be
-  // disabled by drivers or user settings, so keep an explicit application-side limit.
-  const int default_fps = software_gl ? 12 : 60;
-  int configured_fps = default_fps;
-
-  if(const char *env = std::getenv("NOTEPP_MAX_FPS"))
-  {
-    char *end = nullptr;
-    const long parsed = std::strtol(env, &end, 10);
-    if(end != env && parsed > 0)
-      configured_fps = static_cast<int>(std::min<long>(parsed, 240));
-  }
-
-  max_fps_ = std::max(1, configured_fps);
-  min_frame_ticks_ = SDL_GetPerformanceFrequency() / static_cast<unsigned long long>(max_fps_);
-  last_frame_ticks_ = 0;
-}
-
-void App::limit_frame_rate()
-{
-  if(min_frame_ticks_ == 0)
-    configure_frame_limiter(false);
-
-  const unsigned long long now = SDL_GetPerformanceCounter();
-  if(last_frame_ticks_ != 0)
-  {
-    const unsigned long long target = last_frame_ticks_ + min_frame_ticks_;
-    if(now < target)
-    {
-      const unsigned long long freq = SDL_GetPerformanceFrequency();
-      unsigned long long remaining = target - now;
-      while(remaining > 0)
-      {
-        const unsigned long long ms = (remaining * 1000ULL) / freq;
-        if(ms > 1)
-          SDL_Delay(static_cast<Uint32>(ms - 1));
-        else
-          SDL_Delay(1);
-
-        const unsigned long long after_sleep = SDL_GetPerformanceCounter();
-        if(after_sleep >= target) break;
-        remaining = target - after_sleep;
-      }
-    }
-  }
-  last_frame_ticks_ = SDL_GetPerformanceCounter();
-}
 
 void App::init_imgui()
 {
@@ -2035,262 +1985,6 @@ void App::do_window_profile_switch()
   }
 }
 
-void App::show_profile_modal()
-{
-  auto &m = profile_modal_;
-  if(!m.open) return;
-
-  // Centre the modal on first use
-  const ImGuiIO &io = ImGui::GetIO();
-  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-                          ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
-
-  const char *modal_title = m.copy_mode ? "Copy Profile###profile_modal"
-                          : (m.edit_idx >= 0 ? "Edit Profile###profile_modal"
-                                             : "New Profile###profile_modal");
-  ImGui::OpenPopup("###profile_modal");
-
-  ImGui::PushStyleColor(ImGuiCol_PopupBg,       ImVec4(0.10f, 0.12f, 0.17f, 0.98f));
-  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0.00f, 0.00f, 0.00f, 0.55f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 16.0f));
-
-  if(ImGui::BeginPopupModal(modal_title, nullptr,
-       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize))
-  {
-    // On first frame, initialise draft state
-    if(m.first_frame)
-    {
-      m.first_frame = false;
-      if(m.edit_idx >= 0 && m.edit_idx < (int)layout_profiles_.size())
-      {
-        const auto &src = layout_profiles_[(size_t)m.edit_idx];
-        std::strncpy(m.name_buf, src.name.c_str(), sizeof(m.name_buf) - 1);
-        if(m.copy_mode)
-        {
-          std::string copy_name = std::string(src.name) + " (copy)";
-          std::strncpy(m.name_buf, copy_name.c_str(), sizeof(m.name_buf) - 1);
-        }
-        m.maximized = src.window_maximized;
-        m.pos_x = src.window_x;
-        m.pos_y = src.window_y;
-        m.size_w = src.window_w;
-        m.size_h = src.window_h;
-      }
-      else
-      {
-        std::strncpy(m.name_buf, "Profile", sizeof(m.name_buf) - 1);
-        m.maximized = false;
-        m.pos_x = 100; m.pos_y = 100;
-        m.size_w = 1100; m.size_h = 700;
-      }
-      m.dragging_win = false;
-      m.resizing_win = false;
-    }
-
-    // ---- Name ----
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
-    ImGui::TextUnformatted(Lang::t("Profile name:"));
-    ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##pm_name", m.name_buf, sizeof(m.name_buf));
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // ---- Maximized checkbox ----
-    ImGui::Checkbox(Lang::t("Maximized"), &m.maximized);
-
-    ImGui::Spacing();
-
-    // ---- Visual window picker (only when not maximized) ----
-    if(!m.maximized)
-    {
-      // Compute canvas and scale
-      SDL_Rect disp = {0, 0, 1920, 1080};
-      SDL_GetDisplayBounds(0, &disp);
-      const float canvas_w = ImGui::GetContentRegionAvail().x;
-      const float canvas_h = canvas_w * (float)disp.h / (float)disp.w;
-      const float scale = canvas_w / (float)disp.w;
-
-      const ImVec2 canvas_tl = ImGui::GetCursorScreenPos();
-      const ImVec2 canvas_br(canvas_tl.x + canvas_w, canvas_tl.y + canvas_h);
-
-      // Canvas background = monitor
-      ImDrawList *dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(canvas_tl, canvas_br, IM_COL32(12, 14, 20, 255), 6.0f);
-      dl->AddRect(canvas_tl, canvas_br, IM_COL32(50, 70, 110, 200), 6.0f, 0, 1.5f);
-
-      // Clamp draft window position so it fits in monitor
-      m.pos_x = std::max(0, std::min(m.pos_x, disp.w - m.size_w));
-      m.pos_y = std::max(0, std::min(m.pos_y, disp.h - m.size_h));
-      m.size_w = std::max(320, std::min(m.size_w, disp.w));
-      m.size_h = std::max(200, std::min(m.size_h, disp.h));
-
-      // Window rect in canvas space
-      const float wx0 = canvas_tl.x + m.pos_x * scale;
-      const float wy0 = canvas_tl.y + m.pos_y * scale;
-      const float wx1 = wx0 + m.size_w * scale;
-      const float wy1 = wy0 + m.size_h * scale;
-      const ImVec2 wpos(wx0, wy0), wsize(wx1, wy1);
-
-      // Draw window: body gradient-like fill
-      dl->AddRectFilled(wpos, wsize, IM_COL32(22, 50, 100, 210), 3.0f);
-      // Title bar stripe
-      const float tb_h = std::max(4.0f, 20.0f * scale);
-      dl->AddRectFilled(wpos, ImVec2(wx1, wy0 + tb_h), IM_COL32(60, 120, 230, 230), 3.0f,
-                        ImDrawFlags_RoundCornersTop);
-      // Border
-      dl->AddRect(wpos, wsize, IM_COL32(80, 150, 255, 200), 3.0f, 0, 1.2f);
-      // Resize handle (bottom-right triangle)
-      dl->AddTriangleFilled(ImVec2(wx1, wy1 - 10.0f), ImVec2(wx1 - 10.0f, wy1),
-                            ImVec2(wx1, wy1), IM_COL32(100, 170, 255, 180));
-
-      // Invisible button covering canvas for drag/resize interaction
-      ImGui::SetCursorScreenPos(canvas_tl);
-      ImGui::InvisibleButton("##pm_canvas", nonzero_invisible_button_size(canvas_w, canvas_h));
-      const bool canvas_active = ImGui::IsItemActive();
-      const bool canvas_hovered = ImGui::IsItemHovered();
-      const ImVec2 mouse = ImGui::GetIO().MousePos;
-
-      // Determine hover zones (in canvas coords)
-      const bool over_win = (mouse.x >= wx0 && mouse.x < wx1 &&
-                             mouse.y >= wy0 && mouse.y < wy1);
-      const bool over_resize = (mouse.x >= wx1 - 14.0f && mouse.y >= wy1 - 14.0f &&
-                                mouse.x < wx1 && mouse.y < wy1);
-
-      if(canvas_active)
-      {
-        if(!m.dragging_win && !m.resizing_win)
-        {
-          // Start drag or resize
-          if(over_resize)
-            m.resizing_win = true;
-          else if(over_win)
-          {
-            m.dragging_win = true;
-            m.drag_offset_x = (int)((mouse.x - canvas_tl.x) / scale) - m.pos_x;
-            m.drag_offset_y = (int)((mouse.y - canvas_tl.y) / scale) - m.pos_y;
-          }
-        }
-        const ImVec2 delta = ImGui::GetIO().MouseDelta;
-        if(m.dragging_win)
-        {
-          m.pos_x = (int)((mouse.x - canvas_tl.x) / scale) - m.drag_offset_x;
-          m.pos_y = (int)((mouse.y - canvas_tl.y) / scale) - m.drag_offset_y;
-        }
-        else if(m.resizing_win)
-        {
-          m.size_w = std::max(320, m.size_w + (int)(delta.x / scale));
-          m.size_h = std::max(200, m.size_h + (int)(delta.y / scale));
-        }
-      }
-      else
-      {
-        m.dragging_win = false;
-        m.resizing_win = false;
-      }
-
-      // Cursor hint
-      if(canvas_hovered && over_resize)
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNWSE);
-      else if(canvas_hovered && over_win)
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-
-      ImGui::Spacing();
-
-      // Numeric inputs
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.7f, 0.9f, 1.0f));
-      ImGui::TextUnformatted(Lang::t("Position"));
-      ImGui::PopStyleColor();
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("X##pm_x", &m.pos_x, 0);
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("Y##pm_y", &m.pos_y, 0);
-
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.7f, 0.9f, 1.0f));
-      ImGui::TextUnformatted(Lang::t("Size"));
-      ImGui::PopStyleColor();
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("W##pm_w", &m.size_w, 0);
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(70.0f); ImGui::InputInt("H##pm_h", &m.size_h, 0);
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // ---- Buttons ----
-    const float btn_w = 110.0f;
-    ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - btn_w * 2.0f - ImGui::GetStyle().ItemSpacing.x + ImGui::GetStyle().WindowPadding.x);
-
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.16f, 0.22f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.22f, 0.30f, 1.0f));
-    if(ImGui::Button(Lang::t("Cancel"), ImVec2(btn_w, 0)))
-    {
-      ImGui::CloseCurrentPopup();
-      m.open = false;
-    }
-    ImGui::PopStyleColor(2);
-
-    ImGui::SameLine();
-
-    const bool name_ok = m.name_buf[0] != '\0';
-    ImGui::BeginDisabled(!name_ok);
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.45f, 0.90f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.55f, 1.00f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.35f, 0.80f, 1.0f));
-    const char *ok_label = (m.edit_idx >= 0 && !m.copy_mode) ? Lang::t("Save Profile") : Lang::t("Create Profile");
-    if(ImGui::Button(ok_label, ImVec2(btn_w, 0)))
-    {
-      const std::string pname(m.name_buf);
-      if(m.edit_idx >= 0 && !m.copy_mode)
-      {
-        // Edit existing
-        push_profile_snapshot();
-        auto &ep = layout_profiles_[(size_t)m.edit_idx];
-        ep.name = pname;
-        const bool was_maximized = ep.window_maximized;
-        ep.window_maximized = m.maximized;
-        ep.window_x = m.pos_x; ep.window_y = m.pos_y;
-        ep.window_w = m.size_w; ep.window_h = m.size_h;
-        if(ep.id == active_profile_id_)
-        {
-          // Re-apply window change if editing the active profile
-          apply_profile(ep, true);
-          window_profile_check_pending_ = false;
-          window_profile_check_delay_ = 20;
-        }
-        (void)was_maximized;
-        save_profiles();
-        save_index();
-      }
-      else
-      {
-        // Create or copy
-        create_profile(pname, m.maximized, m.pos_x, m.pos_y, m.size_w, m.size_h);
-      }
-      ImGui::CloseCurrentPopup();
-      m.open = false;
-    }
-    ImGui::PopStyleColor(3);
-    ImGui::EndDisabled();
-
-    ImGui::EndPopup();
-  }
-  else
-  {
-    // Popup was closed externally (e.g., Escape)
-    m.open = false;
-  }
-
-  ImGui::PopStyleVar(2);
-  ImGui::PopStyleColor(2);
-}
-
 std::string App::make_note_path(const std::string &folder_name, const std::string &note_title) const
 {
   std::string f;
@@ -2564,19 +2258,19 @@ bool App::sync_project_files()
       for(const auto &n : f.notes)
       {
         if(n.path.empty()) continue;
-        auto it = note_content_cache_.find(n.path);
-        const auto write_time = fs::last_write_time(n.path, ec);
-        if(ec)
-        {
-          ec.clear();
+        std::error_code write_ec;
+        const auto write_time = fs::last_write_time(n.path, write_ec);
+        if(write_ec)
           continue;
-        }
-        if(it != note_content_cache_.end() && it->second.valid && it->second.last_write_time != write_time)
+        auto cached = note_content_cache_.write_time(n.path);
+        if(!cached.first)
+          continue;
+        if(cached.second != write_time)
         {
-          invalidate_note_cache(n.path);
+          note_content_cache_.invalidate(n.path);
           changed = true;
           if(n.path == state_file_path_)
-            markdown_text_ = cached_note_text(n.path);
+            markdown_text_ = note_content_cache_.get(n.path);
         }
       }
     }
@@ -2592,61 +2286,25 @@ bool App::sync_project_files()
 
 const std::string &App::cached_note_text(const std::string &path)
 {
-  static constexpr std::size_t kMaxNoteContentCacheEntries = 512;
-  auto &entry = note_content_cache_[path];
-  entry.last_used = ++note_content_cache_clock_;
-  std::error_code ec;
-  const auto write_time = std::filesystem::last_write_time(path, ec);
-  if(!entry.valid || (!ec && entry.last_write_time != write_time))
-  {
 #ifdef NOTEPP_DEBUG_UI
+  const auto before = note_content_cache_.disk_read_count();
+  const auto &text = note_content_cache_.get(path);
+  if(note_content_cache_.disk_read_count() != before)
     ++g_dbg_disk_reads;
+  return text;
+#else
+  return note_content_cache_.get(path);
 #endif
-    std::ifstream in(path, std::ios::binary);
-    if(in)
-    {
-      entry.text.assign((std::istreambuf_iterator<char>(in)),
-                        std::istreambuf_iterator<char>());
-      entry.last_write_time = ec ? std::filesystem::file_time_type{} : write_time;
-    }
-    else
-    {
-      entry.text.clear();
-      entry.last_write_time = {};
-    }
-    entry.valid = true;
-  }
-  while(note_content_cache_.size() > kMaxNoteContentCacheEntries)
-  {
-    auto victim = note_content_cache_.end();
-    for(auto it = note_content_cache_.begin(); it != note_content_cache_.end(); ++it)
-    {
-      if(it->first == path) continue;
-      if(victim == note_content_cache_.end() || it->second.last_used < victim->second.last_used)
-        victim = it;
-    }
-    if(victim == note_content_cache_.end()) break;
-    note_content_cache_.erase(victim);
-  }
-  return note_content_cache_.at(path).text;
 }
 
 void App::update_note_cache(const std::string &path, std::string text)
 {
-  if(path.empty()) return;
-  auto &entry = note_content_cache_[path];
-  entry.text = std::move(text);
-  entry.last_used = ++note_content_cache_clock_;
-  std::error_code ec;
-  entry.last_write_time = std::filesystem::last_write_time(path, ec);
-  if(ec) entry.last_write_time = {};
-  entry.valid = true;
+  note_content_cache_.update(path, std::move(text));
 }
 
 void App::invalidate_note_cache(const std::string &path)
 {
-  auto it = note_content_cache_.find(path);
-  if(it != note_content_cache_.end()) it->second.valid = false;
+  note_content_cache_.invalidate(path);
 }
 
 void App::load_note_content_for_active()
@@ -3402,50 +3060,6 @@ std::string App::make_history_debug_context(std::string_view preferred_note_path
   return "Workspace";
 }
 
-void App::show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent)
-{
-  history_indicator_.text.assign(prefix.begin(), prefix.end());
-  if(!label.empty())
-  {
-    history_indicator_.text += ": ";
-    history_indicator_.text.append(label.begin(), label.end());
-  }
-  history_indicator_.accent = accent;
-  history_indicator_.until = ImGui::GetTime() + 1.15;
-}
-
-void App::render_history_indicator() const
-{
-  if(history_indicator_.text.empty()) return;
-
-  const double remaining = history_indicator_.until - ImGui::GetTime();
-  if(remaining <= 0.0) return;
-
-  ImGuiViewport *viewport = ImGui::GetMainViewport();
-  if(viewport == nullptr) return;
-
-  const float fade = clamp01f(static_cast<float>(remaining / 1.15));
-  const float alpha = 0.18f + 0.82f * fade;
-  const ImVec2 pad(10.0f, 7.0f);
-  const ImVec2 text_size = ImGui::CalcTextSize(history_indicator_.text.c_str());
-  const ImVec2 size(text_size.x + pad.x * 2.0f, text_size.y + pad.y * 2.0f);
-  const ImVec2 pos(
-      viewport->Pos.x + viewport->Size.x * 0.5f - size.x * 0.5f,
-      viewport->Pos.y + viewport->Size.y - size.y - 22.0f);
-  const ImVec2 max(pos.x + size.x, pos.y + size.y);
-
-  ImDrawList *fg = ImGui::GetForegroundDrawList(viewport);
-  const ImVec4 bg(0.08f, 0.09f, 0.11f, 0.86f * alpha);
-  const ImVec4 border = mix_color(ImVec4(0.42f, 0.45f, 0.50f, 1.0f), history_indicator_.accent, 0.55f);
-  const ImVec4 text = mix_color(ImVec4(0.92f, 0.93f, 0.95f, 1.0f), history_indicator_.accent, 0.18f);
-
-  fg->AddRectFilled(pos, max, ImGui::GetColorU32(bg), 8.0f);
-  fg->AddRect(pos, max, ImGui::GetColorU32(ImVec4(border.x, border.y, border.z, 0.62f * alpha)), 8.0f, 0, 1.0f);
-  fg->AddText(
-      ImVec2(pos.x + pad.x, pos.y + pad.y),
-      ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, 0.96f * alpha)),
-      history_indicator_.text.c_str());
-}
 
 void App::render_debug_history_window() const
 {
@@ -5083,7 +4697,7 @@ void App::frame_ui()
     g_copied_folder_entries.clear();
     for(const FolderMeta &f : folders_)
     {
-      if(!(f.name == root || starts_with(f.name, root + "/"))) continue;
+      if(!(f.name == root || StringUtils::starts_with(f.name, root + "/"))) continue;
       CopiedFolderEntry e;
       e.rel_path = f.name.substr(root.size()); // "" or "/child..."
       for(const NoteMeta &n : f.notes)
@@ -6130,7 +5744,7 @@ void App::frame_ui()
       for(int i = 0; i < (int)folders_.size(); ++i)
       {
         const std::string &fn = folders_[(size_t)i].name;
-        if(fn == prefix || starts_with(fn, prefix + "/")) to_remove.push_back(i);
+        if(fn == prefix || StringUtils::starts_with(fn, prefix + "/")) to_remove.push_back(i);
       }
       std::sort(to_remove.begin(), to_remove.end(), std::greater<int>());
       for(int idx : to_remove)
@@ -6339,7 +5953,7 @@ void App::frame_ui()
     {
       const std::string src_name = folders_[(size_t)src_fi].name;
       const std::string dst_name = folders_[(size_t)dst_fi].name;
-      if(!(dst_name == src_name || starts_with(dst_name, src_name + "/")))
+      if(!(dst_name == src_name || StringUtils::starts_with(dst_name, src_name + "/")))
       {
         auto base_name = [](const std::string &full) {
           const size_t p = full.rfind('/');
@@ -6364,7 +5978,7 @@ void App::frame_ui()
         for(int i = 0; i < (int)folders_.size(); ++i)
         {
           const std::string &fn = folders_[(size_t)i].name;
-          if(fn == src_name || starts_with(fn, src_name + "/")) affected.push_back(i);
+          if(fn == src_name || StringUtils::starts_with(fn, src_name + "/")) affected.push_back(i);
         }
 
         std::unordered_map<std::string, std::string> name_map;
@@ -6401,7 +6015,7 @@ void App::frame_ui()
         for(const auto &kv : g_folder_drawings)
         {
           const std::string &k = kv.first;
-          if(k == src_name || starts_with(k, src_name + "/"))
+          if(k == src_name || StringUtils::starts_with(k, src_name + "/"))
           {
             const std::string suffix_path = k.substr(src_name.size());
             drawings_to_reinsert.push_back({moved_root + suffix_path, kv.second});

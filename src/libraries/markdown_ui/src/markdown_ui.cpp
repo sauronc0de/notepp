@@ -1,6 +1,5 @@
 #include "markdown_ui.hpp"
 
-#include "helpers.hpp"
 #include "markdown_view.hpp"
 #include "string_utils.hpp"
 

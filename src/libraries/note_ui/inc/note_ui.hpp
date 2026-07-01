@@ -24,4 +24,6 @@ ImTextureID get_toolbar_icon_texture(std::string_view icon_name);
 // Returns the original pixel size of the icon, or {0,0} if not loaded.
 ImVec2 get_toolbar_icon_size(std::string_view icon_name);
 void clear_toolbar_icon_cache();
+void init_icon_shader();
+void destroy_icon_shader();
 } // namespace NoteUi

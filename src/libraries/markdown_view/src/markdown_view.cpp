@@ -1,5 +1,4 @@
 #include "markdown_view.hpp"
-#include "helpers.hpp"
 #include "markdown_code_highlight.hpp"
 #include "markdown_sections.hpp"
 #include "string_utils.hpp"
@@ -198,7 +197,7 @@ static std::filesystem::path resolve_image_path(std::string_view href)
   candidates.push_back(repo_root / p);
   candidates.push_back(asset_root / p);
 
-  if(starts_with(href, "assets/"))
+  if(StringUtils::starts_with(href, "assets/"))
   {
     std::filesystem::path rel = p.lexically_relative("assets");
     candidates.push_back(asset_root / rel);
@@ -215,7 +214,7 @@ static std::filesystem::path resolve_image_path(std::string_view href)
 
 static bool is_external_link(std::string_view href)
 {
-  return starts_with(href, "http://") || starts_with(href, "https://");
+  return StringUtils::starts_with(href, "http://") || StringUtils::starts_with(href, "https://");
 }
 
 static std::string decode_link_component(std::string_view s)
@@ -538,7 +537,7 @@ static bool request_internal_link_preview(std::string_view href)
 
 static bool url_is_downloadable(std::string_view url)
 {
-  if(!starts_with(url, "http://") && !starts_with(url, "https://")) return false;
+  if(!StringUtils::starts_with(url, "http://") && !StringUtils::starts_with(url, "https://")) return false;
   for(unsigned char c : url)
   {
     if(!std::isalnum(c) && !::strchr("-._~:/?#[]@!$&()*+,;=%", (char)c))
@@ -775,7 +774,7 @@ static void touch_texture_record(TextureRecord &rec)
 // Remove a single leading '>' (and one optional following space) from a line
 static std::string_view strip_quote_prefix(std::string_view line)
 {
-  line = ltrim(line);
+  line = StringUtils::ltrim(line);
   if(!line.empty() && line.front() == '>')
   {
     line.remove_prefix(1);
@@ -814,8 +813,8 @@ static std::vector<Chunk> split_note_blocks(std::string_view in)
     size_t line_start = i;
     std::string_view line = take_line(i);
 
-    std::string_view t = ltrim(line);
-    bool is_quote_line = starts_with(t, ">");
+    std::string_view t = StringUtils::ltrim(line);
+    bool is_quote_line = StringUtils::starts_with(t, ">");
 
     if(!is_quote_line)
     {
@@ -835,15 +834,15 @@ static std::vector<Chunk> split_note_blocks(std::string_view in)
     while(j < in.size())
     {
       std::string_view l = take_line(j);
-      const std::string_view tl = trim(l);
+      const std::string_view tl = StringUtils::trim(l);
       if(tl.empty())
       {
         // Blank line closes note mode.
         break;
       }
 
-      std::string_view content = ltrim(l);
-      if(starts_with(content, ">")) content = strip_quote_prefix(l);
+      std::string_view content = StringUtils::ltrim(l);
+      if(StringUtils::starts_with(content, ">")) content = strip_quote_prefix(l);
 
       quote_md.append(content.data(), content.size());
       quote_md.push_back('\n');
@@ -1760,7 +1759,7 @@ static void render_inline_md_with_color_spans(std::string_view text)
 static std::vector<std::string> split_md_table_cells(std::string_view line)
 {
   std::vector<std::string> cells;
-  std::string_view t = trim(line);
+  std::string_view t = StringUtils::trim(line);
   if(t.empty() || t.find('|') == std::string_view::npos) return cells;
 
   if(!t.empty() && t.front() == '|') t.remove_prefix(1);
@@ -1771,7 +1770,7 @@ static std::vector<std::string> split_md_table_cells(std::string_view line)
   {
     size_t sep = t.find('|', start);
     const size_t end = (sep == std::string_view::npos) ? t.size() : sep;
-    cells.emplace_back(trim(t.substr(start, end - start)));
+    cells.emplace_back(StringUtils::trim(t.substr(start, end - start)));
     if(sep == std::string_view::npos) break;
     start = sep + 1;
   }
@@ -1785,7 +1784,7 @@ static bool is_md_table_separator(std::string_view line, size_t expected_cols)
 
   for(const std::string &p : parts)
   {
-    std::string_view s = trim(p);
+    std::string_view s = StringUtils::trim(p);
     if(s.empty()) return false;
     if(s.front() == ':') s.remove_prefix(1);
     if(!s.empty() && s.back() == ':') s.remove_suffix(1);
@@ -1864,11 +1863,11 @@ static void render_markdown_block_with_tables(std::string_view text)
     const bool has_nl = (line_end != std::string_view::npos);
     if(!has_nl) line_end = text.size();
     std::string_view line = text.substr(pos, line_end - pos);
-    const std::string_view trimmed_line = trim(line);
+    const std::string_view trimmed_line = StringUtils::trim(line);
 
-    if(starts_with(trimmed_line, "```"))
+    if(StringUtils::starts_with(trimmed_line, "```"))
     {
-      const std::string fence_info = std::string(trim(trimmed_line.substr(3)));
+      const std::string fence_info = std::string(StringUtils::trim(trimmed_line.substr(3)));
       size_t scan = has_nl ? (line_end + 1) : text.size();
       size_t block_end = text.size();
       std::string code;
@@ -1881,7 +1880,7 @@ static void render_markdown_block_with_tables(std::string_view text)
         if(!code_has_nl) code_line_end = text.size();
 
         const std::string_view code_line = text.substr(scan, code_line_end - scan);
-        if(trim(code_line) == "```")
+        if(StringUtils::trim(code_line) == "```")
         {
           block_end = code_has_nl ? (code_line_end + 1) : code_line_end;
           closed = true;
@@ -2060,8 +2059,8 @@ void MarkdownView::render(std::string_view markdown)
           size_t e = c.text.find('\n', p);
           if(e == std::string::npos) e = c.text.size();
           std::string_view line(c.text.data() + p, e - p);
-          std::string_view t = ltrim(line);
-          if(starts_with(t, ">"))
+          std::string_view t = StringUtils::ltrim(line);
+          if(StringUtils::starts_with(t, ">"))
           {
             t.remove_prefix(1);
             if(!t.empty() && t.front() == ' ') t.remove_prefix(1);

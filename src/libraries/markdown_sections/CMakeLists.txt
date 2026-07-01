@@ -1,11 +1,5 @@
 add_library(markdown_sections STATIC src/markdown_sections.cpp)
-target_include_directories(markdown_sections
-  PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/inc
-  PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
-    ${PROJECT_SOURCE_DIR}/src/app/inc
-)
+target_include_directories(markdown_sections PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
 target_link_libraries(markdown_sections PUBLIC string_utils)
 
 if(ENABLE_TEST)

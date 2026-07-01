@@ -2,6 +2,8 @@
 
 #include "emoji_picker.hpp"
 #include "note_history.hpp"
+#include "note_model.hpp"
+#include "note_storage.hpp"
 
 #include <imgui.h>
 
@@ -84,26 +86,8 @@ private:
   void render_debug_history_window() const;
   void shutdown();
 
-  struct NoteLayoutData
-  {
-    float pos_x = 0.0f;
-    float pos_y = 0.0f;
-    float width = 520.0f;
-    float height = 260.0f;
-    bool hidden = false;
-    bool has_layout = false;
-    ImGuiID dock_id = 0;
-  };
-  struct LayoutProfile
-  {
-    std::string id;
-    std::string name;
-    bool window_maximized = true;
-    int window_x = 100, window_y = 100;
-    int window_w = 1100, window_h = 700;
-    bool pending_delete = false;
-    std::unordered_map<std::string, NoteLayoutData> note_layouts;
-  };
+  using NoteLayoutData = notepp::note_model::NoteLayoutData;
+  using LayoutProfile  = notepp::note_model::LayoutProfile;
   struct ProfileModalState
   {
     bool open = false;
@@ -160,15 +144,7 @@ private:
   int max_fps_ = 60;
   unsigned int file_watch_timer_ = 0;
   bool dirty_ = true;
-  struct NoteContentCacheEntry
-  {
-    std::string text;
-    std::filesystem::file_time_type last_write_time{};
-    unsigned long long last_used = 0;
-    bool valid = false;
-  };
-  std::unordered_map<std::string, NoteContentCacheEntry> note_content_cache_;
-  unsigned long long note_content_cache_clock_ = 0;
+  notepp::note_storage::NoteContentCache note_content_cache_;
   unsigned long long min_frame_ticks_ = 0;
   unsigned long long last_frame_ticks_ = 0;
 
@@ -212,37 +188,8 @@ private:
   bool search_jump_force_edit_ = false;
   std::string note_title_ = "Note";
   std::string state_file_path_;
-  struct NoteMeta
-  {
-    std::string id;
-    std::string title;
-    std::string path;
-    std::string font_path;
-    float font_size = 0.0f;
-    bool use_custom_color = false;
-    float color_r = 0.0f;
-    float color_g = 0.0f;
-    float color_b = 0.0f;
-    float pos_x = 0.0f;
-    float pos_y = 0.0f;
-    float width = 520.0f;
-    float height = 260.0f;
-    bool has_layout = false;
-    bool hidden = false;
-    bool always_on_top = false;
-    ImGuiID dock_id = 0;
-  };
-  struct FolderMeta
-  {
-    std::string name;
-    std::vector<NoteMeta> notes;
-    std::vector<std::string> images; // tracked image file paths (abs)
-    bool layout_locked = false;
-    bool detached_note_windows = false;
-    bool dockers_enabled = false;
-    bool drawings_visible = true;
-    bool grid_visible = false;
-  };
+  using NoteMeta   = notepp::note_model::NoteMeta;
+  using FolderMeta = notepp::note_model::FolderMeta;
   struct PendingDroppedFile
   {
     std::string path;

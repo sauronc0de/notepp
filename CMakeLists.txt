@@ -71,6 +71,9 @@ add_subdirectory(src)
 set(NOTEPP_SOURCES
   src/main.cpp
   src/app/src/app.cpp
+  src/app/src/app_frame_limiter.cpp
+  src/app/src/app_history_indicator.cpp
+  src/app/src/app_profile_modal.cpp
 )
 
 set(NOTEPP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
@@ -116,6 +119,8 @@ target_link_libraries(${PROJECT_NAME}
     note_history
     lang
     emoji_picker
+    note_model
+    note_storage
     markdown_view
     markdown_sections
     note_project
