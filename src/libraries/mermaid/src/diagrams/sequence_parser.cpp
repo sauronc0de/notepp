@@ -33,6 +33,14 @@ static std::string lower(std::string_view s)
   return out;
 }
 
+static std::string strip_quotes(std::string_view s)
+{
+  s = trim(s);
+  if(s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')))
+    return std::string(s.substr(1, s.size() - 2));
+  return std::string(s);
+}
+
 struct LineCursor
 {
   std::string_view src;
@@ -228,16 +236,16 @@ bool parse_zenuml(std::string_view src, SequenceDiagram &out)
   bool header = false;
   while(L.next(line))
   {
-    std::string ll = lc(line);
+    std::string ll = lower(line);
     if(!header)
     {
-      if(sw(ll, "zenuml")) { header = true; continue; }
+      if(starts_with(ll, "zenuml")) { header = true; continue; }
       continue;
     }
-    if(sw(ll, "title ")) { out.title = std::string(tr(line.substr(6))); continue; }
-    if(sw(ll, "@"))
+    if(starts_with(ll, "title ")) { out.title = std::string(trim(line.substr(6))); continue; }
+    if(starts_with(ll, "@"))
     {
-      std::string_view rest = tr(line.substr(1));
+      std::string_view rest = trim(line.substr(1));
       std::string name = std::string(rest.substr(0, rest.find(' ')));
       ensure_part(name);
       continue;
@@ -247,9 +255,9 @@ bool parse_zenuml(std::string_view src, SequenceDiagram &out)
     std::size_t p2 = line.find(')');
     if(dot != std::string_view::npos && p1 != std::string_view::npos && p1 > dot)
     {
-      std::string from = std::string(tr(line.substr(0, dot)));
-      std::string method = std::string(tr(line.substr(dot + 1, p1 - dot - 1)));
-      std::string to = (p2 != std::string_view::npos) ? strip_quotes(line.substr(p1 + 1, p2 - p1 - 1)) : from;
+      std::string from = std::string(trim(line.substr(0, dot)));
+      std::string method = std::string(trim(line.substr(dot + 1, p1 - dot - 1)));
+      std::string to = (p2 != std::string_view::npos) ? seqparser::strip_quotes(line.substr(p1 + 1, p2 - p1 - 1)) : from;
       if(to.empty()) to = from;
       ensure_part(from);
       ensure_part(to);
