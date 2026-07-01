@@ -99,8 +99,11 @@ MMD_TRAMPOLINES(parse_git, render_git, GitDiagram)
 MMD_TRAMPOLINES(parse_mindmap, render_mindmap, MindmapDiagram)
 MMD_TRAMPOLINES(parse_timeline, render_timeline, TimelineDiagram)
 MMD_TRAMPOLINES(parse_sankey, render_sankey, SankeyDiagram)
+MMD_TRAMPOLINES(parse_xychart, render_xychart, XYDiagram)
+MMD_TRAMPOLINES(parse_block, render_block, BlockDiagram)
+MMD_TRAMPOLINES(parse_packet, render_packet, PacketDiagram)
 
-constexpr std::array<StoredEntry, 14> kEntries = {{
+constexpr std::array<StoredEntry, 20> kEntries = {{
     {"sequencediagram",     "sequencediagram",     &parse_sequence_trampoline,     &render_sequence_trampoline},
     {"classdiagram",        "classdiagram",        &parse_class_trampoline,        &render_class_trampoline},
     {"statediagram",        "statediagram",        &parse_state_trampoline,        &render_state_trampoline},
@@ -115,6 +118,12 @@ constexpr std::array<StoredEntry, 14> kEntries = {{
     {"timeline",            "timeline",            &parse_timeline_trampoline,     &render_timeline_trampoline},
     {"sankey",              "sankey",              &parse_sankey_trampoline,       &render_sankey_trampoline},
     {"sankey",              "sankey-beta",         &parse_sankey_trampoline,       &render_sankey_trampoline},
+    {"xychart",             "xychart",             &parse_xychart_trampoline,      &render_xychart_trampoline},
+    {"xychart",             "xychart-beta",        &parse_xychart_trampoline,      &render_xychart_trampoline},
+    {"block",               "block",               &parse_block_trampoline,        &render_block_trampoline},
+    {"block",               "block-beta",          &parse_block_trampoline,        &render_block_trampoline},
+    {"packet",              "packet",              &parse_packet_trampoline,       &render_packet_trampoline},
+    {"packet",              "packet-beta",         &parse_packet_trampoline,       &render_packet_trampoline},
 }};
 } // namespace
 

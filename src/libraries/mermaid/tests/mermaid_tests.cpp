@@ -422,6 +422,10 @@ void test_render_registry_lookup()
   expect_true(md::is_registered_type("timeline"), "timeline registered");
   expect_true(md::is_registered_type("sankey"), "sankey registered");
   expect_true(md::is_registered_type("sankey-beta"), "sankey-beta alias registered");
+  expect_true(md::is_registered_type("xychart"), "xychart registered");
+  expect_true(md::is_registered_type("block"), "block registered");
+  expect_true(md::is_registered_type("packet"), "packet registered");
+  expect_true(md::is_registered_type("packet-beta"), "packet-beta alias registered");
 
   // Case-insensitive lookup.
   expect_true(md::is_registered_type("SequenceDiagram"), "case-insensitive");
@@ -436,7 +440,7 @@ void test_render_registry_lookup()
   expect_eq_str(e ? e->canonical : "", "sequencediagram", "canonical name");
 
   // Counter reports the right number of registered types.
-  expect_eq_size(md::registered_type_count(), 14, "registry has 14 entries");
+  expect_eq_size(md::registered_type_count(), 20, "registry has 20 entries");
 }
 } // namespace
 
