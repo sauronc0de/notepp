@@ -874,8 +874,9 @@ For each parser, add tests with valid and invalid input:
   - Tested: yes
   - Notes: `markdown_ui` does not link to `markdown_support`.
 
-- `[ ]` Introduce small shared interfaces where two modules currently include each other.
-  - Tested: no
+- `[x]` Introduce small shared interfaces where two modules currently include each other.
+  - Tested: yes
+  - Notes: Manual review of `src/libraries/*/CMakeLists.txt` confirms there are no circular dependencies between libraries. `markdown_support` depends on `markdown_widgets` for widget dispatch, but `markdown_widgets` does not depend on `markdown_support`. The `logger` interface library is a one-way dependency target for `log`.
 
 - `[x]` Confirm dependency direction with CMake graph or manual review.
   - Tested: yes
