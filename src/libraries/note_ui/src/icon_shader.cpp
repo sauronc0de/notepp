@@ -3,6 +3,7 @@
 // normal ImGui draw commands.
 
 #include "icon_shader.hpp"
+#include "log.hpp"
 
 // GLEW must come before any other GL headers.
 #include <GL/glew.h>
@@ -12,7 +13,6 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
-#include <cstdio>
 
 namespace NoteUi
 {
@@ -158,7 +158,7 @@ static GLuint compile_shader(GLenum type, const char *src)
   {
     char buf[512];
     glGetShaderInfoLog(s, 512, nullptr, buf);
-    std::fprintf(stderr, "[icon_shader] compile error: %s\n", buf);
+    LOG_ERROR("[icon_shader] compile error: ", buf);
     glDeleteShader(s);
     return 0;
   }
@@ -175,8 +175,7 @@ void init_icon_shader()
   GLenum ge = glewInit();
   if(ge != GLEW_OK && ge != GLEW_ERROR_NO_GLX_DISPLAY)
   {
-    std::fprintf(stderr, "[icon_shader] glewInit failed: %s\n",
-                 glewGetErrorString(ge));
+    LOG_ERROR("[icon_shader] glewInit failed: ", glewGetErrorString(ge));
     return;
   }
 
@@ -208,7 +207,7 @@ void init_icon_shader()
   {
     char buf[512];
     glGetProgramInfoLog(prog, 512, nullptr, buf);
-    std::fprintf(stderr, "[icon_shader] link error: %s\n", buf);
+    LOG_ERROR("[icon_shader] link error: ", buf);
     glDeleteProgram(prog);
     return;
   }

@@ -4,6 +4,7 @@
 #endif
 #include "demo_note_content.hpp"
 #include "lang.hpp"
+#include "log.hpp"
 #if USE_PORTABLE_PATHS
 #include "note_project.hpp"
 #endif
@@ -563,7 +564,7 @@ static void flush_pending_note_fonts()
   g_note_fonts_dirty = false;
 #ifdef NOTEPP_DEBUG_UI
   const float ms = (float)(SDL_GetPerformanceCounter() - t0) * 1000.f / (float)SDL_GetPerformanceFrequency();
-  std::fprintf(stderr, "Font atlas rebuilt in %.2f ms\n", ms);
+  LOG_DEBUG("Font atlas rebuilt in ", ms, " ms");
 #endif
 }
 
@@ -1062,7 +1063,7 @@ int App::run()
   }
   catch(const std::exception &e)
   {
-    std::fprintf(stderr, "Fatal: %s\n", e.what());
+    LOG_ERROR("Fatal: ", e.what());
     shutdown();
     return 1;
   }

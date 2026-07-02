@@ -1,5 +1,7 @@
 #pragma once
 
+#include "log.hpp"
+
 #include <cxxabi.h>
 #include <iostream>
 #include <string>
@@ -140,7 +142,7 @@ bool overwrite(std::string filePath, T json_struct)
   std::ofstream outFile(filePath);
   if(!outFile)
   {
-    std::cerr << "❌ Failed to open file for writing: " << filePath << "\n";
+    LOG_ERROR("Failed to open file for writing: ", filePath);
     return 1;
   }
 

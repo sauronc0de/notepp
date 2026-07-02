@@ -5,8 +5,8 @@
 // bring-up sequence.
 
 #include "app.hpp"
+#include "log.hpp"
 
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -99,13 +99,13 @@ void App::init_sdl_gl()
       strstr(gl_renderer, "VMware");
   SDL_GL_SetSwapInterval(software_gl ? 0 : 1);
   configure_frame_limiter(software_gl);
-#ifndef NDEBUG
-  std::fprintf(stderr, "[notepp] GL Renderer : %s\n", gl_renderer ? gl_renderer : "(null — GLEW not yet init)");
-  std::fprintf(stderr, "[notepp] GL Vendor   : %s\n", gl_vendor   ? gl_vendor   : "(null)");
-  std::fprintf(stderr, "[notepp] Software GL : %s\n", software_gl ? "YES" : "NO");
-  std::fprintf(stderr, "[notepp] VSync       : %s  (SDL_GL_SetSwapInterval -> %d)\n",
-               SDL_GL_GetSwapInterval() == 0 ? "OFF" : "ON", SDL_GL_GetSwapInterval());
-  std::fprintf(stderr, "[notepp] Max FPS     : %d%s\n", max_fps_,
-               std::getenv("NOTEPP_MAX_FPS") ? "  (NOTEPP_MAX_FPS)" : "");
+#if ENABLE_LOG
+  LOG_DEBUG("GL Renderer : ", gl_renderer ? gl_renderer : "(null — GLEW not yet init)");
+  LOG_DEBUG("GL Vendor   : ", gl_vendor ? gl_vendor : "(null)");
+  LOG_DEBUG("Software GL : ", software_gl ? "YES" : "NO");
+  LOG_DEBUG("VSync       : ", SDL_GL_GetSwapInterval() == 0 ? "OFF" : "ON",
+            "  (SDL_GL_SetSwapInterval -> ", SDL_GL_GetSwapInterval(), ")");
+  LOG_DEBUG("Max FPS     : ", max_fps_,
+            std::getenv("NOTEPP_MAX_FPS") ? "  (NOTEPP_MAX_FPS)" : "");
 #endif
 }
