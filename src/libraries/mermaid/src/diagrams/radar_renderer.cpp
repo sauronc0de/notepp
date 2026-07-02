@@ -99,7 +99,6 @@ void render_radar(const RadarDiagram &d, int id)
     for(int k = 0; k < static_cast<int>(pts.size()) - 1; ++k) dl->AddLine(pts[k], pts[k + 1], cc2, 2.0f);
     if(!c.name.empty())
     {
-      ImVec2 ts = ImGui::CalcTextSize(c.name.c_str());
       dl->AddText(ImVec2(orig.x + pad + static_cast<float>(ci) * 60.0f, orig.y + cw - 20), cc2, c.name.c_str());
     }
   }

@@ -338,9 +338,14 @@ void render_mermaid_block(std::string_view mermaid_type, std::string_view body, 
 
 // helper macro: parse + render or fall back to placeholder
 #define MERMAID_DISPATCH(parse_fn, render_fn, DiagramType) \
-  { MermaidDiagrams::DiagramType d; \
-    if(MermaidDiagrams::parse_fn(body, d)) MermaidDiagrams::render_fn(d, id); \
-    else render_mermaid_placeholder(mermaid_type, body, id); return; }
+  { \
+    MermaidDiagrams::DiagramType d; \
+    if(MermaidDiagrams::parse_fn(body, d)) \
+      MermaidDiagrams::render_fn(d, id); \
+    else \
+      render_mermaid_placeholder(mermaid_type, body, id); \
+    return; \
+  }
 
   if(mt == "sequencediagram")                      MERMAID_DISPATCH(parse_sequence,     render_sequence,     SequenceDiagram)
   if(mt == "classdiagram")                         MERMAID_DISPATCH(parse_class,        render_class,        ClassDiagram)

@@ -142,7 +142,7 @@ private:
   static void line(ImColor c, bool under);
 
   // table state
-  int m_table_next_column = 0;
+  std::size_t m_table_next_column = 0;
   ImVec2 m_table_last_pos;
   std::vector<float> m_table_col_pos;
   std::vector<float> m_table_row_pos;

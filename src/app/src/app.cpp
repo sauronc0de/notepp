@@ -686,7 +686,7 @@ const ImGuiViewport *find_platform_viewport_by_id(const ImGuiPlatformIO &platfor
   return nullptr;
 }
 
-bool viewport_inherits_topmost(
+[[maybe_unused]] bool viewport_inherits_topmost(
     const ImGuiViewport *viewport,
     const ImGuiPlatformIO &platform_io,
     const std::unordered_set<unsigned int> &pinned_topmost_viewports)

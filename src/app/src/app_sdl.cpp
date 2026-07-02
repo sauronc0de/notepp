@@ -14,6 +14,37 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 
+namespace
+{
+void apply_borderless_maximized_window(SDL_Window *window)
+{
+  if(window == nullptr) return;
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+    SDL_SetWindowFullscreen(window, 0);
+
+  SDL_Rect bounds{};
+  const int display_index = SDL_GetWindowDisplayIndex(window);
+  if(display_index < 0 || SDL_GetDisplayUsableBounds(display_index, &bounds) != 0)
+  {
+    SDL_MaximizeWindow(window);
+    return;
+  }
+
+  if((SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0)
+    SDL_RestoreWindow(window);
+
+  SDL_SetWindowResizable(window, SDL_TRUE);
+  SDL_SetWindowBordered(window, SDL_FALSE);
+  SDL_SetWindowMinimumSize(window, 320, 200);
+  SDL_SetWindowMaximumSize(window, 0, 0);
+
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
+  SDL_SetWindowSize(window, bounds.w, bounds.h);
+  SDL_SetWindowPosition(window, bounds.x, bounds.y);
+}
+} // namespace
+
 void App::init_sdl_gl()
 {
   if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0)

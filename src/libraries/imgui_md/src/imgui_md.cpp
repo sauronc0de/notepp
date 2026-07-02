@@ -204,12 +204,12 @@ void imgui_md::BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL *, bool e)
       const float wx = wp.x + sp.x / 2;
       const float wy = wp.y - sp.y / 2 - ImGui::GetScrollY();
 
-      for(int i = 0; i < m_table_col_pos.size(); ++i)
+      for(std::size_t i = 0; i < m_table_col_pos.size(); ++i)
       {
         m_table_col_pos[i] += wx;
       }
 
-      for(int i = 0; i < m_table_row_pos.size(); ++i)
+      for(std::size_t i = 0; i < m_table_row_pos.size(); ++i)
       {
         m_table_row_pos[i] += wy;
       }
@@ -222,7 +222,7 @@ void imgui_md::BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL *, bool e)
 
       const float xmin = m_table_col_pos.front();
       const float xmax = m_table_col_pos.back();
-      for(int i = 0; i < m_table_row_pos.size(); ++i)
+      for(std::size_t i = 0; i < m_table_row_pos.size(); ++i)
       {
         const float p = m_table_row_pos[i];
         dl->AddLine(ImVec2(xmin, p), ImVec2(xmax, p), c,
@@ -231,7 +231,7 @@ void imgui_md::BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL *, bool e)
 
       const float ymin = m_table_row_pos.front();
       const float ymax = m_table_row_pos.back();
-      for(int i = 0; i < m_table_col_pos.size(); ++i)
+      for(std::size_t i = 0; i < m_table_col_pos.size(); ++i)
       {
         const float p = m_table_col_pos[i];
         dl->AddLine(ImVec2(p, ymin), ImVec2(p, ymax), c, 1.0f);
@@ -715,8 +715,8 @@ void imgui_md::html_div(const std::string &dclass, bool e)
 		}
 	}
 #endif
-  dclass;
-  e;
+  (void)dclass;
+  (void)e;
 }
 
 int imgui_md::text(MD_TEXTTYPE type, const char *str, const char *str_end)

@@ -10,6 +10,9 @@
 #include <string>
 
 #include <imgui.h>
+#ifdef IMGUI_ENABLE_FREETYPE
+#include <imgui_freetype.h>
+#endif
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
 #include <SDL_opengl.h>
@@ -87,8 +90,11 @@ void App::init_imgui()
   io.FontDefault = font_regular;
 
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  set_dockers_enabled(dockers_enabled_);
-  set_detached_note_windows_enabled(detached_note_windows_enabled_);
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  if(detached_note_windows_enabled_)
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  else
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
   ImGui::StyleColorsDark();
   if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)

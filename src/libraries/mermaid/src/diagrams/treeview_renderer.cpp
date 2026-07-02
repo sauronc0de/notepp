@@ -6,6 +6,7 @@
 #include "mermaid_diagrams.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <string>
 

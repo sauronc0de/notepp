@@ -72,7 +72,7 @@ void render_quadrant(const QuadrantDiagram &d, int id)
   ql(tl.x + sz * 0.75f, tl.y + sz * 0.25f, d.q1);
   ql(tl.x + sz * 0.25f, tl.y + sz * 0.75f, d.q3);
   ql(tl.x + sz * 0.75f, tl.y + sz * 0.75f, d.q4);
-  if(!d.x_low.empty()) { ImVec2 ts = ImGui::CalcTextSize(d.x_low.c_str()); dl->AddText(ImVec2(tl.x, br.y + 4.0f), lcol, d.x_low.c_str()); }
+  if(!d.x_low.empty()) { dl->AddText(ImVec2(tl.x, br.y + 4.0f), lcol, d.x_low.c_str()); }
   if(!d.x_high.empty()) { ImVec2 ts = ImGui::CalcTextSize(d.x_high.c_str()); dl->AddText(ImVec2(br.x - ts.x, br.y + 4.0f), lcol, d.x_high.c_str()); }
   if(!d.y_low.empty()) { ImVec2 ts = ImGui::CalcTextSize(d.y_low.c_str()); dl->AddText(ImVec2(tl.x - ts.x - 4.0f, br.y - ts.y), lcol, d.y_low.c_str()); }
   if(!d.y_high.empty()) { ImVec2 ts = ImGui::CalcTextSize(d.y_high.c_str()); dl->AddText(ImVec2(tl.x - ts.x - 4.0f, tl.y), lcol, d.y_high.c_str()); }

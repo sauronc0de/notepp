@@ -30,7 +30,6 @@ void render_ishikawa(const IshikawaDiagram &d, int id)
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const ImU32 tcol = ImGui::GetColorU32(ImGuiCol_Text);
   const ImU32 lcol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-  const ImU32 bord = ImGui::GetColorU32(ImGuiCol_Border);
   float sy = orig.y + ch * 0.5f;
   dl->AddLine(ImVec2(orig.x + 20, sy), ImVec2(orig.x + cw - effect_w - 10, sy), tcol, 2.5f);
   float ex = orig.x + cw - effect_w;
