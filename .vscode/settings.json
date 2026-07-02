@@ -79,6 +79,13 @@
                 "color": "#FFC107",
                 "singleInstance": true,
                 "command": "dependences.sh"
+            },
+            {
+                "cwd": "", // Terminal initial folder ${workspaceFolder} and os user home as defaults
+                "name": "✅ Check",
+                "color": "#2196F3",
+                "singleInstance": true,
+                "command": "merge_check.sh"
             }
         ],
     },
