@@ -38,6 +38,8 @@ pi install npm:pi-web-access
 pi install npm:@juicesharp/rpiv-ask-user-question
 pi install npm:@juicesharp/rpiv-todo
 pi install npm:pi-subagents
+pi install npm:pi-intercom
+pi install npm:pi-prompt-template-model
 pi install npm:@sinamtz/pi-minimax-provider
 
 # Update the git submodules
