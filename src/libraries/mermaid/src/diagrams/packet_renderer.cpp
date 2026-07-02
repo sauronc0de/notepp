@@ -377,7 +377,7 @@ void render_packet(const PacketDiagram &d, int id)
       };
       for(int i = rs; i <= re; i += 8)
       {
-        char buf[8];
+        char buf[16];
         std::snprintf(buf, sizeof(buf), "%d", i);
         dl->AddText(ImVec2(bit_hdr_x(i), ry), lcol, buf);
       }

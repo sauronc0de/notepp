@@ -9,13 +9,6 @@ namespace
 {
 int failures = 0;
 
-void expect_true(bool cond, std::string_view msg)
-{
-  if(cond) return;
-  ++failures;
-  std::cerr << "FAIL: " << msg << '\n';
-}
-
 void expect_eq_str(std::string_view a, std::string_view b, std::string_view msg)
 {
   if(a == b) return;

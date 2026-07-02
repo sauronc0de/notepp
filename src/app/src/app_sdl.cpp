@@ -16,7 +16,7 @@
 
 namespace
 {
-void apply_borderless_maximized_window(SDL_Window *window)
+void apply_initial_borderless_maximized_window(SDL_Window *window)
 {
   if(window == nullptr) return;
 
@@ -71,7 +71,7 @@ void App::init_sdl_gl()
 
   // Start maximized as a regular borderless window. Avoid fullscreen-desktop:
   // profile switches should not blank or reconfigure the rest of the desktop.
-  apply_borderless_maximized_window(window_);
+  apply_initial_borderless_maximized_window(window_);
 
   gl_context_ = SDL_GL_CreateContext(window_);
   if(!gl_context_)
