@@ -10,6 +10,7 @@
 #   * build exits cleanly
 #   * all tests pass
 #   * no warnings, errors, or test failures appear in the logs
+#   * every tracked C++ source matches .clang-format
 #
 # Outputs:
 #   * Cool throbber animations while each preset is built and tested
@@ -24,12 +25,14 @@
 #   merge_check.sh --presets develop_gui    # build only a subset
 #   merge_check.sh --jobs N                 # override parallel build jobs
 #   merge_check.sh --no-fail-on-warnings    # warn-only (errors still fail)
+#   merge_check.sh --no-format-check        # skip .clang-format verification
 #   merge_check.sh --help
 #
 # Environment overrides:
 #   MAX_LINES                  # max lines per report section (default 40, 0=all)
 #   CMAKE_BUILD_PARALLEL_LEVEL # forwarded to build.sh
 #   PROJECT_ROOT               # absolute path to repo root
+#   CLANG_FORMAT_BIN           # clang-format binary (default: clang-format)
 # ==============================================================================
 set -Eeuo pipefail
 
@@ -58,6 +61,9 @@ fi
 if [ -z "${PROJECT_ROOT}" ] || [ ! -d "${PROJECT_ROOT}" ]; then
   PROJECT_ROOT="$(pwd)"
 fi
+
+CLANG_FORMAT_BIN="${CLANG_FORMAT_BIN:-clang-format}"
+FORMAT_CHECK_EXTENSIONS=( cpp hpp )
 
 LOG_DIR="${PROJECT_ROOT}/build/logs/merge_check"
 LOG_FILE="${LOG_DIR}/merge_check_$(date +%Y%m%d_%H%M%S).log"
@@ -92,6 +98,7 @@ BUILD_TEST=1
 DO_CLEAN=0
 CUSTOM_JOBS=""
 FAIL_ON_WARNINGS=1
+RUN_FORMAT_CHECK=1
 
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
@@ -105,6 +112,7 @@ while [ "$#" -gt 0 ]; do
     --skip-tests)     RUN_TESTS=0 ;;
     --no-tests-build) RUN_TESTS=0; BUILD_TEST=0 ;;
     --no-fail-on-warnings) FAIL_ON_WARNINGS=0 ;;
+    --no-format-check) RUN_FORMAT_CHECK=0 ;;
     --presets)        shift; IFS=',' read -ra PRESETS <<< "${1:-}" ;;
     --presets=*)      IFS=',' read -ra PRESETS <<< "${1#*=}" ;;
     --test-preset)    shift; TEST_PRESET="${1:-}" ;;
@@ -210,6 +218,14 @@ filter_testfails() {
 
 # Count lines for a filter, fast and defensive.
 count_filtered() { "$1" "$LOG_FILE" 2>/dev/null | wc -l | tr -d ' '; }
+
+# Extract the list of files clang-format flagged during the format phase.
+filter_format_drift() {
+  local src="${1:-${LOG_FILE}}"
+  grep -E '^DRIFT: ' "${src}" 2>/dev/null \
+    | sed -E 's/^DRIFT: //' \
+    | sort -u || true
+}
 
 # ------------------------------------------------------------------------------
 # Output helpers (pretty report sections)
@@ -333,6 +349,117 @@ run_test_phase() {
 }
 
 # ------------------------------------------------------------------------------
+# Formatting phase
+# ------------------------------------------------------------------------------
+
+# Find every C++ source under src/, minus build/dist/externals.
+discover_format_targets() {
+  local root="${PROJECT_ROOT}/src"
+  local name_args=( \( )
+  local first=1
+  for ext in "${FORMAT_CHECK_EXTENSIONS[@]}"; do
+    if [ "${first}" -eq 1 ]; then
+      name_args+=( -name "*.${ext}" )
+      first=0
+    else
+      name_args+=( -o -name "*.${ext}" )
+    fi
+  done
+  name_args+=( \) )
+
+  local prune_args=()
+  for d in "${PROJECT_ROOT}/build" "${PROJECT_ROOT}/dist" "${PROJECT_ROOT}/externals"; do
+    [ -d "${d}" ] || continue
+    prune_args+=( -path "${d}" -prune -o )
+  done
+
+  if [ "${#prune_args[@]}" -eq 0 ]; then
+    [ -d "${root}" ] || return 0
+    find "${root}" -type f "${name_args[@]}" -print
+  else
+    [ -d "${root}" ] || return 0
+    find "${root}" "${prune_args[@]}" -type f "${name_args[@]}" -print
+  fi
+}
+
+# Verify that every tracked C++ source matches .clang-format. Failures are
+# recorded as PHASE_STATUS["format"]="FAIL" and listed in the report section.
+# This phase NEVER modifies files — use tools/tasks/format.sh to fix drift.
+run_format_phase() {
+  print_section "Checking formatting (.clang-format)"
+
+  local label="Format check"
+  local start_epoch
+  start_epoch="$(date +%s)"
+
+  if ! command -v "${CLANG_FORMAT_BIN}" >/dev/null 2>&1; then
+    {
+      printf '\n'
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      printf '▶  Phase: %s   (%s)\n' "${label}" "$(date -Iseconds)"
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      printf 'SKIPPED: %s not found in PATH (set CLANG_FORMAT_BIN to override)\n' \
+        "${CLANG_FORMAT_BIN}"
+    } >> "${LOG_FILE}" 2>&1
+    print_status "${label}" "warn" "clang-format not found"
+    PHASE_STATUS["format"]="SKIP"
+    return 0
+  fi
+
+  if [ ! -f "${PROJECT_ROOT}/.clang-format" ]; then
+    {
+      printf '\n'
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      printf '▶  Phase: %s   (%s)\n' "${label}" "$(date -Iseconds)"
+      printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+      printf 'SKIPPED: %s not found\n' "${PROJECT_ROOT}/.clang-format"
+    } >> "${LOG_FILE}" 2>&1
+    print_status "${label}" "warn" ".clang-format not found"
+    PHASE_STATUS["format"]="SKIP"
+    return 0
+  fi
+
+  # Build the list of files once and reuse it.
+  local file_list
+  file_list="$(mktemp)"
+  discover_format_targets > "${file_list}"
+  local file_count
+  file_count="$(wc -l < "${file_list}" | tr -d ' ')"
+
+  {
+    printf '\n'
+    printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '▶  Phase: %s   (%s)\n' "${label}" "$(date -Iseconds)"
+    printf '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf 'Scanning %d C++ source(s) under %s/src/ (style: %s/.clang-format)\n' \
+      "${file_count}" "${PROJECT_ROOT}" "${PROJECT_ROOT}"
+  } >> "${LOG_FILE}" 2>&1
+
+  local failing=()
+  while IFS= read -r f; do
+    [ -n "${f}" ] || continue
+    if ! "${CLANG_FORMAT_BIN}" --style=file --fallback-style=none \
+           --dry-run --Werror "${f}" >/dev/null 2>&1; then
+      failing+=( "${f}" )
+      printf 'DRIFT: %s\n' "${f}" >> "${LOG_FILE}"
+    fi
+  done < "${file_list}"
+  rm -f "${file_list}"
+
+  local elapsed=$(( $(date +%s) - start_epoch ))
+  if [ "${#failing[@]}" -eq 0 ]; then
+    print_status "${label}" "ok" "${file_count} files, ${elapsed}s"
+    PHASE_STATUS["format"]="OK"
+    return 0
+  fi
+
+  printf 'FAILED: %d file(s) need reformatting\n' "${#failing[@]}" >> "${LOG_FILE}"
+  print_status "${label}" "fail" "${#failing[@]} of ${file_count} files drift"
+  PHASE_STATUS["format"]="FAIL"
+  return 1
+}
+
+# ------------------------------------------------------------------------------
 # Main flow
 # ------------------------------------------------------------------------------
 mkdir -p "${LOG_DIR}"
@@ -351,10 +478,18 @@ fi
   printf 'Merge check — log opened at %s\n' "$(date -Iseconds)"
   printf 'Project root: %s\n' "${PROJECT_ROOT}"
   printf 'Presets     : %s\n' "${PRESETS[*]} ${TEST_PRESET}"
+  printf 'Format check: %s\n' "$( [ "${RUN_FORMAT_CHECK}" -eq 1 ] && printf on || printf off )"
 } >> "${LOG_FILE}"
 
 rc_total=0
 overall_start="$(date +%s)"
+
+# ---- Format check (fail fast before burning build time) -------------------
+if [ "${RUN_FORMAT_CHECK}" -eq 1 ]; then
+  if ! run_format_phase; then
+    rc_total=1
+  fi
+fi
 
 # ---- Build presets ---------------------------------------------------------
 for preset in "${PRESETS[@]}"; do
@@ -389,6 +524,7 @@ total_elapsed=$(( $(date +%s) - overall_start ))
 warn_count="$(count_filtered filter_warnings)"
 err_count="$(count_filtered filter_errors)"
 fail_count="$(count_filtered filter_testfails)"
+format_status="${PHASE_STATUS[format]:-SKIP}"
 
 # ---- Final report ---------------------------------------------------------
 printf '\n'
@@ -397,9 +533,12 @@ print_banner "Merge check report" "Total elapsed ${total_elapsed}s — log: ${LO
 print_report_section "Warnings"      filter_warnings
 print_report_section "Errors"        filter_errors
 print_report_section "Test failures" filter_testfails
+# Formatting gets its own section only when the check actually ran.
+[ "${RUN_FORMAT_CHECK}" -eq 1 ] && print_report_section "Formatting drift" filter_format_drift
 
 # Plain status line for log readers / CI systems.
 printf '\n  %sPhase summary:%s\n' "${C_BOLD}" "${C_RESET}"
+[ "${RUN_FORMAT_CHECK}" -eq 1 ] && printf '    * %-20s %s\n' "format-check" "${format_status}"
 for preset in "${PRESETS[@]}"; do
   printf '    * %-20s %s\n' "${preset}" "${PHASE_STATUS[${preset}]:-UNKNOWN}"
 done
@@ -415,6 +554,8 @@ verdict_ok=1
 [ "${err_count}"  -gt 0 ] && verdict_ok=0
 [ "${fail_count}" -gt 0 ] && verdict_ok=0
 [ "${FAIL_ON_WARNINGS}" -eq 1 ] && [ "${warn_count}" -gt 0 ] && verdict_ok=0
+# Format check is part of the gate: failing it must block the merge.
+[ "${RUN_FORMAT_CHECK}" -eq 1 ] && [ "${format_status}" = "FAIL" ] && verdict_ok=0
 [ "${rc_total}"  -ne 0 ] && verdict_ok=0
 
 if [ "${verdict_ok}" -eq 1 ]; then
@@ -426,8 +567,9 @@ else
 fi
 
 # Optional one-line status for external notifiers.
-printf 'Build %s | %s | W:%s E:%s F:%s\n' \
+printf 'Build %s | format=%s | %s | W:%s E:%s F:%s\n' \
   "$(date -Iseconds)" \
+  "${format_status}" \
   "$(for p in "${PRESETS[@]}"; do printf '%s=%s ' "${p}" "${PHASE_STATUS[${p}]:-N/A}"; done)" \
   "${warn_count}" "${err_count}" "${fail_count}" \
   > "${LOG_DIR}/last_result.txt"

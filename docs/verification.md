@@ -50,9 +50,11 @@ A green run satisfies **all** of the following, on the final tree:
 | 5   | The aggregated log contains **zero real warnings**.                                                    |
 | 6   | The aggregated log contains **zero errors / fatal / exceptions**.                                      |
 | 7   | No `undefined reference to`, `^FAILED:`, `ninja: build stopped`, `collect2: error`, `make: *** Error`. |
+| 8   | `clang-format --dry-run --Werror` produces **zero diffs** on every `*.cpp` / `*.hpp` source under `src/`. |
 
-Criteria 5 and 6 are the strict rule. `--no-fail-on-warnings` is a developer
-escape hatch for in-progress branches; **never** use it in CI or on a
+Criteria 5, 6, and 8 are the strict rule. `--no-fail-on-warnings` is a
+developer escape hatch for in-progress branches; `--no-format-check`
+exists for the same reason. **Never** use either in CI or on a
 release-ready branch.
 
 ------------------------------------------------------------------------
@@ -91,12 +93,26 @@ button.
 
 # 5. Failure Triage
 
-1. Read the verdict line: warnings / errors / test failures.
+1. Read the verdict line: warnings / errors / test failures / formatting drift.
 2. Read the matching report section (printed inline, capped by `MAX_LINES`).
 3. Open the master log; each phase is wrapped in a `▶ Phase: ...` banner.
 4. Fix the root cause. Do not silence warnings; do not add `--no-fail-on-warnings`
-   to a release-ready branch.
+   or `--no-format-check` to a release-ready branch.
 5. Re-run until green.
+
+### 5.1 Fixing Formatting Drift
+
+If criterion #8 fails, the **Formatting drift** section of the report lists
+every offending path. Reformat in-place with:
+
+```bash
+./tools/tasks/format.sh                # rewrite every *.cpp/*.hpp under src/
+./tools/tasks/format.sh --check        # dry-run (exit 0 if clean)
+./tools/tasks/format.sh path/to/file   # format one file
+```
+
+The helper only ever touches `src/` — `build/`, `dist/`, and `externals/`
+are excluded — and it always honours `.clang-format` at the repo root.
 
 For recurring toolchain noise lines (CMake notices, clock-skew messages,
 stale make recipes, Ruby deprecation chatter) the script already filters a

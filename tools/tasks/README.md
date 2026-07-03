@@ -6,7 +6,8 @@ root** unless noted otherwise.
 | Script | What it does |
 | ------ | ------------ |
 | `build.sh`             | Configure + build a CMake preset (`build.sh all <preset>`). Forwards into `cmake --preset` / `cmake --build --preset`. |
-| `merge_check.sh`       | Pre-merge verification gate: builds the develop + release Linux presets, runs `ctest --preset Test`, parses the log for warnings / errors / test failures, prints a coloured pass/fail report and exits with the merge verdict. |
+| `merge_check.sh`       | Pre-merge verification gate: verifies `.clang-format` compliance, builds the develop + release Linux presets, runs `ctest --preset Test`, parses the log for warnings / errors / test failures, prints a coloured pass/fail report and exits with the merge verdict. |
+| `format.sh`            | Developer helper: apply / verify `.clang-format` on every `*.cpp` / `*.hpp` under `src/`. Supports `--check`, `--diff`, and explicit-file modes. |
 | `release.sh`           | Create a GitHub release, optionally build the `Release_debian` / `Release_mingw` presets, and upload artifacts declared by `.config/release.config.sh`. |
 | `copy_mingw_dlls.sh`   | (MSYS2 / UCRT64 only) copy the Qt-free runtime DLLs next to the bundled `Notepp.exe`. |
 | `dependences.sh`       | Generate a graphviz dependency diagram from the CMake target graph. |
@@ -33,12 +34,14 @@ and ctest failure summaries. The exit code mirrors the verdict:
 
 * `0` — clean. Safe to push / merge.
 * `1` — at least one build failed, at least one test failed, the log
-  contains errors, or (by default) the log contains warnings.
+  contains errors, the log contains warnings, **or any C++ source drifts
+  from `.clang-format`**.
 
 > The gate is **stricter than the merge_check base** in the upstream
 > project: it follows `docs/verification.md`, which states **no merge to
-> `main` is allowed if warnings appear**. To temporarily soften the rule
-> (e.g. for an in-progress branch), pass `--no-fail-on-warnings`.
+> `main` is allowed if warnings appear or if `.clang-format` is not
+> respected**. To temporarily soften the rule (e.g. for an in-progress
+> branch), pass `--no-fail-on-warnings` or `--no-format-check`.
 
 ### Quick start
 
@@ -50,6 +53,7 @@ and ctest failure summaries. The exit code mirrors the verdict:
 ./tools/tasks/merge_check.sh --jobs N        # set parallelism
 ./tools/tasks/merge_check.sh --presets develop_gui   # one preset only
 ./tools/tasks/merge_check.sh --no-fail-on-warnings   # warnings allowed
+./tools/tasks/merge_check.sh --no-format-check       # skip .clang-format check
 ./tools/tasks/merge_check.sh --help
 ```
 
@@ -75,7 +79,23 @@ it without re-parsing the full log.
 MAX_LINES=200 ./tools/tasks/merge_check.sh   # show up to 200 lines per section (0 = all)
 PROJECT_ROOT=/path/to/notepp ./tools/tasks/merge_check.sh
 CMAKE_BUILD_PARALLEL_LEVEL=8 ./tools/tasks/merge_check.sh
+CLANG_FORMAT_BIN=clang-format-18 ./tools/tasks/merge_check.sh
 ```
+
+### Fixing formatting drift
+
+The format phase is read-only — it never edits your files. To apply
+`.clang-format` after a failed check:
+
+```bash
+./tools/tasks/format.sh                 # rewrite every *.cpp/*.hpp under src/
+./tools/tasks/format.sh --check         # exit non-zero if anything would change
+./tools/tasks/format.sh --diff          # like --check, but print the diffs
+./tools/tasks/format.sh src/core/foo/src/foo.cpp   # format one file
+```
+
+The helper reads `.clang-format` from the repo root and never touches
+`build/`, `dist/`, or `externals/`.
 
 ### Suggested CI usage
 

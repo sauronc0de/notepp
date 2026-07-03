@@ -1,22 +1,15 @@
-add_subdirectory(logger)
-add_subdirectory(log)
+# Tier 1 — Generic, application-independent utilities.
+#
+# Modules here could be lifted into any other project as-is. They have
+# no knowledge of the application's domain and never depend on
+# `core/`, `render/`, or `app/`.
+#
+# Each entry is a single line: the library directory under this folder
+# owns its own `CMakeLists.txt`, public header `inc/<name>.hpp`, and
+# optional `tests/` directory.
+
 add_subdirectory(json_io)
+add_subdirectory(log)
+add_subdirectory(logger)
 add_subdirectory(string_utils)
-add_subdirectory(note_history)
 add_subdirectory(tiny_json)
-add_subdirectory(imgui_md)
-add_subdirectory(markdown_code_highlight)
-add_subdirectory(markdown_sections)
-add_subdirectory(markdown_tables)
-add_subdirectory(markdown_view)
-add_subdirectory(mermaid)
-add_subdirectory(markdown_images)
-add_subdirectory(markdown_widgets)
-add_subdirectory(markdown_support)
-add_subdirectory(markdown_editor)
-add_subdirectory(note_ui)
-add_subdirectory(note_project)
-add_subdirectory(emoji_picker)
-add_subdirectory(lang)
-add_subdirectory(note_model)
-add_subdirectory(note_storage)

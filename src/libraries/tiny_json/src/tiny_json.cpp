@@ -74,7 +74,11 @@ size_t find_matching(std::string_view s, size_t start, char open, char close)
     {
       size_t bs = 0;
       size_t j = i;
-      while(j > 0 && s[j - 1] == '\\') { ++bs; --j; }
+      while(j > 0 && s[j - 1] == '\\')
+      {
+        ++bs;
+        --j;
+      }
       if(bs % 2 == 0) in_string = !in_string;
     }
     if(in_string) continue;
@@ -103,7 +107,11 @@ std::string json_find_string(std::string_view obj, std::string_view key)
     {
       size_t bs = 0;
       size_t j = q2;
-      while(j > 0 && obj[j - 1] == '\\') { ++bs; --j; }
+      while(j > 0 && obj[j - 1] == '\\')
+      {
+        ++bs;
+        --j;
+      }
       if(bs % 2 == 0) break;
     }
     ++q2;
@@ -172,4 +180,3 @@ std::vector<std::string_view> json_array_objects(std::string_view arr)
   return out;
 }
 } // namespace TinyJson
-

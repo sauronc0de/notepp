@@ -62,4 +62,3 @@ float clamp01f(float v)
   return v;
 }
 } // namespace StringUtils
-

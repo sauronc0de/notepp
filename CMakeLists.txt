@@ -7,23 +7,41 @@ endif()
 set(ProjectName "Notepp")
 project(${ProjectName} VERSION 0.0.6 LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+# Use the highest C++ standard the toolchain reliably supports.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ── Global compile options ────────────────────────────────────────────────
+# Diagnostic color and a strict warning policy. Per-target flags belong on
+# the target. Third-party headers are pulled in via SYSTEM includes below
+# so their warnings are ignored at this layer.
 add_compile_options(
   $<$<COMPILE_LANG_AND_ID:C,GNU>:-fdiagnostics-color=always>
   $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fdiagnostics-color=always>
   $<$<COMPILE_LANG_AND_ID:C,Clang>:-fcolor-diagnostics>
   $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fcolor-diagnostics>
-  $<$<COMPILE_LANGUAGE:C>:-Wall>
-  $<$<COMPILE_LANGUAGE:CXX>:-Wall>
 )
 
-option(ENABLE_LOG "Enable logging" OFF)
-option(ENABLE_RENDER "Enable rendering" ON)
-option(ENABLE_TEST "Enable tests" OFF)
+# Treat warnings as errors across the project. CMake's Ninja generator
+# mangles semicolon-separated lists inside generator expressions, so
+# the three flags are added as three separate options rather than as
+# one list.
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wall>)
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wextra>)
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Werror>)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wextra>)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
 
+# ── Project options ───────────────────────────────────────────────────────
+option(ENABLE_LOG        "Enable logging"                 OFF)
+option(ENABLE_RENDER     "Enable rendering"               ON)
+option(ENABLE_TEST       "Enable tests"                   OFF)
+option(ENABLE_DEB_PACKAGE "Build Debian .deb package"     OFF)
+
+# ── Project-wide compile definitions ──────────────────────────────────────
 if(NOT NOTEPP_ASSETS_PATH)
   if(USE_PORTABLE_PATHS)
     set(NOTEPP_ASSETS_PATH "assets")
@@ -52,91 +70,34 @@ add_compile_definitions(
   USE_PORTABLE_PATHS=$<BOOL:${USE_PORTABLE_PATHS}>
 )
 
-find_package(SDL2 REQUIRED)
+# ── Find dependencies at the top ──────────────────────────────────────────
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/externals/modules")
+find_package(SDL2       REQUIRED)
 find_package(SDL2_image REQUIRED)
-find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(PkgConfig REQUIRED)
+find_package(OpenGL     REQUIRED)
+find_package(GLEW       REQUIRED)
+find_package(PkgConfig  REQUIRED)
 
+# ── Scoped -Werror suppression for third-party headers ────────────────────
+# ImGui/SQLite-style: nuke warnings on FetchContent sources to avoid
+# breaking the build when we add `-Werror` later. We suppress in the
+# third-party tree only.
+
+# ── Test framework ────────────────────────────────────────────────────────
 if(ENABLE_TEST)
   enable_testing()
 endif()
 
+# ── Subdirectory order mirrors the dependency direction ───────────────────
+# externals  -> libraries  -> core  -> render  -> app
 add_subdirectory(externals)
 add_subdirectory(src/libraries)
+add_subdirectory(src/core)
+add_subdirectory(src/render)
+add_subdirectory(src/app)
 add_subdirectory(examples)
-add_subdirectory(src)
 
-set(NOTEPP_SOURCES
-  src/main.cpp
-  src/app/src/app.cpp
-  src/app/src/app_sdl.cpp
-  src/app/src/app_imgui.cpp
-  src/app/src/app_frame_limiter.cpp
-  src/app/src/app_frame_end.cpp
-  src/app/src/app_history_indicator.cpp
-  src/app/src/app_profile_modal.cpp
-)
-
-set(NOTEPP_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY "${NOTEPP_GENERATED_DIR}")
-
-add_custom_command(
-  OUTPUT "${NOTEPP_GENERATED_DIR}/demo_note_content.hpp"
-  COMMAND ${CMAKE_COMMAND}
-    -DINPUT_FILE=${CMAKE_SOURCE_DIR}/readme.md
-    -DOUTPUT_FILE=${NOTEPP_GENERATED_DIR}/demo_note_content.hpp
-    -P ${CMAKE_SOURCE_DIR}/cmake/embed_text_file.cmake
-  DEPENDS "${CMAKE_SOURCE_DIR}/readme.md"
-  COMMENT "Embedding readme.md -> generated/demo_note_content.hpp"
-  VERBATIM
-)
-
-add_custom_target(demo_note_content_gen
-  DEPENDS "${NOTEPP_GENERATED_DIR}/demo_note_content.hpp"
-)
-
-if(WIN32)
-  enable_language(RC)
-
-  list(APPEND NOTEPP_SOURCES
-    ${CMAKE_SOURCE_DIR}/assets/icon/app.rc
-  )
-
-  add_executable(${PROJECT_NAME} WIN32 ${NOTEPP_SOURCES})
-  target_link_options(${PROJECT_NAME} PRIVATE -mwindows)
-else()
-  add_executable(${PROJECT_NAME} ${NOTEPP_SOURCES})
-endif()
-
-add_dependencies(${PROJECT_NAME} demo_note_content_gen)
-target_include_directories(${PROJECT_NAME} PUBLIC src src/app/inc "${NOTEPP_GENERATED_DIR}")
-
-target_link_libraries(${PROJECT_NAME}
-  PRIVATE
-    log
-    imgui
-    imgui_md
-    string_utils
-    note_history
-    lang
-    emoji_picker
-    note_model
-    note_storage
-    markdown_view
-    markdown_sections
-    note_project
-    tiny_json
-    markdown_support
-    markdown_widgets
-    markdown_code_highlight
-    note_ui
-    nfd
-)
-
-option(ENABLE_DEB_PACKAGE "Build Debian .deb package" OFF)
-
+# ── Installer / packaging ─────────────────────────────────────────────────
 configure_file(
   ${CMAKE_SOURCE_DIR}/tools/installer/notepp.iss.in
   ${CMAKE_BINARY_DIR}/notepp.iss
@@ -176,7 +137,7 @@ if(WIN32)
     COMMAND "${ISCC_EXE}" "${CMAKE_BINARY_DIR}/notepp.iss"
     DEPENDS ${PROJECT_NAME}
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Staging app files and building Inno Setup installer"
+    COMMENT "Stage files and build Inno Setup installer"
     VERBATIM
   )
 elseif(ENABLE_DEB_PACKAGE)

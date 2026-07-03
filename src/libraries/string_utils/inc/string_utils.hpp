@@ -13,4 +13,3 @@ std::string sanitize_note_filename(std::string title);
 std::string to_lower_copy(std::string_view s);
 float clamp01f(float v);
 } // namespace StringUtils
-

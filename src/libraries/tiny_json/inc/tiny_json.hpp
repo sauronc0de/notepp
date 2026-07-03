@@ -15,4 +15,3 @@ float json_find_float(std::string_view obj, std::string_view key, float defv);
 bool json_find_bool(std::string_view obj, std::string_view key, bool defv);
 std::vector<std::string_view> json_array_objects(std::string_view arr);
 } // namespace TinyJson
-

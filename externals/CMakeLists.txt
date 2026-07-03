@@ -1,3 +1,8 @@
+# All third-party dependencies live here. See docs/cmake_guidelines.md §9.
+# Each FetchContent / find_package block is independent; targets are
+# scoped below the file with `-w` so the project's `-Werror` does not
+# fail on upstream warnings.
+
 # Find the SDL2 package
 find_package(SDL2 REQUIRED)
 find_package(SDL2_image REQUIRED)
@@ -8,17 +13,16 @@ find_package(OpenGL REQUIRED)
 # GLEW
 find_package(GLEW REQUIRED)
 
-#🌐 Add imgui library ---------------------------------------#
+# ── ImGui library ────────────────────────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
   imgui
   GIT_REPOSITORY https://github.com/ocornut/imgui.git
-  GIT_TAG        v1.91.9b-docking 
+  GIT_TAG        v1.91.9b-docking
 )
-
 FetchContent_MakeAvailable(imgui)
 
-# 🌐 FreeType (system preferred, source fallback for Windows CI) ----#
+# ── FreeType (system preferred, source fallback for Windows CI) ──────────
 find_package(Freetype QUIET)
 if(NOT Freetype_FOUND)
   FetchContent_Declare(
@@ -36,9 +40,8 @@ if(NOT Freetype_FOUND)
   set(FREETYPE_LIBRARIES freetype)
   set(FREETYPE_INCLUDE_DIRS ${freetype_SOURCE_DIR}/include)
 endif()
-# ------------------------------------------------------------------#
 
-# Add imgui library with SDL2 + FreeType support
+# Build imgui with SDL2 + FreeType support
 add_library(imgui
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -57,21 +60,17 @@ target_include_directories(imgui PUBLIC
     ${FREETYPE_INCLUDE_DIRS}
 )
 target_link_libraries(imgui PUBLIC SDL2::SDL2 m ${FREETYPE_LIBRARIES})
-# ------------------------------------------------------------#
 
-# 🌐 Added magic enum library -----------------------------------#
+# ── magic_enum ───────────────────────────────────────────────────────────
 include(FetchContent)
-
 FetchContent_Declare(
   magic_enum
   GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
   GIT_TAG        v0.9.7
 )
-
 FetchContent_MakeAvailable(magic_enum)
-# ------------------------------------------------------------#
 
-# 🌐 Added boost library -----------------------------------#
+# ── boost (header-only hana + preprocessor) ──────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
   Boost
@@ -88,39 +87,28 @@ target_include_directories(boost_headers INTERFACE
     ${boost_SOURCE_DIR}/libs/preprocessor/include
 )
 
-# ------------------------------------------------------------#
-# 🌐 Added json library -----------------------------------#
+# ── nlohmann_json ────────────────────────────────────────────────────────
 FetchContent_Declare(
   nlohmann_json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.3  # Or latest release
+  GIT_TAG v3.11.3
 )
-
 FetchContent_MakeAvailable(nlohmann_json)
-# ------------------------------------------------------------#
 
-# ------------------------------------------------------------#
-# 🌐 Added md4c (parser) -------------------------------------#
+# ── md4c (markdown parser) ──────────────────────────────────────────────
 include(FetchContent)
-
 FetchContent_Declare(
   md4c_fc
   GIT_REPOSITORY https://github.com/mity/md4c.git
   GIT_TAG        release-0.5.2
 )
-
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(md4c_fc)
-
 set(MD4C_INCLUDE_DIR ${md4c_fc_SOURCE_DIR}/src)
 set(MD4C_INCLUDE_DIR ${MD4C_INCLUDE_DIR} PARENT_SCOPE)
-# ------------------------------------------------------------#
 
-
-# ------------------------------------------------------------#
-# 🌐 Added Tree-sitter runtime + grammars --------------------#
+# ── Tree-sitter runtime + grammars ───────────────────────────────────────
 include(FetchContent)
-
 FetchContent_Declare(
   tree_sitter_fc
   GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
@@ -211,22 +199,20 @@ file(READ "${tree_sitter_python_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITT
 file(READ "${tree_sitter_bash_fc_SOURCE_DIR}/queries/highlights.scm" TREE_SITTER_BASH_HIGHLIGHTS_QUERY)
 
 configure_file(
-  ${PROJECT_SOURCE_DIR}/src/libraries/markdown_code_highlight/tree_sitter_queries.hpp.in
+  ${PROJECT_SOURCE_DIR}/src/render/markdown_code_highlight/tree_sitter_queries.hpp.in
   ${CMAKE_BINARY_DIR}/generated/tree_sitter_queries.hpp
   @ONLY
 )
 
 add_library(tree_sitter_queries INTERFACE)
 target_include_directories(tree_sitter_queries INTERFACE ${CMAKE_BINARY_DIR}/generated)
-# ------------------------------------------------------------#
 
-# 🌐 Native File Dialog Extended ---------------------------
+# ── Native File Dialog Extended ──────────────────────────────────────────
 FetchContent_Declare(
   nativefiledialog
   GIT_REPOSITORY https://github.com/btzy/nativefiledialog-extended.git
   GIT_TAG master
 )
-
 FetchContent_MakeAvailable(nativefiledialog)
 FetchContent_GetProperties(nativefiledialog)
 
@@ -234,9 +220,38 @@ set(NFD_INCLUDE_DIR "${nativefiledialog_SOURCE_DIR}/src/include")
 
 if(TARGET nfd)
   message(STATUS "Patching nfd include dir: ${NFD_INCLUDE_DIR}")
-
   target_include_directories(nfd
     PUBLIC
       "${NFD_INCLUDE_DIR}"
   )
 endif()
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Third-party warning suppression
+# ─────────────────────────────────────────────────────────────────────────
+# The top-level project enables `-Werror` so that warnings in our own
+# code become build errors. Upstream code, however, is outside our
+# control — a warning that surfaces today in a FetchContent dependency
+# would otherwise break the develop_gui / Test presets on every clean
+# build. We opt each FetchContent-produced target out of warnings with
+# a PRIVATE `-w`. The project's own code is unaffected.
+set(_NOTEPP_THIRD_PARTY_TARGETS
+  imgui
+  boost_headers
+  tree_sitter_runtime
+  tree_sitter_c_grammar
+  tree_sitter_cpp_grammar
+  tree_sitter_python_grammar
+  tree_sitter_bash_grammar
+  nfd
+)
+foreach(_tgt IN LISTS _NOTEPP_THIRD_PARTY_TARGETS)
+  if(TARGET ${_tgt})
+    get_target_property(_tgt_type ${_tgt} TYPE)
+    if(_tgt_type STREQUAL "INTERFACE" OR _tgt_type STREQUAL "INTERFACE_LIBRARY")
+      target_compile_options(${_tgt} INTERFACE -w)
+    else()
+      target_compile_options(${_tgt} PRIVATE -w)
+    endif()
+  endif()
+endforeach()
