@@ -18,6 +18,6 @@ bool shaded_icon_button(const char *id,
                         ImTextureID tex,
                         ImVec2 size,
                         const char *fallback,
-                        bool active = false);
+                        bool active);
 
 } // namespace NoteUi

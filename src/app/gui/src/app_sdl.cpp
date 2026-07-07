@@ -90,7 +90,9 @@ void App::init_sdl_gl()
   // Without a GPU, SDL_GL_SwapWindow blocks waiting for a sync signal that never arrives properly,
   // causing ~3 FPS. If glGetString returns null (GLEW not yet loaded), we default to VSync off.
   const char *gl_renderer = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+#if ENABLE_LOG
   const char *gl_vendor = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
+#endif
   const bool software_gl = !gl_renderer ||
                            strstr(gl_renderer, "llvmpipe") || strstr(gl_renderer, "softpipe") ||
                            strstr(gl_renderer, "Software") || strstr(gl_renderer, "software") ||

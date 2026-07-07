@@ -36,7 +36,9 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -346,6 +348,14 @@ struct FreeStroke
 
 struct CopiedNoteItem
 {
+  CopiedNoteItem() = default;
+
+  CopiedNoteItem(std::string item_title, std::string item_content)
+      : title(std::move(item_title)),
+        content(std::move(item_content))
+  {
+  }
+
   std::string title;
   std::string content;
   std::string font_path;
@@ -3180,7 +3190,7 @@ bool App::frame_begin()
     const bool imgui_wants_text_input = ImGui::GetIO().WantTextInput;
     const bool is_keydown = event.type == SDL_KEYDOWN;
     const SDL_Keycode key_sym = is_keydown ? event.key.keysym.sym : SDLK_UNKNOWN;
-    const Uint16 key_mod = is_keydown ? event.key.keysym.mod : KMOD_NONE;
+    const Uint16 key_mod = is_keydown ? event.key.keysym.mod : static_cast<Uint16>(KMOD_NONE);
     const bool ctrl_down = (key_mod & KMOD_CTRL) != 0;
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;

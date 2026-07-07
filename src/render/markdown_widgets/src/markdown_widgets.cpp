@@ -716,6 +716,11 @@ private:
 
 struct EvalContext
 {
+  explicit EvalContext(const ParsedBlock &parsed_block)
+      : block(parsed_block)
+  {
+  }
+
   const ParsedBlock &block;
   bool preview_state_changed = false;
   bool consumed_right_click = false;
@@ -2247,6 +2252,10 @@ void render_slider(EvalContext &ctx, const ParsedBlock &block, const Statement &
 
 void render_progress_bar(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
+  (void)block;
+  (void)replacements;
+  (void)errors;
+
   if(stmt.args.size() < 5 || stmt.args.size() > 6)
   {
     render_error_inline("bar() expects value, label, width, min, max[, color]");
@@ -2802,6 +2811,8 @@ void render_list_description_popup(const std::string &popup_id, const ImVec2 &an
 
 bool render_list_row(EvalContext &ctx, Value &root, Value &item, const std::vector<int> &item_path, bool allow_children, const char *payload_type, float width, bool &changed, ListMutation &mutation)
 {
+  (void)allow_children;
+
   std::string name;
   std::string tooltip;
   std::string item_error;

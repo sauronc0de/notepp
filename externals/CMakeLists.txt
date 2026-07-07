@@ -236,8 +236,10 @@ endif()
 # build. We opt each FetchContent-produced target out of warnings with
 # a PRIVATE `-w`. The project's own code is unaffected.
 set(_NOTEPP_THIRD_PARTY_TARGETS
+  freetype
   imgui
   boost_headers
+  md4c
   tree_sitter_runtime
   tree_sitter_c_grammar
   tree_sitter_cpp_grammar

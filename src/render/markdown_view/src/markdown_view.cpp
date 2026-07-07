@@ -1618,7 +1618,7 @@ static void render_inline_md_with_color_spans(std::string_view text)
     ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
     bg.w = 1.0f;
     ImU32 bg_col = ImGui::GetColorU32(bg);
-    ImU32 text_col = ImGui::GetColorU32(ImGui::GetStyleColorVec4(ImGuiCol_Text));
+    ImU32 text_col = ImGui::GetColorU32(colored ? color : ImGui::GetStyleColorVec4(ImGuiCol_Text));
     ImDrawList *dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(pos, ImVec2(pos.x + sz.x, pos.y + sz.y), bg_col, 3.0f);
     dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y), text_col, code.data(), code.data() + code.size());
