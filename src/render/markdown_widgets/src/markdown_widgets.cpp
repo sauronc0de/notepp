@@ -64,6 +64,11 @@ struct SourceSpan
 {
   size_t start = 0;
   size_t end = 0;
+  bool operator<(const SourceSpan &other) const
+  {
+    if(start != other.start) return start < other.start;
+    return end < other.end;
+  }
 };
 
 enum class ValueKind
@@ -3150,6 +3155,11 @@ struct InventoryDragSourceState
 static std::unordered_map<std::string, InventoryDragSourceState> g_inventory_drag_sources;
 static std::unordered_map<std::string, PendingCrossInventoryOp> g_pending_cross_ops;
 
+// Pending statement-level text replacements: SourceSpan (relative to the UI body)
+// mapped to the replacement text. Used by widgets that need to rewrite the
+// arguments of their own call (e.g. inventory() rows/cols).
+static std::map<SourceSpan, std::string> g_statement_text_replacements;
+
 bool inventory_slot_has_content(const Value &slot_value);
 bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error);
 void set_inventory_slot_position(Value &slot_value, int position);
@@ -3628,8 +3638,16 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     return;
   }
 
-  const int rows = std::max(1, static_cast<int>(std::llround(rows_result.value.number)));
-  const int cols = std::max(1, static_cast<int>(std::llround(cols_result.value.number)));
+  Value updated = value_result.value;
+
+  // rows/cols can be overridden by the bound variable (e.g. after the user resizes the
+  // grid via the popup). Fall back to the inventory() call arguments otherwise.
+  int rows = std::max(1, static_cast<int>(std::llround(rows_result.value.number)));
+  int cols = std::max(1, static_cast<int>(std::llround(cols_result.value.number)));
+  if(const Value *vr = find_object_field(updated, "rows"); vr && vr->kind == ValueKind::Number)
+    rows = std::max(1, static_cast<int>(std::llround(vr->number)));
+  if(const Value *vc = find_object_field(updated, "cols"); vc && vc->kind == ValueKind::Number)
+    cols = std::max(1, static_cast<int>(std::llround(vc->number)));
   const int total_cells = rows * cols;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
@@ -3637,8 +3655,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const ImGuiStyle &style = ImGui::GetStyle();
   const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
-
-  Value updated = value_result.value;
 
   constexpr float kDefaultCellSize = 48.0f;
   float cell_size = kDefaultCellSize;
@@ -4228,6 +4244,26 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           {
             remap_inventory_positions(*items, rows, cols, gs.rows, gs.cols);
             trim_inventory_slots(*items);
+            // Also rewrite the inventory() call arguments so the widget itself
+            // reflects the new size. stmt.args layout: [value, label, width, rows, cols].
+            if(stmt.args.size() >= 5)
+            {
+              std::string new_call;
+              new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 32);
+              new_call += stmt.name;
+              new_call += "(";
+              new_call += stmt.args[0]; // value
+              new_call += ", ";
+              new_call += stmt.args[1]; // label
+              new_call += ", ";
+              new_call += stmt.args[2]; // width
+              new_call += ", ";
+              new_call += std::to_string(gs.rows);
+              new_call += ", ";
+              new_call += std::to_string(gs.cols);
+              new_call += ")";
+              g_statement_text_replacements[stmt.span] = std::move(new_call);
+            }
           }
           if(gs.selection_mode == 0)
             selected_cells.clear();
@@ -5370,6 +5406,11 @@ void apply_replacements(std::string &markdown, size_t body_start, const ParsedBl
     if(it == block.declarations.end()) continue;
     pending.push_back(PendingReplace{body_start + it->second.expr_span.start, body_start + it->second.expr_span.end, text});
   }
+  // Statement-level replacements (e.g. inventory() rows/cols args).
+  for(const auto &[span, text] : g_statement_text_replacements)
+  {
+    pending.push_back(PendingReplace{body_start + span.start, body_start + span.end, text});
+  }
   std::sort(pending.begin(), pending.end(), [](const PendingReplace &a, const PendingReplace &b) {
     return a.start > b.start;
   });
@@ -5377,6 +5418,7 @@ void apply_replacements(std::string &markdown, size_t body_start, const ParsedBl
   {
     markdown.replace(rep.start, rep.end - rep.start, rep.text);
   }
+  g_statement_text_replacements.clear();
 }
 
 static std::unordered_map<std::string, ParsedBlock> g_block_parse_cache;
