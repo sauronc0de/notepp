@@ -3167,7 +3167,7 @@ struct InventoryGridEditorState
 {
   int cell_size = 48;
   int popup_width = static_cast<int>(kDefaultUiHoverPopupContentWidth);
-  bool show_selected = false;
+  int selection_mode = 0; // 0 = none, 1 = single, 2 = multi
 };
 
 bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
@@ -3588,10 +3588,20 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     if(cs && cs->kind == ValueKind::Number)
       cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
   }
-  bool show_selected = false;
+  int selection_mode = 0;
   {
-    const Value *ss = find_object_field(updated, "show_selected");
-    if(ss && ss->kind == ValueKind::Bool) show_selected = ss->boolean;
+    const Value *sm = find_object_field(updated, "selection_mode");
+    if(sm && sm->kind == ValueKind::Number)
+    {
+      const int n = static_cast<int>(std::llround(sm->number));
+      selection_mode = std::clamp(n, 0, 2);
+    }
+    else
+    {
+      // Backward compatibility with the old bool field.
+      const Value *ss = find_object_field(updated, "show_selected");
+      if(ss && ss->kind == ValueKind::Bool && ss->boolean) selection_mode = 1;
+    }
   }
   const float hover_popup_width = read_ui_hover_popup_width(updated);
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
@@ -3617,8 +3627,42 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     return;
   }
 
-  int &selected_index = selected_slot_by_widget[child_id];
-  if(selected_index < 0 || selected_index >= total_cells) selected_index = 0;
+  std::vector<int> selected_cells;
+  {
+    const Value *sc = find_object_field(updated, "selected_cells");
+    if(sc && sc->kind == ValueKind::Array)
+    {
+      for(const Value &entry : sc->array)
+      {
+        if(entry.kind != ValueKind::Number) continue;
+        const int idx = static_cast<int>(std::llround(entry.number));
+        if(idx < 0 || idx >= total_cells) continue;
+        if(std::find(selected_cells.begin(), selected_cells.end(), idx) == selected_cells.end())
+          selected_cells.push_back(idx);
+      }
+    }
+    else if(selection_mode == 1)
+    {
+      int &legacy = selected_slot_by_widget[child_id];
+      if(legacy < 0 || legacy >= total_cells) legacy = 0;
+      if(std::find(selected_cells.begin(), selected_cells.end(), legacy) == selected_cells.end())
+        selected_cells.push_back(legacy);
+    }
+  }
+
+  auto persist_selected_cells = [&]() {
+    Value arr;
+    arr.kind = ValueKind::Array;
+    for(int idx : selected_cells)
+    {
+      Value n;
+      n.kind = ValueKind::Number;
+      n.number = static_cast<double>(idx);
+      n.is_integer = true;
+      arr.array.push_back(std::move(n));
+    }
+    upsert_object_field(updated, "selected_cells", std::move(arr));
+  };
 
   bool changed = false;
 
@@ -3680,7 +3724,29 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         ImGui::PushID(index);
         ImGui::InvisibleButton("##slot", nonzero_invisible_button_size(cell_size, cell_size));
-        if(ImGui::IsItemClicked(ImGuiMouseButton_Left)) selected_index = index;
+        if(ImGui::IsItemClicked(ImGuiMouseButton_Left))
+        {
+          if(selection_mode == 1)
+          {
+            // Single-select: replace the selection with this cell.
+            selected_cells.clear();
+            selected_cells.push_back(index);
+            persist_selected_cells();
+            changed = true;
+          }
+          else if(selection_mode == 2)
+          {
+            // Multi-select: toggle membership of this cell.
+            auto it = std::find(selected_cells.begin(), selected_cells.end(), index);
+            if(it == selected_cells.end())
+              selected_cells.push_back(index);
+            else
+              selected_cells.erase(it);
+            persist_selected_cells();
+            changed = true;
+          }
+          // Mode 0 (none): ignore clicks for selection purposes.
+        }
         const bool hovered = ImGui::IsItemHovered();
         if(hovered) any_slot_hovered = true;
         const ImVec2 min = ImGui::GetItemRectMin();
@@ -3698,7 +3764,8 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           slot.tooltip = slot_error;
           errors.push_back(slot_error);
         }
-        draw_inventory_slot_preview(slot, min, max, show_selected && (selected_index == index), hovered, cell_size);
+        const bool cell_selected = selection_mode > 0 && std::find(selected_cells.begin(), selected_cells.end(), index) != selected_cells.end();
+        draw_inventory_slot_preview(slot, min, max, cell_selected, hovered, cell_size);
 
         if((inventory_slot_has_visual_content(slot) || !slot.enabled) && hovered && !ImGui::IsPopupOpen("##slot_menu") && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           render_inventory_hover_popup("##inventory_desc_" + child_id + "_" + std::to_string(index), slot, hover_popup_width);
@@ -3990,7 +4057,17 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                 }
                 trim_inventory_slots(*items);
                 changed = true;
-                selected_index = index;
+                if(selection_mode == 1)
+                {
+                  selected_cells.clear();
+                  selected_cells.push_back(index);
+                }
+                else if(selection_mode == 2)
+                {
+                  if(std::find(selected_cells.begin(), selected_cells.end(), index) == selected_cells.end())
+                    selected_cells.push_back(index);
+                }
+                persist_selected_cells();
                 state.error.clear();
                 ImGui::CloseCurrentPopup();
               }
@@ -4022,7 +4099,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       {
         gs.cell_size = static_cast<int>(cell_size);
         gs.popup_width = static_cast<int>(hover_popup_width);
-        gs.show_selected = show_selected;
+        gs.selection_mode = selection_mode;
       }
       ImGui::TextDisabled("Grid settings");
       ImGui::SetNextItemWidth(120.0f);
@@ -4031,7 +4108,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       ImGui::SetNextItemWidth(120.0f);
       ImGui::InputInt("Popup width (px)", &gs.popup_width);
       gs.popup_width = static_cast<int>(clamp_ui_hover_popup_width(static_cast<float>(gs.popup_width)));
-      ImGui::Checkbox("Show selected cell", &gs.show_selected);
+      const char *selection_labels[] = {"No selection", "Single selection", "Multi selection"};
+      ImGui::SetNextItemWidth(180.0f);
+      ImGui::Combo("Selection mode", &gs.selection_mode, selection_labels, 3);
       if(ImGui::Button("Apply"))
       {
         Value cs_val;
@@ -4044,10 +4123,32 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         pw_val.number = static_cast<double>(gs.popup_width);
         pw_val.is_integer = true;
         upsert_object_field(updated, "popup_width", std::move(pw_val));
-        Value ss_val;
-        ss_val.kind = ValueKind::Bool;
-        ss_val.boolean = gs.show_selected;
-        upsert_object_field(updated, "show_selected", std::move(ss_val));
+        Value sm_val;
+        sm_val.kind = ValueKind::Number;
+        sm_val.number = static_cast<double>(gs.selection_mode);
+        sm_val.is_integer = true;
+        upsert_object_field(updated, "selection_mode", std::move(sm_val));
+        // Drop legacy bool field; new state is authoritative.
+        Value *legacy_ss = find_object_field(updated, "show_selected");
+        if(legacy_ss)
+        {
+          auto &fields = updated.object;
+          fields.erase(std::remove_if(fields.begin(), fields.end(),
+                                      [](const std::pair<std::string, Value> &p) { return p.first == "show_selected"; }),
+                       fields.end());
+        }
+        if(gs.selection_mode == 0)
+          selected_cells.clear();
+        else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+        {
+          selected_cells = {selected_cells.front()};
+        }
+        // Clamp to current grid bounds.
+        const int clamped_total = total_cells;
+        selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
+                                            [clamped_total](int idx) { return idx < 0 || idx >= clamped_total; }),
+                             selected_cells.end());
+        persist_selected_cells();
         changed = true;
         ImGui::CloseCurrentPopup();
       }
