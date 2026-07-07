@@ -6167,7 +6167,38 @@ void App::frame_ui()
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.32f, 0.36f, 1.0f));
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.94f, 0.96f, 1.0f));
 
-      auto insert_topbar_snippet = [&](std::string snippet) {
+      auto is_cursor_inside_ui_block = [&](const std::string &text, int cursor) -> bool {
+        if(text.empty() || cursor <= 0) return false;
+        const size_t cursor_pos = static_cast<size_t>(std::min(cursor, static_cast<int>(text.size())));
+        // Track whether the cursor is currently inside an open ```ui ... ``` block.
+        bool inside = false;
+        size_t pos = 0;
+        while(pos < text.size())
+        {
+          size_t nl = text.find('\n', pos);
+          const size_t line_end = (nl == std::string::npos) ? text.size() : nl;
+          std::string_view line(text.data() + pos, line_end - pos);
+          StringUtils::trim(line);
+          if(line == "```ui")
+          {
+            if(!inside && pos <= cursor_pos && cursor_pos <= line_end) return true;
+            inside = true;
+          }
+          else if(line == "```" && inside)
+          {
+            // The closing fence ends at line_end; cursor inside if it sits within the block body.
+            if(cursor_pos <= line_end) return true;
+            inside = false;
+          }
+          if(nl == std::string::npos) break;
+          pos = nl + 1;
+        }
+        // Unclosed ```ui block — treat the entire remaining text as inside.
+        if(inside) return cursor_pos >= pos;
+        return false;
+      };
+
+      auto insert_topbar_snippet = [&](std::string snippet, bool wrap_in_ui_fences = false) {
         static constexpr const char *kCursorMarker = "__CURSOR__";
         int cursor_offset = static_cast<int>(snippet.size());
         const size_t marker_pos = snippet.find(kCursorMarker);
@@ -6176,7 +6207,17 @@ void App::frame_ui()
           cursor_offset = static_cast<int>(marker_pos);
           snippet.erase(marker_pos, std::strlen(kCursorMarker));
         }
-        int p = std::max(0, std::min(fmt_folder.cursor_pos, static_cast<int>(markdown_text_.size())));
+        const int cursor_pos = std::max(0, std::min(fmt_folder.cursor_pos, static_cast<int>(markdown_text_.size())));
+        if(wrap_in_ui_fences && !is_cursor_inside_ui_block(markdown_text_, cursor_pos))
+        {
+          std::string wrapped = "```ui\n";
+          cursor_offset += static_cast<int>(wrapped.size());
+          wrapped += snippet;
+          if(!snippet.empty() && snippet.back() != '\n') wrapped += '\n';
+          wrapped += "```\n";
+          snippet = std::move(wrapped);
+        }
+        int p = cursor_pos;
         if(p > 0 && !snippet.empty() && markdown_text_[static_cast<size_t>(p) - 1] != '\n' && snippet.front() != '\n')
         {
           snippet.insert(snippet.begin(), '\n');
@@ -6406,7 +6447,7 @@ void App::frame_ui()
           ImGui::OpenPopup("##tb_table_builder_popup");
         }
         ImGui::SameLine();
-        if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", Lang::t("Insert UI widget example")))
+        if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", Lang::t("Insert UI widget")))
         {
           ImGui::OpenPopup("##tb_ui_widgets_popup");
         }
@@ -6417,8 +6458,7 @@ void App::frame_ui()
           if(ImGui::MenuItem("Full UI example"))
           {
             insert_topbar_snippet(
-                R"MD(```ui
-count(10)
+                R"MD(count(10)
 name("Sauron")
 enabled(true)
 mode("Home")
@@ -6433,8 +6473,8 @@ if(enabled){
   text("Visible total: ") text(total)
 }
 button("Reset count", 110, count=0)
-```
-__CURSOR__)MD");
+__CURSOR__)MD",
+                true);
             ImGui::CloseCurrentPopup();
           }
           ImGui::Separator();
@@ -6442,14 +6482,16 @@ __CURSOR__)MD");
           if(ImGui::MenuItem("Variable example"))
           {
             insert_topbar_snippet(R"MD(valueA(10)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Computed variable example"))
           {
             insert_topbar_snippet(R"MD(valueA(10)
 valueB(valueA+5)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Global variable"))
@@ -6502,49 +6544,56 @@ __CURSOR__)MD");
           {
             insert_topbar_snippet(R"MD(valueA(10)
 text("Value: ") text(valueA)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Text input"))
           {
             insert_topbar_snippet(R"MD(name("Sauron")
 text(name, "Name", 150, "Edit the name")
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Integer input"))
           {
             insert_topbar_snippet(R"MD(count(10)
 int(count, "Count", 90, true)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Slider"))
           {
             insert_topbar_snippet(R"MD(volume(50)
 slider(volume, "Volume", 160, 0, 100)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Checkbox"))
           {
             insert_topbar_snippet(R"MD(enabled(true)
 checkbox(enabled, "Enabled")
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Enum"))
           {
             insert_topbar_snippet(R"MD(mode("Home")
 enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Multicheck"))
           {
             insert_topbar_snippet(R"MD(tags(["daily"])
 multicheck(tags, "Tags", 180, ["daily", "important", "later"])
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("List"))
@@ -6555,7 +6604,8 @@ __CURSOR__)MD");
   {name:"Potion", tooltip:"Restores health"}
 ])
 list(items, "Inventory items", 220, true)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Inventory..."))
@@ -6567,7 +6617,8 @@ __CURSOR__)MD");
           {
             insert_topbar_snippet(R"MD(count(10)
 button("Reset count", 110, count=0)
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           if(ImGui::MenuItem("Conditional if block"))
@@ -6577,7 +6628,8 @@ checkbox(enabled, "Enabled")
 if(enabled){
   text("Visible when enabled")
 }
-__CURSOR__)MD");
+__CURSOR__)MD",
+                                  true);
             ImGui::CloseCurrentPopup();
           }
           ImGui::EndPopup();
@@ -6627,7 +6679,7 @@ __CURSOR__)MD");
           ImGui::TextDisabled("Slots: %d", inventory_builder_rows * inventory_builder_cols);
           if(ImGui::Button(Lang::t("Insert")))
           {
-            insert_topbar_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols));
+            insert_topbar_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols), true);
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();

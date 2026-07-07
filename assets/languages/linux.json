@@ -93,7 +93,7 @@
         "Apply color": "export COLOR=hex",
         "Task list": "- [ ] task",
         "Insert markdown table": "| col1 | col2 |",
-        "Insert UI widget example": "widget --example",
+        "Insert UI widget": "widget",
         "Find (Ctrl+F)": "grep -F (Ctrl+F)",
         "Emoji picker (Ctrl+.)": "unicode --pick (Ctrl+.)",
         "Mouse": "/dev/input/mouse0",

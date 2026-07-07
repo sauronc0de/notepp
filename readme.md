@@ -918,7 +918,7 @@ Any note in the same folder (or a subfolder) can then reference `campaign`, `par
 3. Current folder `.globals.md`
 4. Current note UI block
 
-`.globals.md` is optional — if the file doesn't exist, nothing changes. Create one via **Insert UI widget example → Global variable**, which creates the file in the current note's folder and opens it for editing.
+`.globals.md` is optional — if the file doesn't exist, nothing changes. Create one via **Insert UI widget → Global variable**, which creates the file in the current note's folder and opens it for editing.
 
 ---
 
