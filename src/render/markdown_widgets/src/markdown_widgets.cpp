@@ -3150,6 +3150,10 @@ struct InventoryDragSourceState
 static std::unordered_map<std::string, InventoryDragSourceState> g_inventory_drag_sources;
 static std::unordered_map<std::string, PendingCrossInventoryOp> g_pending_cross_ops;
 
+bool inventory_slot_has_content(const Value &slot_value);
+bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error);
+void set_inventory_slot_position(Value &slot_value, int position);
+
 struct InventoryPopupEditorState
 {
   char title[512]{};
@@ -3168,6 +3172,9 @@ struct InventoryGridEditorState
   int cell_size = 48;
   int popup_width = static_cast<int>(kDefaultUiHoverPopupContentWidth);
   int selection_mode = 0; // 0 = none, 1 = single, 2 = multi
+  int rows = 1;
+  int cols = 1;
+  std::string error;
 };
 
 bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
@@ -3256,6 +3263,58 @@ bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, st
       return false;
     }
     slot.enabled = !disabled_value->boolean;
+  }
+  return true;
+}
+
+int count_inventory_filled_cells(const Value &items_value, int cell_count)
+{
+  if(items_value.kind != ValueKind::Array) return 0;
+  (void)cell_count;
+  int count = 0;
+  for(const Value &item : items_value.array)
+  {
+    if(!inventory_slot_has_content(item)) continue;
+    InventorySlotInfo slot;
+    std::string error;
+    if(!extract_inventory_slot(item, slot, error)) continue;
+    ++count;
+  }
+  return count;
+}
+
+bool remap_inventory_positions(Value &items_value, int old_rows, int old_cols, int new_rows, int new_cols)
+{
+  if(items_value.kind != ValueKind::Array) return true;
+  if(new_rows < 1 || new_cols < 1) return false;
+  const int new_total = new_rows * new_cols;
+  if(old_rows < 1) old_rows = 1;
+  if(old_cols < 1) old_cols = 1;
+  const int old_total = old_rows * old_cols;
+
+  std::vector<bool> occupied(static_cast<size_t>(new_total), false);
+  for(size_t item_index = 0; item_index < items_value.array.size(); ++item_index)
+  {
+    Value &item = items_value.array[item_index];
+    if(!inventory_slot_has_content(item)) continue;
+    InventorySlotInfo slot;
+    std::string error;
+    if(!extract_inventory_slot(item, slot, error)) continue;
+
+    // Mirror build_inventory_cell_lookup to derive the current visible cell index.
+    int old_index = static_cast<int>(item_index);
+    if(slot.position && *slot.position >= 0 && *slot.position < old_total)
+      old_index = *slot.position;
+    else if(old_index >= old_total)
+      old_index = old_index % old_total;
+
+    int new_index = old_index % new_total;
+    while(occupied[static_cast<size_t>(new_index)])
+    {
+      new_index = (new_index + 1) % new_total;
+    }
+    occupied[static_cast<size_t>(new_index)] = true;
+    set_inventory_slot_position(item, new_index);
   }
   return true;
 }
@@ -3965,7 +4024,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
             state.error.clear();
           }
 
-          if(ImGui::MenuItem("Configure inventory..."))
+          if(ImGui::MenuItem("Grid Settings..."))
           {
             request_grid_settings = true;
             ImGui::CloseCurrentPopup();
@@ -4100,8 +4159,17 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         gs.cell_size = static_cast<int>(cell_size);
         gs.popup_width = static_cast<int>(hover_popup_width);
         gs.selection_mode = selection_mode;
+        gs.rows = rows;
+        gs.cols = cols;
+        gs.error.clear();
       }
       ImGui::TextDisabled("Grid settings");
+      ImGui::SetNextItemWidth(120.0f);
+      ImGui::InputInt("Rows", &gs.rows);
+      gs.rows = std::clamp(gs.rows, 1, 64);
+      ImGui::SetNextItemWidth(120.0f);
+      ImGui::InputInt("Cols", &gs.cols);
+      gs.cols = std::clamp(gs.cols, 1, 64);
       ImGui::SetNextItemWidth(120.0f);
       ImGui::InputInt("Cell size (px)", &gs.cell_size);
       gs.cell_size = std::clamp(gs.cell_size, 8, 256);
@@ -4111,46 +4179,72 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       const char *selection_labels[] = {"No selection", "Single selection", "Multi selection"};
       ImGui::SetNextItemWidth(180.0f);
       ImGui::Combo("Selection mode", &gs.selection_mode, selection_labels, 3);
+      if(!gs.error.empty()) ImGui::TextColored(ImVec4(0.92f, 0.38f, 0.38f, 1.0f), "%s", gs.error.c_str());
       if(ImGui::Button("Apply"))
       {
-        Value cs_val;
-        cs_val.kind = ValueKind::Number;
-        cs_val.number = static_cast<double>(gs.cell_size);
-        cs_val.is_integer = true;
-        upsert_object_field(updated, "cell_size", std::move(cs_val));
-        Value pw_val;
-        pw_val.kind = ValueKind::Number;
-        pw_val.number = static_cast<double>(gs.popup_width);
-        pw_val.is_integer = true;
-        upsert_object_field(updated, "popup_width", std::move(pw_val));
-        Value sm_val;
-        sm_val.kind = ValueKind::Number;
-        sm_val.number = static_cast<double>(gs.selection_mode);
-        sm_val.is_integer = true;
-        upsert_object_field(updated, "selection_mode", std::move(sm_val));
-        // Drop legacy bool field; new state is authoritative.
-        Value *legacy_ss = find_object_field(updated, "show_selected");
-        if(legacy_ss)
+        const int new_total = gs.rows * gs.cols;
+        const int filled = count_inventory_filled_cells(*items, total_cells);
+        if(filled > new_total)
         {
-          auto &fields = updated.object;
-          fields.erase(std::remove_if(fields.begin(), fields.end(),
-                                      [](const std::pair<std::string, Value> &p) { return p.first == "show_selected"; }),
-                       fields.end());
+          gs.error = "Not enough cells: " + std::to_string(filled) + " filled, " + std::to_string(new_total) + " available.";
         }
-        if(gs.selection_mode == 0)
-          selected_cells.clear();
-        else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+        else
         {
-          selected_cells = {selected_cells.front()};
+          Value rows_val;
+          rows_val.kind = ValueKind::Number;
+          rows_val.number = static_cast<double>(gs.rows);
+          rows_val.is_integer = true;
+          upsert_object_field(updated, "rows", std::move(rows_val));
+          Value cols_val;
+          cols_val.kind = ValueKind::Number;
+          cols_val.number = static_cast<double>(gs.cols);
+          cols_val.is_integer = true;
+          upsert_object_field(updated, "cols", std::move(cols_val));
+          Value cs_val;
+          cs_val.kind = ValueKind::Number;
+          cs_val.number = static_cast<double>(gs.cell_size);
+          cs_val.is_integer = true;
+          upsert_object_field(updated, "cell_size", std::move(cs_val));
+          Value pw_val;
+          pw_val.kind = ValueKind::Number;
+          pw_val.number = static_cast<double>(gs.popup_width);
+          pw_val.is_integer = true;
+          upsert_object_field(updated, "popup_width", std::move(pw_val));
+          Value sm_val;
+          sm_val.kind = ValueKind::Number;
+          sm_val.number = static_cast<double>(gs.selection_mode);
+          sm_val.is_integer = true;
+          upsert_object_field(updated, "selection_mode", std::move(sm_val));
+          // Drop legacy bool field; new state is authoritative.
+          Value *legacy_ss = find_object_field(updated, "show_selected");
+          if(legacy_ss)
+          {
+            auto &fields = updated.object;
+            fields.erase(std::remove_if(fields.begin(), fields.end(),
+                                        [](const std::pair<std::string, Value> &p) { return p.first == "show_selected"; }),
+                         fields.end());
+          }
+          if(gs.rows != rows || gs.cols != cols)
+          {
+            remap_inventory_positions(*items, rows, cols, gs.rows, gs.cols);
+            trim_inventory_slots(*items);
+          }
+          if(gs.selection_mode == 0)
+            selected_cells.clear();
+          else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+          {
+            selected_cells = {selected_cells.front()};
+          }
+          // Clamp to new grid bounds.
+          const int new_total_after = gs.rows * gs.cols;
+          selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
+                                              [new_total_after](int idx) { return idx < 0 || idx >= new_total_after; }),
+                               selected_cells.end());
+          persist_selected_cells();
+          gs.error.clear();
+          changed = true;
+          ImGui::CloseCurrentPopup();
         }
-        // Clamp to current grid bounds.
-        const int clamped_total = total_cells;
-        selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
-                                            [clamped_total](int idx) { return idx < 0 || idx >= clamped_total; }),
-                             selected_cells.end());
-        persist_selected_cells();
-        changed = true;
-        ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
     }
