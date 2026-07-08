@@ -6303,8 +6303,6 @@ void App::frame_ui()
         const int width = std::max(220, safe_cols * 58 + 12);
         std::ostringstream out;
         out << variable_name << "({\n";
-        out << "  rows:" << safe_rows << ",\n";
-        out << "  cols:" << safe_cols << ",\n";
         out << "  items:[\n";
         out << "    {name:\"Potion\", image:\"potion.png\", tooltip:\"Consumable item\", quantity:3, color:\"#57A7FF\"}";
         if(safe_rows * safe_cols > 1)

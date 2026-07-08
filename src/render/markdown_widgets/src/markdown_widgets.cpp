@@ -3590,9 +3590,9 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
 
 void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
-  if(stmt.args.size() != 5)
+  if(stmt.args.size() < 5 || stmt.args.size() > 8)
   {
-    render_error_inline("inventory() expects value, label, width, rows, cols");
+    render_error_inline("inventory() expects 5 to 8 args: value, label, width, rows, cols, [cell_size, popup_width, selection_mode]");
     return;
   }
 
@@ -3656,29 +3656,58 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
 
+  // Widget-level configuration: prefer the inventory() call args; fall back to the
+  // bound variable for backward compatibility with notes that stored config there.
   constexpr float kDefaultCellSize = 48.0f;
   float cell_size = kDefaultCellSize;
+  if(stmt.args.size() >= 6)
   {
-    const Value *cs = find_object_field(updated, "cell_size");
-    if(cs && cs->kind == ValueKind::Number)
-      cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
+    ExprResult cs_arg = ctx.evaluate(stmt.args[5]);
+    if(!cs_arg.error.empty() || cs_arg.value.kind != ValueKind::Number)
+    {
+      render_error_inline("inventory() cell_size must be numeric");
+      return;
+    }
+    cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs_arg.value.number)));
+  }
+  else if(const Value *cs = find_object_field(updated, "cell_size"); cs && cs->kind == ValueKind::Number)
+  {
+    cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
+  }
+  float hover_popup_width = read_ui_hover_popup_width(updated);
+  if(stmt.args.size() >= 7)
+  {
+    ExprResult pw_arg = ctx.evaluate(stmt.args[6]);
+    if(!pw_arg.error.empty() || pw_arg.value.kind != ValueKind::Number)
+    {
+      render_error_inline("inventory() popup_width must be numeric");
+      return;
+    }
+    hover_popup_width = clamp_ui_hover_popup_width(static_cast<float>(pw_arg.value.number));
   }
   int selection_mode = 0;
+  if(stmt.args.size() >= 8)
   {
-    const Value *sm = find_object_field(updated, "selection_mode");
-    if(sm && sm->kind == ValueKind::Number)
+    ExprResult sm_arg = ctx.evaluate(stmt.args[7]);
+    if(!sm_arg.error.empty() || sm_arg.value.kind != ValueKind::Number)
     {
-      const int n = static_cast<int>(std::llround(sm->number));
-      selection_mode = std::clamp(n, 0, 2);
+      render_error_inline("inventory() selection_mode must be numeric");
+      return;
     }
-    else
+    selection_mode = std::clamp(static_cast<int>(std::llround(sm_arg.value.number)), 0, 2);
+  }
+  else
+  {
+    // Backward compatibility: read selection_mode / show_selected from the variable.
+    if(const Value *sm = find_object_field(updated, "selection_mode"); sm && sm->kind == ValueKind::Number)
     {
-      // Backward compatibility with the old bool field.
-      const Value *ss = find_object_field(updated, "show_selected");
-      if(ss && ss->kind == ValueKind::Bool && ss->boolean) selection_mode = 1;
+      selection_mode = std::clamp(static_cast<int>(std::llround(sm->number)), 0, 2);
+    }
+    else if(const Value *ss = find_object_field(updated, "show_selected"); ss && ss->kind == ValueKind::Bool && ss->boolean)
+    {
+      selection_mode = 1;
     }
   }
-  const float hover_popup_width = read_ui_hover_popup_width(updated);
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
   if(available_width > 1.0f)
@@ -3702,42 +3731,24 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     return;
   }
 
-  std::vector<int> selected_cells;
+  // Per-widget selection state. Multiple inventory widgets can share the same
+  // data variable, so the selection must be scoped to the widget, not the
+  // variable. The selection lives in a static map keyed by child_id and is
+  // reset when the widget is destroyed.
+  static std::unordered_map<std::string, std::vector<int>> widget_selected_cells;
+  std::vector<int> &selected_cells = widget_selected_cells[child_id];
+  // Clamp any stale entries to the current grid size.
+  selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
+                                      [total_cells](int idx) { return idx < 0 || idx >= total_cells; }),
+                       selected_cells.end());
+  // For backward compatibility: seed the selection from the legacy
+  // selected_slot_by_widget map when no selection is recorded yet.
+  if(selected_cells.empty() && selection_mode == 1)
   {
-    const Value *sc = find_object_field(updated, "selected_cells");
-    if(sc && sc->kind == ValueKind::Array)
-    {
-      for(const Value &entry : sc->array)
-      {
-        if(entry.kind != ValueKind::Number) continue;
-        const int idx = static_cast<int>(std::llround(entry.number));
-        if(idx < 0 || idx >= total_cells) continue;
-        if(std::find(selected_cells.begin(), selected_cells.end(), idx) == selected_cells.end())
-          selected_cells.push_back(idx);
-      }
-    }
-    else if(selection_mode == 1)
-    {
-      int &legacy = selected_slot_by_widget[child_id];
-      if(legacy < 0 || legacy >= total_cells) legacy = 0;
-      if(std::find(selected_cells.begin(), selected_cells.end(), legacy) == selected_cells.end())
-        selected_cells.push_back(legacy);
-    }
+    int &legacy = selected_slot_by_widget[child_id];
+    if(legacy < 0 || legacy >= total_cells) legacy = 0;
+    selected_cells.push_back(legacy);
   }
-
-  auto persist_selected_cells = [&]() {
-    Value arr;
-    arr.kind = ValueKind::Array;
-    for(int idx : selected_cells)
-    {
-      Value n;
-      n.kind = ValueKind::Number;
-      n.number = static_cast<double>(idx);
-      n.is_integer = true;
-      arr.array.push_back(std::move(n));
-    }
-    upsert_object_field(updated, "selected_cells", std::move(arr));
-  };
 
   bool changed = false;
 
@@ -3806,7 +3817,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
             // Single-select: replace the selection with this cell.
             selected_cells.clear();
             selected_cells.push_back(index);
-            persist_selected_cells();
             changed = true;
           }
           else if(selection_mode == 2)
@@ -3817,7 +3827,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
               selected_cells.push_back(index);
             else
               selected_cells.erase(it);
-            persist_selected_cells();
             changed = true;
           }
           // Mode 0 (none): ignore clicks for selection purposes.
@@ -4142,7 +4151,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                   if(std::find(selected_cells.begin(), selected_cells.end(), index) == selected_cells.end())
                     selected_cells.push_back(index);
                 }
-                persist_selected_cells();
                 state.error.clear();
                 ImGui::CloseCurrentPopup();
               }
@@ -4206,79 +4214,58 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         }
         else
         {
-          Value rows_val;
-          rows_val.kind = ValueKind::Number;
-          rows_val.number = static_cast<double>(gs.rows);
-          rows_val.is_integer = true;
-          upsert_object_field(updated, "rows", std::move(rows_val));
-          Value cols_val;
-          cols_val.kind = ValueKind::Number;
-          cols_val.number = static_cast<double>(gs.cols);
-          cols_val.is_integer = true;
-          upsert_object_field(updated, "cols", std::move(cols_val));
-          Value cs_val;
-          cs_val.kind = ValueKind::Number;
-          cs_val.number = static_cast<double>(gs.cell_size);
-          cs_val.is_integer = true;
-          upsert_object_field(updated, "cell_size", std::move(cs_val));
-          Value pw_val;
-          pw_val.kind = ValueKind::Number;
-          pw_val.number = static_cast<double>(gs.popup_width);
-          pw_val.is_integer = true;
-          upsert_object_field(updated, "popup_width", std::move(pw_val));
-          Value sm_val;
-          sm_val.kind = ValueKind::Number;
-          sm_val.number = static_cast<double>(gs.selection_mode);
-          sm_val.is_integer = true;
-          upsert_object_field(updated, "selection_mode", std::move(sm_val));
-          // Drop legacy bool field; new state is authoritative.
-          Value *legacy_ss = find_object_field(updated, "show_selected");
-          if(legacy_ss)
-          {
-            auto &fields = updated.object;
-            fields.erase(std::remove_if(fields.begin(), fields.end(),
-                                        [](const std::pair<std::string, Value> &p) { return p.first == "show_selected"; }),
-                         fields.end());
-          }
           if(gs.rows != rows || gs.cols != cols)
           {
             remap_inventory_positions(*items, rows, cols, gs.rows, gs.cols);
             trim_inventory_slots(*items);
-            // Also rewrite the inventory() call arguments so the widget itself
-            // reflects the new size. stmt.args layout: [value, label, width, rows, cols].
-            if(stmt.args.size() >= 5)
-            {
-              std::string new_call;
-              new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 32);
-              new_call += stmt.name;
-              new_call += "(";
-              new_call += stmt.args[0]; // value
-              new_call += ", ";
-              new_call += stmt.args[1]; // label
-              new_call += ", ";
-              new_call += stmt.args[2]; // width
-              new_call += ", ";
-              new_call += std::to_string(gs.rows);
-              new_call += ", ";
-              new_call += std::to_string(gs.cols);
-              new_call += ")";
-              g_statement_text_replacements[stmt.span] = std::move(new_call);
-            }
+            changed = true;
           }
-          if(gs.selection_mode == 0)
-            selected_cells.clear();
-          else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+          // Rewrite the inventory() call arguments so the widget configuration
+          // (rows, cols, cell_size, popup_width, selection_mode) lives on the
+          // widget itself, not on the data variable. Multiple inventory widgets
+          // can then share the same data with different configurations.
+          // stmt.args layout: [value, label, width, rows, cols, cell_size?, popup_width?, selection_mode?].
+          if(stmt.args.size() >= 5)
           {
-            selected_cells = {selected_cells.front()};
+            std::string new_call;
+            new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 64);
+            new_call += stmt.name;
+            new_call += "(";
+            new_call += stmt.args[0]; // value
+            new_call += ", ";
+            new_call += stmt.args[1]; // label
+            new_call += ", ";
+            new_call += stmt.args[2]; // width
+            new_call += ", ";
+            new_call += std::to_string(gs.rows);
+            new_call += ", ";
+            new_call += std::to_string(gs.cols);
+            new_call += ", ";
+            new_call += std::to_string(gs.cell_size);
+            new_call += ", ";
+            new_call += std::to_string(gs.popup_width);
+            new_call += ", ";
+            new_call += std::to_string(gs.selection_mode);
+            new_call += ")";
+            g_statement_text_replacements[stmt.span] = std::move(new_call);
           }
           // Clamp to new grid bounds.
           const int new_total_after = gs.rows * gs.cols;
           selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
                                               [new_total_after](int idx) { return idx < 0 || idx >= new_total_after; }),
                                selected_cells.end());
-          persist_selected_cells();
+          if(gs.selection_mode == 0)
+            selected_cells.clear();
+          else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+          {
+            selected_cells = {selected_cells.front()};
+          }
+          else if(gs.selection_mode == 1 && selected_cells.empty() && new_total_after > 0)
+          {
+            // Switching to single-select with no prior selection: seed with cell 0.
+            selected_cells.push_back(0);
+          }
           gs.error.clear();
-          changed = true;
           ImGui::CloseCurrentPopup();
         }
       }
@@ -5675,7 +5662,7 @@ RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size
   ImGui::EndGroup();
   ImGui::PopID();
 
-  if(!replacements.empty())
+  if(!replacements.empty() || !g_statement_text_replacements.empty())
   {
     apply_replacements(markdown, body_start, block, replacements);
     result.markdown_changed = true;
