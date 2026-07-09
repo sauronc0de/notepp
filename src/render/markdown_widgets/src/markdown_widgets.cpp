@@ -3138,10 +3138,26 @@ struct InventorySlotInfo
   std::string tooltip;
   std::string color_text;
   std::optional<std::string> quantity;
-  std::optional<int> position;
+  // Grid coordinates of the cell (column, row). Decoupled from the widget's
+  // rows/cols so multiple inventory widgets can share the same data variable
+  // and show different subsets without rewriting any cell.
+  std::optional<std::pair<int, int>> xy;
   bool enabled = true;
   bool has_mark_color = false;
   ImVec4 mark_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+};
+
+// Result of laying out an items[] array against a specific (rows, cols) widget.
+// `item_index[i] == -1` means cell `i` is empty in this widget's view.
+// `visible_count` is the number of non-empty cells whose (x, y) falls inside
+// the widget's grid. `total_count` is the number of non-empty cells in the
+// data regardless of position; `total_count - visible_count` are the cells
+// that exist in the data but are not visible in this widget's viewport.
+struct InventoryCellLookup
+{
+  std::vector<int> item_index;
+  int visible_count = 0;
+  int total_count = 0;
 };
 
 struct InventoryDragSourceState
@@ -3161,8 +3177,11 @@ static std::unordered_map<std::string, PendingCrossInventoryOp> g_pending_cross_
 static std::map<SourceSpan, std::string> g_statement_text_replacements;
 
 bool inventory_slot_has_content(const Value &slot_value);
-bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error);
-void set_inventory_slot_position(Value &slot_value, int position);
+// widget_cols > 0 enables legacy `position` decoding against the current
+// widget's column count when a cell carries neither `x` nor `y`.
+bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error, int widget_cols = 0);
+void set_inventory_slot_xy(Value &slot_value, int x, int y);
+InventoryCellLookup build_inventory_cell_lookup(const Value &items_value, int rows, int cols);
 
 struct InventoryPopupEditorState
 {
@@ -3187,7 +3206,7 @@ struct InventoryGridEditorState
   std::string error;
 };
 
-bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error)
+bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, std::string &error, int widget_cols)
 {
   if(slot_value.kind != ValueKind::Object)
   {
@@ -3200,7 +3219,7 @@ bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, st
   slot.tooltip.clear();
   slot.color_text.clear();
   slot.quantity.reset();
-  slot.position.reset();
+  slot.xy.reset();
   slot.enabled = true;
   slot.has_mark_color = false;
   slot.mark_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
@@ -3234,14 +3253,48 @@ bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, st
       return false;
     }
   }
-  if(const Value *position_value = find_object_field(slot_value, "position"); position_value)
+  // Grid coordinates: prefer (x, y) directly. Fall back to a legacy `position`
+  // integer decoded against the current widget's column count. This lets old
+  // notes that stored `position` keep rendering without an immediate migration;
+  // the next Apply in Grid Settings strips the legacy field.
   {
-    if(position_value->kind != ValueKind::Number)
+    bool got_xy = false;
+    int x = -1;
+    int y = -1;
+    if(const Value *xv = find_object_field(slot_value, "x"); xv && xv->kind == ValueKind::Number)
+    {
+      const int candidate = static_cast<int>(std::llround(xv->number));
+      if(candidate >= 0)
+      {
+        x = candidate;
+        if(const Value *yv = find_object_field(slot_value, "y"); yv && yv->kind == ValueKind::Number)
+        {
+          const int yc = static_cast<int>(std::llround(yv->number));
+          if(yc >= 0)
+          {
+            y = yc;
+            got_xy = true;
+          }
+        }
+      }
+    }
+    if(got_xy)
+    {
+      slot.xy = std::make_pair(x, y);
+    }
+    else if(widget_cols > 0)
+    {
+      if(const Value *pv = find_object_field(slot_value, "position"); pv && pv->kind == ValueKind::Number)
+      {
+        const int p = static_cast<int>(std::llround(pv->number));
+        if(p >= 0) slot.xy = std::make_pair(p % widget_cols, p / widget_cols);
+      }
+    }
+    else if(const Value *pv = find_object_field(slot_value, "position"); pv && pv->kind != ValueKind::Number)
     {
       error = "inventory position must be numeric";
       return false;
     }
-    slot.position = static_cast<int>(std::llround(position_value->number));
   }
   if(const Value *color_value = find_object_field(slot_value, "color"); color_value)
   {
@@ -3277,58 +3330,6 @@ bool extract_inventory_slot(const Value &slot_value, InventorySlotInfo &slot, st
   return true;
 }
 
-int count_inventory_filled_cells(const Value &items_value, int cell_count)
-{
-  if(items_value.kind != ValueKind::Array) return 0;
-  (void)cell_count;
-  int count = 0;
-  for(const Value &item : items_value.array)
-  {
-    if(!inventory_slot_has_content(item)) continue;
-    InventorySlotInfo slot;
-    std::string error;
-    if(!extract_inventory_slot(item, slot, error)) continue;
-    ++count;
-  }
-  return count;
-}
-
-bool remap_inventory_positions(Value &items_value, int old_rows, int old_cols, int new_rows, int new_cols)
-{
-  if(items_value.kind != ValueKind::Array) return true;
-  if(new_rows < 1 || new_cols < 1) return false;
-  const int new_total = new_rows * new_cols;
-  if(old_rows < 1) old_rows = 1;
-  if(old_cols < 1) old_cols = 1;
-  const int old_total = old_rows * old_cols;
-
-  std::vector<bool> occupied(static_cast<size_t>(new_total), false);
-  for(size_t item_index = 0; item_index < items_value.array.size(); ++item_index)
-  {
-    Value &item = items_value.array[item_index];
-    if(!inventory_slot_has_content(item)) continue;
-    InventorySlotInfo slot;
-    std::string error;
-    if(!extract_inventory_slot(item, slot, error)) continue;
-
-    // Mirror build_inventory_cell_lookup to derive the current visible cell index.
-    int old_index = static_cast<int>(item_index);
-    if(slot.position && *slot.position >= 0 && *slot.position < old_total)
-      old_index = *slot.position;
-    else if(old_index >= old_total)
-      old_index = old_index % old_total;
-
-    int new_index = old_index % new_total;
-    while(occupied[static_cast<size_t>(new_index)])
-    {
-      new_index = (new_index + 1) % new_total;
-    }
-    occupied[static_cast<size_t>(new_index)] = true;
-    set_inventory_slot_position(item, new_index);
-  }
-  return true;
-}
-
 bool inventory_slot_has_content(const Value &slot_value)
 {
   if(slot_value.kind != ValueKind::Object) return true;
@@ -3341,6 +3342,7 @@ bool inventory_slot_has_content(const Value &slot_value)
       continue;
     }
     if(field_name == "position") continue;
+    if(field_name == "x" || field_name == "y") continue;
     if(field_name == "enabled")
     {
       if(field_value.kind == ValueKind::Bool && !field_value.boolean) return true;
@@ -3400,12 +3402,24 @@ bool parse_inventory_mark_color(const char *text, std::string &color_text, ImVec
   return true;
 }
 
-void set_inventory_slot_position(Value &slot_value, int position)
+void set_inventory_slot_xy(Value &slot_value, int x, int y)
 {
-  Value position_value;
-  position_value.kind = ValueKind::Number;
-  position_value.number = static_cast<double>(position);
-  upsert_object_field(slot_value, "position", std::move(position_value));
+  Value xv;
+  xv.kind = ValueKind::Number;
+  xv.number = static_cast<double>(x);
+  upsert_object_field(slot_value, "x", std::move(xv));
+  Value yv;
+  yv.kind = ValueKind::Number;
+  yv.number = static_cast<double>(y);
+  upsert_object_field(slot_value, "y", std::move(yv));
+  // Drop any legacy `position` so the two representations can never drift.
+  if(slot_value.kind == ValueKind::Object)
+  {
+    auto &fields = slot_value.object;
+    fields.erase(std::remove_if(fields.begin(), fields.end(),
+                                [](const std::pair<std::string, Value> &p) { return p.first == "position"; }),
+                 fields.end());
+  }
 }
 
 bool remove_inventory_item(Value &items_value, int item_index)
@@ -3416,29 +3430,32 @@ bool remove_inventory_item(Value &items_value, int item_index)
   return true;
 }
 
-std::vector<int> build_inventory_cell_lookup(const Value &items_value, int cell_count)
+InventoryCellLookup build_inventory_cell_lookup(const Value &items_value, int rows, int cols)
 {
-  std::vector<int> lookup(static_cast<size_t>(std::max(0, cell_count)), -1);
-  if(items_value.kind != ValueKind::Array) return lookup;
+  InventoryCellLookup result;
+  const int total = std::max(0, rows) * std::max(0, cols);
+  result.item_index.assign(static_cast<size_t>(total), -1);
+  if(items_value.kind != ValueKind::Array) return result;
 
   for(size_t item_index = 0; item_index < items_value.array.size(); ++item_index)
   {
+    const Value &item = items_value.array[item_index];
+    if(!inventory_slot_has_content(item)) continue;
+    ++result.total_count;
     InventorySlotInfo slot;
     std::string error;
-    const bool slot_ok = extract_inventory_slot(items_value.array[item_index], slot, error);
-    int cell_index = static_cast<int>(item_index);
-    if(slot_ok && slot.position) cell_index = *slot.position;
-    if(cell_index < 0 || cell_index >= cell_count)
-    {
-      if(static_cast<int>(item_index) < cell_count)
-        cell_index = static_cast<int>(item_index);
-      else
-        continue;
-    }
-    if(lookup[static_cast<size_t>(cell_index)] == -1)
-      lookup[static_cast<size_t>(cell_index)] = static_cast<int>(item_index);
+    const bool slot_ok = extract_inventory_slot(item, slot, error, cols);
+    if(!slot_ok || !slot.xy) continue; // No coordinates at all — not viewable.
+    const int x = slot.xy->first;
+    const int y = slot.xy->second;
+    if(x < 0 || y < 0 || x >= cols || y >= rows) continue; // Outside this widget's grid.
+    const int cell_index = y * cols + x;
+    if(cell_index < 0 || cell_index >= total) continue;
+    if(result.item_index[static_cast<size_t>(cell_index)] != -1) continue; // First cell at this (x, y) wins; duplicates stay hidden.
+    result.item_index[static_cast<size_t>(cell_index)] = static_cast<int>(item_index);
+    ++result.visible_count;
   }
-  return lookup;
+  return result;
 }
 
 std::string inventory_slot_fallback_label(const InventorySlotInfo &slot)
@@ -3640,14 +3657,10 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
   Value updated = value_result.value;
 
-  // rows/cols can be overridden by the bound variable (e.g. after the user resizes the
-  // grid via the popup). Fall back to the inventory() call arguments otherwise.
+  // rows/cols come exclusively from the inventory() call args. The bound variable
+  // is reserved for cell data only.
   int rows = std::max(1, static_cast<int>(std::llround(rows_result.value.number)));
   int cols = std::max(1, static_cast<int>(std::llround(cols_result.value.number)));
-  if(const Value *vr = find_object_field(updated, "rows"); vr && vr->kind == ValueKind::Number)
-    rows = std::max(1, static_cast<int>(std::llround(vr->number)));
-  if(const Value *vc = find_object_field(updated, "cols"); vc && vc->kind == ValueKind::Number)
-    cols = std::max(1, static_cast<int>(std::llround(vc->number)));
   const int total_cells = rows * cols;
   const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
   const float requested_width = evaluate_width(ctx, stmt.args[2], 220.0f);
@@ -3656,8 +3669,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const float spacing = style.ItemSpacing.x;
   const float available_width = std::max(0.0f, ImGui::GetContentRegionAvail().x);
 
-  // Widget-level configuration: prefer the inventory() call args; fall back to the
-  // bound variable for backward compatibility with notes that stored config there.
+  // Widget-level configuration: read exclusively from the inventory() call args.
+  // The bound variable is for cell data only; any old config fields on it are
+  // ignored at read time and stripped on Apply.
   constexpr float kDefaultCellSize = 48.0f;
   float cell_size = kDefaultCellSize;
   if(stmt.args.size() >= 6)
@@ -3670,11 +3684,8 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     }
     cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs_arg.value.number)));
   }
-  else if(const Value *cs = find_object_field(updated, "cell_size"); cs && cs->kind == ValueKind::Number)
-  {
-    cell_size = std::max(8.0f, std::min(256.0f, static_cast<float>(cs->number)));
-  }
-  float hover_popup_width = read_ui_hover_popup_width(updated);
+  constexpr float kDefaultPopupWidth = 320.0f;
+  float hover_popup_width = kDefaultPopupWidth;
   if(stmt.args.size() >= 7)
   {
     ExprResult pw_arg = ctx.evaluate(stmt.args[6]);
@@ -3695,18 +3706,6 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       return;
     }
     selection_mode = std::clamp(static_cast<int>(std::llround(sm_arg.value.number)), 0, 2);
-  }
-  else
-  {
-    // Backward compatibility: read selection_mode / show_selected from the variable.
-    if(const Value *sm = find_object_field(updated, "selection_mode"); sm && sm->kind == ValueKind::Number)
-    {
-      selection_mode = std::clamp(static_cast<int>(std::llround(sm->number)), 0, 2);
-    }
-    else if(const Value *ss = find_object_field(updated, "show_selected"); ss && ss->kind == ValueKind::Bool && ss->boolean)
-    {
-      selection_mode = 1;
-    }
   }
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
@@ -3760,9 +3759,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       PendingCrossInventoryOp &op = op_it->second;
       if(op.kind != CrossInventoryOpKind::None && !readonly)
       {
-        std::vector<int> pending_lookup = build_inventory_cell_lookup(*items, total_cells);
+        InventoryCellLookup pending_lookup = build_inventory_cell_lookup(*items, rows, cols);
         const int op_item_index = (op.cell_index >= 0 && op.cell_index < total_cells)
-                                      ? pending_lookup[static_cast<size_t>(op.cell_index)]
+                                      ? pending_lookup.item_index[static_cast<size_t>(op.cell_index)]
                                       : -1;
         if(op.kind == CrossInventoryOpKind::Remove)
         {
@@ -3783,7 +3782,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           Value new_slot = make_inventory_slot_value(
               op.replace_data.title, img, op.replace_data.tooltip,
               op.replace_data.quantity, op.replace_data.color_text, op.replace_data.enabled);
-          set_inventory_slot_position(new_slot, op.cell_index);
+          // Place the swapped-in cell at the source slot's coordinates so the
+          // source widget renders it where the user originally picked it up.
+          set_inventory_slot_xy(new_slot, op.cell_index % cols, op.cell_index / cols);
           if(op_item_index >= 0 && static_cast<size_t>(op_item_index) < items->array.size())
             items->array[static_cast<size_t>(op_item_index)] = std::move(new_slot);
           else
@@ -3796,7 +3797,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     }
   }
   ImGui::BeginDisabled(readonly);
-  std::vector<int> cell_lookup = build_inventory_cell_lookup(*items, total_cells);
+  InventoryCellLookup cell_lookup = build_inventory_cell_lookup(*items, rows, cols);
   bool any_slot_hovered = false;
   bool request_grid_settings = false;
   if(ImGui::BeginChild(child_id.c_str(), ImVec2(widget_width, height), true, needs_scroll ? ImGuiWindowFlags_HorizontalScrollbar : ImGuiWindowFlags_None))
@@ -3836,11 +3837,11 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
         const ImVec2 min = ImGui::GetItemRectMin();
         const ImVec2 max = ImGui::GetItemRectMax();
 
-        const int item_index = cell_lookup[static_cast<size_t>(index)];
+        const int item_index = cell_lookup.item_index[static_cast<size_t>(index)];
         const bool has_slot_value = item_index >= 0 && static_cast<size_t>(item_index) < items->array.size();
         InventorySlotInfo slot;
         std::string slot_error;
-        const bool slot_ok = !has_slot_value || extract_inventory_slot(items->array[static_cast<size_t>(item_index)], slot, slot_error);
+        const bool slot_ok = !has_slot_value || extract_inventory_slot(items->array[static_cast<size_t>(item_index)], slot, slot_error, cols);
         const bool has_content = has_slot_value && slot_ok && inventory_slot_has_content(items->array[static_cast<size_t>(item_index)]);
         if(!slot_ok)
         {
@@ -3893,30 +3894,30 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                 // Same-inventory drag: swap/move/copy within this grid
                 if(drag->cell_index >= 0 && drag->cell_index < total_cells && drag->cell_index != index)
                 {
-                  const int source_item_index = cell_lookup[static_cast<size_t>(drag->cell_index)];
+                  const int source_item_index = cell_lookup.item_index[static_cast<size_t>(drag->cell_index)];
                   const int target_item_index = item_index;
                   if(source_item_index >= 0 && static_cast<size_t>(source_item_index) < items->array.size())
                   {
                     InventorySlotInfo source_slot;
                     std::string source_error;
-                    if(extract_inventory_slot(items->array[static_cast<size_t>(source_item_index)], source_slot, source_error))
+                    if(extract_inventory_slot(items->array[static_cast<size_t>(source_item_index)], source_slot, source_error, cols))
                     {
                       if(drag->copy && !has_slot_value)
                       {
                         Value duplicated = items->array[static_cast<size_t>(source_item_index)];
-                        set_inventory_slot_position(duplicated, index);
+                        set_inventory_slot_xy(duplicated, index % cols, index / cols);
                         items->array.push_back(std::move(duplicated));
                         changed = true;
                       }
                       else if(has_slot_value && target_item_index >= 0 && target_item_index != source_item_index)
                       {
-                        set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
-                        set_inventory_slot_position(items->array[static_cast<size_t>(target_item_index)], drag->cell_index);
+                        set_inventory_slot_xy(items->array[static_cast<size_t>(source_item_index)], index % cols, index / cols);
+                        set_inventory_slot_xy(items->array[static_cast<size_t>(target_item_index)], drag->cell_index % cols, drag->cell_index / cols);
                         changed = true;
                       }
                       else if(!has_slot_value)
                       {
-                        set_inventory_slot_position(items->array[static_cast<size_t>(source_item_index)], index);
+                        set_inventory_slot_xy(items->array[static_cast<size_t>(source_item_index)], index % cols, index / cols);
                         changed = true;
                       }
                       if(changed) trim_inventory_slots(*items);
@@ -3943,7 +3944,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                   Value new_item = make_inventory_slot_value(
                       src_state.item.title, target_image, src_state.item.tooltip,
                       src_state.item.quantity, src_state.item.color_text, src_state.item.enabled);
-                  set_inventory_slot_position(new_item, index);
+                  set_inventory_slot_xy(new_item, index % cols, index / cols);
 
                   if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
                   {
@@ -3952,7 +3953,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                     {
                       InventorySlotInfo displaced;
                       std::string displaced_err;
-                      if(extract_inventory_slot(items->array[static_cast<size_t>(item_index)], displaced, displaced_err))
+                      if(extract_inventory_slot(items->array[static_cast<size_t>(item_index)], displaced, displaced_err, cols))
                       {
                         CrossSlotData swap_data;
                         swap_data.title = displaced.title;
@@ -4013,15 +4014,15 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
               {
                 InventorySlotInfo existing;
                 std::string existing_error;
-                extract_inventory_slot(items->array[static_cast<size_t>(item_index)], existing, existing_error);
+                extract_inventory_slot(items->array[static_cast<size_t>(item_index)], existing, existing_error, cols);
                 Value new_slot = make_inventory_slot_value(existing.title, stored_path, existing.tooltip, existing.quantity, existing.color_text, existing.enabled);
-                set_inventory_slot_position(new_slot, index);
+                set_inventory_slot_xy(new_slot, index % cols, index / cols);
                 items->array[static_cast<size_t>(item_index)] = std::move(new_slot);
               }
               else
               {
                 Value new_slot = make_inventory_slot_value({}, stored_path, {});
-                set_inventory_slot_position(new_slot, index);
+                set_inventory_slot_xy(new_slot, index % cols, index / cols);
                 items->array.push_back(std::move(new_slot));
               }
               trim_inventory_slots(*items);
@@ -4129,7 +4130,7 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
                 Value new_slot = make_inventory_slot_value(title, image, tooltip, quantity, color_text, state.enabled);
                 if(inventory_slot_has_content(new_slot))
                 {
-                  set_inventory_slot_position(new_slot, index);
+                  set_inventory_slot_xy(new_slot, index % cols, index / cols);
                   if(has_slot_value && item_index >= 0 && static_cast<size_t>(item_index) < items->array.size())
                     items->array[static_cast<size_t>(item_index)] = std::move(new_slot);
                   else
@@ -4206,74 +4207,146 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
       if(!gs.error.empty()) ImGui::TextColored(ImVec4(0.92f, 0.38f, 0.38f, 1.0f), "%s", gs.error.c_str());
       if(ImGui::Button("Apply"))
       {
-        const int new_total = gs.rows * gs.cols;
-        const int filled = count_inventory_filled_cells(*items, total_cells);
-        if(filled > new_total)
+        // Resize is always allowed: cells that fall outside the new grid simply
+        // become hidden in this widget. They are still in the data and remain
+        // visible to any other inventory() widget bound to the same variable.
+        // Migrate legacy `position` to (x, y) on every cell using the *new*
+        // column count so the encoding matches what this widget will read next
+        // frame, then strip the legacy field. Cells that already have (x, y)
+        // keep their coordinates unchanged across the resize.
+        if(items->kind == ValueKind::Array)
         {
-          gs.error = "Not enough cells: " + std::to_string(filled) + " filled, " + std::to_string(new_total) + " available.";
+          const int new_cols = gs.cols;
+          for(Value &cell : items->array)
+          {
+            if(cell.kind != ValueKind::Object) continue;
+            const bool has_x = find_object_field(cell, "x") != nullptr;
+            const bool has_y = find_object_field(cell, "y") != nullptr;
+            const Value *pv = find_object_field(cell, "position");
+            if(!has_x && !has_y && pv && pv->kind == ValueKind::Number && new_cols > 0)
+            {
+              const int p = static_cast<int>(std::llround(pv->number));
+              if(p >= 0)
+              {
+                Value xv;
+                xv.kind = ValueKind::Number;
+                xv.number = static_cast<double>(p % new_cols);
+                upsert_object_field(cell, "x", std::move(xv));
+                Value yv;
+                yv.kind = ValueKind::Number;
+                yv.number = static_cast<double>(p / new_cols);
+                upsert_object_field(cell, "y", std::move(yv));
+                changed = true;
+              }
+            }
+            auto &fields = cell.object;
+            const size_t before_fields = fields.size();
+            fields.erase(std::remove_if(fields.begin(), fields.end(),
+                                        [](const std::pair<std::string, Value> &p) { return p.first == "position"; }),
+                         fields.end());
+            if(fields.size() != before_fields) changed = true;
+          }
+          trim_inventory_slots(*items);
         }
-        else
+        // Strip any widget-config fields from the bound variable so it only
+        // holds cell data. This migrates old notes that stored config on the
+        // variable when the user next opens the Grid Settings popup.
+        if(updated.kind == ValueKind::Object)
         {
-          if(gs.rows != rows || gs.cols != cols)
-          {
-            remap_inventory_positions(*items, rows, cols, gs.rows, gs.cols);
-            trim_inventory_slots(*items);
-            changed = true;
-          }
-          // Rewrite the inventory() call arguments so the widget configuration
-          // (rows, cols, cell_size, popup_width, selection_mode) lives on the
-          // widget itself, not on the data variable. Multiple inventory widgets
-          // can then share the same data with different configurations.
-          // stmt.args layout: [value, label, width, rows, cols, cell_size?, popup_width?, selection_mode?].
-          if(stmt.args.size() >= 5)
-          {
-            std::string new_call;
-            new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 64);
-            new_call += stmt.name;
-            new_call += "(";
-            new_call += stmt.args[0]; // value
-            new_call += ", ";
-            new_call += stmt.args[1]; // label
-            new_call += ", ";
-            new_call += stmt.args[2]; // width
-            new_call += ", ";
-            new_call += std::to_string(gs.rows);
-            new_call += ", ";
-            new_call += std::to_string(gs.cols);
-            new_call += ", ";
-            new_call += std::to_string(gs.cell_size);
-            new_call += ", ";
-            new_call += std::to_string(gs.popup_width);
-            new_call += ", ";
-            new_call += std::to_string(gs.selection_mode);
-            new_call += ")";
-            g_statement_text_replacements[stmt.span] = std::move(new_call);
-          }
-          // Clamp to new grid bounds.
-          const int new_total_after = gs.rows * gs.cols;
-          selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
-                                              [new_total_after](int idx) { return idx < 0 || idx >= new_total_after; }),
-                               selected_cells.end());
-          if(gs.selection_mode == 0)
-            selected_cells.clear();
-          else if(gs.selection_mode == 1 && selected_cells.size() > 1)
-          {
-            selected_cells = {selected_cells.front()};
-          }
-          else if(gs.selection_mode == 1 && selected_cells.empty() && new_total_after > 0)
-          {
-            // Switching to single-select with no prior selection: seed with cell 0.
-            selected_cells.push_back(0);
-          }
-          gs.error.clear();
-          ImGui::CloseCurrentPopup();
+          static constexpr std::string_view kWidgetConfigFields[] = {
+              "rows", "cols", "cell_size", "popup_width", "selection_mode", "selected_cells", "show_selected"};
+          auto &fields = updated.object;
+          const size_t before = fields.size();
+          fields.erase(std::remove_if(fields.begin(), fields.end(), [](const std::pair<std::string, Value> &p) {
+                         return std::any_of(std::begin(kWidgetConfigFields), std::end(kWidgetConfigFields),
+                                            [&](std::string_view key) { return p.first == key; });
+                       }),
+                       fields.end());
+          if(fields.size() != before) changed = true;
         }
+        // Rewrite the inventory() call arguments so the widget configuration
+        // (rows, cols, cell_size, popup_width, selection_mode) lives on the
+        // widget itself, not on the data variable. Multiple inventory widgets
+        // can then share the same data with different configurations.
+        // stmt.args layout: [value, label, width, rows, cols, cell_size?, popup_width?, selection_mode?].
+        if(stmt.args.size() >= 5)
+        {
+          std::string new_call;
+          new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 64);
+          new_call += stmt.name;
+          new_call += "(";
+          new_call += stmt.args[0]; // value
+          new_call += ", ";
+          new_call += stmt.args[1]; // label
+          new_call += ", ";
+          new_call += stmt.args[2]; // width
+          new_call += ", ";
+          new_call += std::to_string(gs.rows);
+          new_call += ", ";
+          new_call += std::to_string(gs.cols);
+          new_call += ", ";
+          new_call += std::to_string(gs.cell_size);
+          new_call += ", ";
+          new_call += std::to_string(gs.popup_width);
+          new_call += ", ";
+          new_call += std::to_string(gs.selection_mode);
+          new_call += ")";
+          g_statement_text_replacements[stmt.span] = std::move(new_call);
+        }
+        // Clamp to new grid bounds.
+        const int new_total_after = gs.rows * gs.cols;
+        selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
+                                            [new_total_after](int idx) { return idx < 0 || idx >= new_total_after; }),
+                             selected_cells.end());
+        if(gs.selection_mode == 0)
+          selected_cells.clear();
+        else if(gs.selection_mode == 1 && selected_cells.size() > 1)
+        {
+          selected_cells = {selected_cells.front()};
+        }
+        else if(gs.selection_mode == 1 && selected_cells.empty() && new_total_after > 0)
+        {
+          // Switching to single-select with no prior selection: seed with cell 0.
+          selected_cells.push_back(0);
+        }
+        gs.error.clear();
+        ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
     }
   }
   ImGui::EndChild();
   ImGui::EndDisabled();
+
+  // Surface the count of cells that exist in the data but fall outside this
+  // widget's grid. Silent data is dangerous when a variable is shared between
+  // multiple inventory widgets; the user must always be able to tell that some
+  // cells exist that this widget is not showing.
+  if(cell_lookup.total_count > cell_lookup.visible_count)
+  {
+    const int hidden = cell_lookup.total_count - cell_lookup.visible_count;
+
+    // Visual cue drawn with the ImGui draw list so the indicator does not depend
+    // on a glyph that may be missing from the bundled font. A small amber dot
+    // matches the existing palette used for the slot hover markers. The count
+    // lives only in the tooltip; the on-canvas cue is intentionally minimal.
+    const float line_h = ImGui::GetTextLineHeight();
+    const float dot_r = std::max(2.0f, line_h * 0.22f);
+    const ImVec2 dot_origin = ImGui::GetCursorScreenPos();
+    ImDrawList *badge_draw_list = ImGui::GetWindowDrawList();
+    badge_draw_list->AddCircleFilled(ImVec2(dot_origin.x + dot_r, dot_origin.y + line_h * 0.5f),
+                                     dot_r,
+                                     ImGui::GetColorU32(ImVec4(0.92f, 0.75f, 0.30f, 1.0f)));
+    ImGui::Dummy(ImVec2(dot_r * 2.0f + ImGui::GetStyle().ItemSpacing.x, line_h));
+
+    if(ImGui::IsItemHovered())
+    {
+      ImGui::SetTooltip("This widget shows %d of %d cells.\n"
+                        "%d cells in the data are outside this widget's grid (%d x %d).\n"
+                        "Resize this widget or bind another inventory() widget with more rows/cols to see them.",
+                        cell_lookup.visible_count, cell_lookup.total_count, hidden, rows, cols);
+    }
+  }
 
   if(changed) set_override(ctx, block, *var_name, updated, replacements, errors);
 }
