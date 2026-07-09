@@ -3607,9 +3607,9 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
 
 void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
-  if(stmt.args.size() < 5 || stmt.args.size() > 8)
+  if(stmt.args.size() < 5 || stmt.args.size() > 9)
   {
-    render_error_inline("inventory() expects 5 to 8 args: value, label, width, rows, cols, [cell_size, popup_width, selection_mode]");
+    render_error_inline("inventory() expects 5 to 9 args: value, label, width, rows, cols, [cell_size, popup_width, selection_mode, selected_cells]");
     return;
   }
 
@@ -3707,6 +3707,52 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
     }
     selection_mode = std::clamp(static_cast<int>(std::llround(sm_arg.value.number)), 0, 2);
   }
+  // 9th arg (optional): selected cells as a string of "x,y;x,y;..." pairs.
+  // Persisted across reloads so the user's current selection survives a save+reopen.
+  std::vector<int> persisted_selected_cells;
+  if(stmt.args.size() >= 9)
+  {
+    ExprResult sc_arg = ctx.evaluate(stmt.args[8]);
+    if(!sc_arg.error.empty() || sc_arg.value.kind != ValueKind::String)
+    {
+      render_error_inline("inventory() selected_cells must be a string of \"x,y;x,y;...\" pairs");
+      return;
+    }
+    const std::string &raw = sc_arg.value.str;
+    size_t i = 0;
+    while(i < raw.size())
+    {
+      const size_t semi = raw.find(';', i);
+      const std::string_view pair = (semi == std::string::npos) ? std::string_view(raw).substr(i) : std::string_view(raw).substr(i, semi - i);
+      const size_t comma = pair.find(',');
+      int x = -1;
+      int y = -1;
+      bool parsed = false;
+      if(comma != std::string::npos)
+      {
+        const std::string_view xs = pair.substr(0, comma);
+        const std::string_view ys = pair.substr(comma + 1);
+        const std::string xstr = std::string(StringUtils::trim(xs));
+        const std::string ystr = std::string(StringUtils::trim(ys));
+        if(!xstr.empty() && !ystr.empty())
+        {
+          try
+          {
+            x = std::stoi(xstr);
+            y = std::stoi(ystr);
+            parsed = true;
+          }
+          catch(...)
+          {
+            parsed = false;
+          }
+        }
+      }
+      if(parsed && x >= 0 && y >= 0 && x < cols && y < rows) persisted_selected_cells.push_back(y * cols + x);
+      if(semi == std::string::npos) break;
+      i = semi + 1;
+    }
+  }
   const float grid_width = static_cast<float>(cols) * cell_size + static_cast<float>(cols - 1) * spacing + style.WindowPadding.x * 2.0f;
   float widget_width = std::max(160.0f, requested_width);
   if(available_width > 1.0f)
@@ -3740,9 +3786,12 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   // Per-widget selection state. Multiple inventory widgets can share the same
   // data variable, so the selection must be scoped to the widget, not the
   // variable. The selection lives in a static map keyed by child_id and is
-  // reset when the widget is destroyed.
+  // also persisted in the inventory() call args so it survives a save+reload.
   static std::unordered_map<std::string, std::vector<int>> widget_selected_cells;
   std::vector<int> &selected_cells = widget_selected_cells[child_id];
+  // First-load: if the call args provided a persisted selection, prime the
+  // in-memory list. Per-frame clamping below keeps stale indices out.
+  if(!persisted_selected_cells.empty()) selected_cells = persisted_selected_cells;
   // Clamp any stale entries to the current grid size.
   selected_cells.erase(std::remove_if(selected_cells.begin(), selected_cells.end(),
                                       [total_cells](int idx) { return idx < 0 || idx >= total_cells; }),
@@ -3757,6 +3806,50 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   }
 
   bool changed = false;
+  bool selection_changed = false;
+
+  // Helper: rewrite the inventory() call args in-place so the current selection
+  // (and any other widget config) is persisted to the markdown at end of frame.
+  // Both per-click selection changes and the Grid Settings Apply path funnel
+  // through this so the on-disk format stays consistent.
+  auto schedule_inventory_call_rewrite = [&](int sel_rows, int sel_cols) {
+    if(stmt.args.size() < 5) return;
+    std::string new_call;
+    new_call.reserve(stmt.args[0].size() + stmt.args[1].size() + 96);
+    new_call += stmt.name;
+    new_call += "(";
+    new_call += stmt.args[0]; // value
+    new_call += ", ";
+    new_call += stmt.args[1]; // label
+    new_call += ", ";
+    new_call += stmt.args[2]; // width
+    new_call += ", ";
+    new_call += std::to_string(sel_rows);
+    new_call += ", ";
+    new_call += std::to_string(sel_cols);
+    new_call += ", ";
+    new_call += std::to_string(static_cast<int>(cell_size));
+    new_call += ", ";
+    new_call += std::to_string(static_cast<int>(hover_popup_width));
+    new_call += ", ";
+    new_call += std::to_string(selection_mode);
+    new_call += ", \"";
+    bool first = true;
+    for(int idx : selected_cells)
+    {
+      if(idx < 0 || idx >= sel_rows * sel_cols) continue;
+      const int x = idx % sel_cols;
+      const int y = idx / sel_cols;
+      if(!first) new_call += ";";
+      new_call += std::to_string(x);
+      new_call += ",";
+      new_call += std::to_string(y);
+      first = false;
+    }
+    new_call += "\"";
+    new_call += ")";
+    g_statement_text_replacements[stmt.span] = std::move(new_call);
+  };
 
   // Apply any deferred cross-inventory operation from a previous frame
   {
@@ -3818,32 +3911,9 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         ImGui::PushID(index);
         ImGui::InvisibleButton("##slot", nonzero_invisible_button_size(cell_size, cell_size));
-        if(ImGui::IsItemClicked(ImGuiMouseButton_Left))
-        {
-          if(selection_mode == 1)
-          {
-            // Single-select: replace the selection with this cell.
-            selected_cells.clear();
-            selected_cells.push_back(index);
-            changed = true;
-          }
-          else if(selection_mode == 2)
-          {
-            // Multi-select: toggle membership of this cell.
-            auto it = std::find(selected_cells.begin(), selected_cells.end(), index);
-            if(it == selected_cells.end())
-              selected_cells.push_back(index);
-            else
-              selected_cells.erase(it);
-            changed = true;
-          }
-          // Mode 0 (none): ignore clicks for selection purposes.
-        }
-        const bool hovered = ImGui::IsItemHovered();
-        if(hovered) any_slot_hovered = true;
-        const ImVec2 min = ImGui::GetItemRectMin();
-        const ImVec2 max = ImGui::GetItemRectMax();
 
+        // Resolve the slot up-front so the click handler below can branch on
+        // `slot.enabled` (disabled cells are not selectable).
         const int item_index = cell_lookup.item_index[static_cast<size_t>(index)];
         const bool has_slot_value = item_index >= 0 && static_cast<size_t>(item_index) < items->array.size();
         InventorySlotInfo slot;
@@ -3856,6 +3926,39 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           slot.tooltip = slot_error;
           errors.push_back(slot_error);
         }
+
+        if(ImGui::IsItemClicked(ImGuiMouseButton_Left))
+        {
+          // Disabled cells are not selectable. Clicking them is a no-op so the
+          // user can't accidentally toggle their highlight via the render button.
+          if(!slot.enabled)
+          {
+            // Mode 0 (none): ignore clicks for selection purposes.
+          }
+          else if(selection_mode == 1)
+          {
+            // Single-select: replace the selection with this cell.
+            selected_cells.clear();
+            selected_cells.push_back(index);
+            selection_changed = true;
+          }
+          else if(selection_mode == 2)
+          {
+            // Multi-select: toggle membership of this cell.
+            auto it = std::find(selected_cells.begin(), selected_cells.end(), index);
+            if(it == selected_cells.end())
+              selected_cells.push_back(index);
+            else
+              selected_cells.erase(it);
+            selection_changed = true;
+          }
+          // Mode 0 (none): ignore clicks for selection purposes.
+        }
+        const bool hovered = ImGui::IsItemHovered();
+        if(hovered) any_slot_hovered = true;
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const ImVec2 max = ImGui::GetItemRectMax();
+
         const bool cell_selected = selection_mode > 0 && std::find(selected_cells.begin(), selected_cells.end(), index) != selected_cells.end();
         draw_inventory_slot_preview(slot, min, max, cell_selected, hovered, cell_size);
 
@@ -4297,6 +4400,22 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
           new_call += std::to_string(gs.popup_width);
           new_call += ", ";
           new_call += std::to_string(gs.selection_mode);
+          new_call += ", \"";
+          // Persist the (post-clamp) selected cells. Same format as the
+          // per-click rewrite above so the two paths can't drift.
+          bool first_sel = true;
+          for(int idx : selected_cells)
+          {
+            if(idx < 0 || idx >= gs.rows * gs.cols) continue;
+            const int x = idx % gs.cols;
+            const int y = idx / gs.cols;
+            if(!first_sel) new_call += ";";
+            new_call += std::to_string(x);
+            new_call += ",";
+            new_call += std::to_string(y);
+            first_sel = false;
+          }
+          new_call += "\"";
           new_call += ")";
           g_statement_text_replacements[stmt.span] = std::move(new_call);
         }
@@ -4324,6 +4443,11 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   }
   ImGui::EndChild();
   ImGui::EndDisabled();
+
+  // Persist selection changes from this frame. The click handlers set
+  // selection_changed; the call-args rewrite is the only way the user's
+  // selection survives a save+reload.
+  if(selection_changed) schedule_inventory_call_rewrite(rows, cols);
 
   // Surface the count of cells that exist in the data but fall outside this
   // widget's grid. Silent data is dangerous when a variable is shared between
