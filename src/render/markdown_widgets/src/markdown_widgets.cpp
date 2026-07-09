@@ -3721,7 +3721,14 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
   static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
 
-  if(!label.text.empty()) render_styled_label(label);
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+    // render_inline() leaves the cursor on the same line as the last token
+    // (it uses SameLine(0,0) between spans). Force a line break so the grid
+    // below renders on its own row instead of next to the title.
+    ImGui::NewLine();
+  }
 
   Value *items = find_object_field(updated, "items");
   if(!items || items->kind != ValueKind::Array)
