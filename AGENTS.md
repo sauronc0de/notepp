@@ -31,7 +31,10 @@ This repository uses three main roles:
 3. **Reviewer Agent**
 
 The Orchestrator owns the final decision.
-
+Show every time which agent is working. Example: 
+- [👑 **Orchestrator Agent**]
+- [📜 **Code Implementer Agent**]
+- [🔍 **Reviewer Agent**]
 ---
 
 # Orchestrator Agent
