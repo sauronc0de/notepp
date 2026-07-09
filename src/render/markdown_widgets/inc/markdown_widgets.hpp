@@ -23,4 +23,11 @@ void apply_ui_state_snapshot(std::string_view snapshot);
 RenderResult try_render_ui_block(std::string &markdown, size_t fence_start, size_t fence_line_end, size_t block_end);
 
 std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::string_view template_body);
+
+// Strict JSON (RFC 8259) helpers. The input and output use the same
+// relaxed text syntax as UI block value literals (see Value / serialize_value),
+// so the widget can round-trip through these without exposing internal types.
+bool try_parse_strict_json(std::string_view text, std::string &value_text, std::string &error);
+std::string value_to_compact_json(std::string_view value_text, std::string &error);
+std::string value_to_pretty_json(std::string_view value_text, std::string &error);
 } // namespace MarkdownWidgets

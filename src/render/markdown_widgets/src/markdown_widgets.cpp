@@ -110,6 +110,7 @@ struct Statement
     Inventory,
     Button,
     Map,
+    JsonView,
     Error,
   } kind = Kind::Error;
 
@@ -165,7 +166,8 @@ bool is_widget_name(std::string_view name)
          name == "list" ||
          name == "inventory" ||
          name == "button" ||
-         name == "map";
+         name == "map" ||
+         name == "json";
 }
 
 bool is_ident_start(char c)
@@ -594,6 +596,517 @@ bool is_true(const Value &value)
   if(value.kind == ValueKind::Object) return !value.object.empty();
   return false;
 }
+
+std::string escape_string_strict_json(std::string_view s)
+{
+  std::string out;
+  out.reserve(s.size() + 8);
+  for(char c : s)
+  {
+    switch(c)
+    {
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    default: {
+      const unsigned char uc = static_cast<unsigned char>(c);
+      if(uc < 0x20)
+      {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned int>(uc));
+        out += buf;
+      }
+      else
+      {
+        out.push_back(c);
+      }
+      break;
+    }
+    }
+  }
+  return out;
+}
+
+void serialize_value_compact_json(const Value &value, std::string &out)
+{
+  switch(value.kind)
+  {
+  case ValueKind::Number:
+    out += format_number(value.number, value.is_integer);
+    return;
+  case ValueKind::String:
+    out.push_back('"');
+    out += escape_string_strict_json(value.str);
+    out.push_back('"');
+    return;
+  case ValueKind::Bool:
+    out += value.boolean ? "true" : "false";
+    return;
+  case ValueKind::Array:
+    out.push_back('[');
+    for(size_t i = 0; i < value.array.size(); ++i)
+    {
+      if(i != 0) out.push_back(',');
+      serialize_value_compact_json(value.array[i], out);
+    }
+    out.push_back(']');
+    return;
+  case ValueKind::Object:
+    out.push_back('{');
+    for(size_t i = 0; i < value.object.size(); ++i)
+    {
+      if(i != 0) out.push_back(',');
+      out.push_back('"');
+      out += escape_string_strict_json(value.object[i].first);
+      out.push_back('"');
+      out.push_back(':');
+      serialize_value_compact_json(value.object[i].second, out);
+    }
+    out.push_back('}');
+    return;
+  default:
+    out += "null";
+    return;
+  }
+}
+
+std::string serialize_value_compact_json(const Value &value)
+{
+  std::string out;
+  out.reserve(64);
+  serialize_value_compact_json(value, out);
+  return out;
+}
+
+void serialize_value_pretty_json(const Value &value, std::string &out, int depth, bool inline_value = false)
+{
+  const std::string indent(depth * 2, ' ');
+  const std::string child_indent((depth + 1) * 2, ' ');
+  switch(value.kind)
+  {
+  case ValueKind::Number:
+    if(!inline_value) out += indent;
+    out += format_number(value.number, value.is_integer);
+    return;
+  case ValueKind::String:
+    if(!inline_value) out += indent;
+    out.push_back('"');
+    out += escape_string_strict_json(value.str);
+    out.push_back('"');
+    return;
+  case ValueKind::Bool:
+    if(!inline_value) out += indent;
+    out += value.boolean ? "true" : "false";
+    return;
+  case ValueKind::Array:
+    if(value.array.empty())
+    {
+      if(!inline_value) out += indent;
+      out += "[]";
+      return;
+    }
+    if(!inline_value) out += indent;
+    out += "[\n";
+    for(size_t i = 0; i < value.array.size(); ++i)
+    {
+      serialize_value_pretty_json(value.array[i], out, depth + 1);
+      out += (i + 1 < value.array.size()) ? ",\n" : "\n";
+    }
+    out += indent;
+    out += "]";
+    return;
+  case ValueKind::Object:
+    if(value.object.empty())
+    {
+      if(!inline_value) out += indent;
+      out += "{}";
+      return;
+    }
+    if(!inline_value) out += indent;
+    out += "{\n";
+    for(size_t i = 0; i < value.object.size(); ++i)
+    {
+      out += child_indent;
+      out.push_back('"');
+      out += escape_string_strict_json(value.object[i].first);
+      out.push_back('"');
+      out += ": ";
+      serialize_value_pretty_json(value.object[i].second, out, depth + 1, true);
+      out += (i + 1 < value.object.size()) ? ",\n" : "\n";
+    }
+    out += indent;
+    out += "}";
+    return;
+  default:
+    if(!inline_value) out += indent;
+    out += "null";
+    return;
+  }
+}
+
+std::string serialize_value_pretty_json(const Value &value)
+{
+  std::string out;
+  out.reserve(128);
+  serialize_value_pretty_json(value, out, 0);
+  return out;
+}
+
+namespace StrictJsonParse
+{
+struct Parser
+{
+  std::string_view text;
+  size_t pos = 0;
+
+  explicit Parser(std::string_view src) : text(src) {}
+
+  void skip_ws()
+  {
+    while(pos < text.size())
+    {
+      const char c = text[pos];
+      if(c == ' ' || c == '\t' || c == '\n' || c == '\r')
+        ++pos;
+      else
+        break;
+    }
+  }
+
+  bool eof() const { return pos >= text.size(); }
+
+  char peek() const { return text[pos]; }
+
+  bool consume(char c)
+  {
+    skip_ws();
+    if(pos < text.size() && text[pos] == c)
+    {
+      ++pos;
+      return true;
+    }
+    return false;
+  }
+
+  bool parse_value(Value &out, std::string &error)
+  {
+    skip_ws();
+    if(eof())
+    {
+      error = "unexpected end of input";
+      return false;
+    }
+    const char c = text[pos];
+    if(c == '{') return parse_object(out, error);
+    if(c == '[') return parse_array(out, error);
+    if(c == '"') return parse_string(out, error);
+    if(c == 't' || c == 'f') return parse_bool(out, error);
+    if(c == 'n') return parse_null(out, error);
+    if(c == '-' || (c >= '0' && c <= '9')) return parse_number(out, error);
+    error = "unexpected character '";
+    error.push_back(c);
+    error += "' at position " + std::to_string(pos);
+    return false;
+  }
+
+  bool parse_object(Value &out, std::string &error)
+  {
+    out = Value{};
+    out.kind = ValueKind::Object;
+    if(!consume('{'))
+    {
+      error = "expected '{' at position " + std::to_string(pos);
+      return false;
+    }
+    skip_ws();
+    if(consume('}')) return true;
+    while(true)
+    {
+      skip_ws();
+      std::string key;
+      if(!parse_string_raw(key, error)) return false;
+      if(!consume(':'))
+      {
+        error = "expected ':' after object key at position " + std::to_string(pos);
+        return false;
+      }
+      Value child;
+      if(!parse_value(child, error)) return false;
+      out.object.emplace_back(std::move(key), std::move(child));
+      skip_ws();
+      if(consume(',')) continue;
+      if(consume('}')) return true;
+      error = "expected ',' or '}' in object at position " + std::to_string(pos);
+      return false;
+    }
+  }
+
+  bool parse_array(Value &out, std::string &error)
+  {
+    out = Value{};
+    out.kind = ValueKind::Array;
+    if(!consume('['))
+    {
+      error = "expected '[' at position " + std::to_string(pos);
+      return false;
+    }
+    skip_ws();
+    if(consume(']')) return true;
+    while(true)
+    {
+      Value child;
+      if(!parse_value(child, error)) return false;
+      out.array.push_back(std::move(child));
+      skip_ws();
+      if(consume(',')) continue;
+      if(consume(']')) return true;
+      error = "expected ',' or ']' in array at position " + std::to_string(pos);
+      return false;
+    }
+  }
+
+  bool parse_string_raw(std::string &out, std::string &error)
+  {
+    skip_ws();
+    if(pos >= text.size() || text[pos] != '"')
+    {
+      error = "expected '\"' at position " + std::to_string(pos);
+      return false;
+    }
+    ++pos;
+    out.clear();
+    while(pos < text.size())
+    {
+      const char c = text[pos++];
+      if(c == '"') return true;
+      if(c == '\\')
+      {
+        if(pos >= text.size())
+        {
+          error = "unterminated escape sequence";
+          return false;
+        }
+        const char esc = text[pos++];
+        switch(esc)
+        {
+        case '"':
+          out.push_back('"');
+          break;
+        case '\\':
+          out.push_back('\\');
+          break;
+        case '/':
+          out.push_back('/');
+          break;
+        case 'n':
+          out.push_back('\n');
+          break;
+        case 'r':
+          out.push_back('\r');
+          break;
+        case 't':
+          out.push_back('\t');
+          break;
+        case 'b':
+          out.push_back('\b');
+          break;
+        case 'f':
+          out.push_back('\f');
+          break;
+        case 'u':
+          if(pos + 4 > text.size())
+          {
+            error = "incomplete \\u escape at position " + std::to_string(pos);
+            return false;
+          }
+          {
+            unsigned int code = 0;
+            for(int i = 0; i < 4; ++i)
+            {
+              const char h = text[pos + i];
+              unsigned int digit = 0;
+              if(h >= '0' && h <= '9')
+                digit = static_cast<unsigned int>(h - '0');
+              else if(h >= 'a' && h <= 'f')
+                digit = static_cast<unsigned int>(h - 'a' + 10);
+              else if(h >= 'A' && h <= 'F')
+                digit = static_cast<unsigned int>(h - 'A' + 10);
+              else
+              {
+                error = "invalid hex digit in \\u escape at position " + std::to_string(pos + i);
+                return false;
+              }
+              code = (code << 4) | digit;
+            }
+            pos += 4;
+            if(code < 0x80)
+            {
+              out.push_back(static_cast<char>(code));
+            }
+            else if(code < 0x800)
+            {
+              out.push_back(static_cast<char>(0xC0 | (code >> 6)));
+              out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            }
+            else
+            {
+              out.push_back(static_cast<char>(0xE0 | (code >> 12)));
+              out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3F)));
+              out.push_back(static_cast<char>(0x80 | (code & 0x3F)));
+            }
+          }
+          break;
+        default:
+          error = "invalid escape character '\\";
+          error.push_back(esc);
+          error += "' at position " + std::to_string(pos);
+          return false;
+        }
+      }
+      else if(static_cast<unsigned char>(c) < 0x20)
+      {
+        error = "unescaped control character in string at position " + std::to_string(pos - 1);
+        return false;
+      }
+      else
+      {
+        out.push_back(c);
+      }
+    }
+    error = "unterminated string starting before position " + std::to_string(pos);
+    return false;
+  }
+
+  bool parse_string(Value &out, std::string &error)
+  {
+    std::string s;
+    if(!parse_string_raw(s, error)) return false;
+    out = Value{};
+    out.kind = ValueKind::String;
+    out.str = std::move(s);
+    return true;
+  }
+
+  bool parse_number(Value &out, std::string &error)
+  {
+    skip_ws();
+    const size_t start = pos;
+    if(text[pos] == '-') ++pos;
+    if(pos >= text.size())
+    {
+      error = "invalid number at position " + std::to_string(start);
+      return false;
+    }
+    if(text[pos] == '0')
+    {
+      ++pos;
+    }
+    else if(text[pos] >= '1' && text[pos] <= '9')
+    {
+      while(pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+    }
+    else
+    {
+      error = "invalid number at position " + std::to_string(start);
+      return false;
+    }
+    bool is_float = false;
+    if(pos < text.size() && text[pos] == '.')
+    {
+      is_float = true;
+      ++pos;
+      if(!(pos < text.size() && text[pos] >= '0' && text[pos] <= '9'))
+      {
+        error = "missing digits after decimal point at position " + std::to_string(pos);
+        return false;
+      }
+      while(pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+    }
+    if(pos < text.size() && (text[pos] == 'e' || text[pos] == 'E'))
+    {
+      is_float = true;
+      ++pos;
+      if(pos < text.size() && (text[pos] == '+' || text[pos] == '-')) ++pos;
+      if(!(pos < text.size() && text[pos] >= '0' && text[pos] <= '9'))
+      {
+        error = "missing digits in exponent at position " + std::to_string(pos);
+        return false;
+      }
+      while(pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+    }
+    const std::string num_text(text.substr(start, pos - start));
+    if(num_text.empty())
+    {
+      error = "invalid number at position " + std::to_string(start);
+      return false;
+    }
+    out = Value{};
+    out.kind = ValueKind::Number;
+    out.is_integer = !is_float;
+    if(is_float)
+    {
+      out.number = std::strtod(num_text.c_str(), nullptr);
+    }
+    else
+    {
+      out.number = static_cast<double>(std::strtoll(num_text.c_str(), nullptr, 10));
+    }
+    return true;
+  }
+
+  bool parse_bool(Value &out, std::string &error)
+  {
+    if(text.substr(pos, 4) == "true")
+    {
+      pos += 4;
+      out = Value{};
+      out.kind = ValueKind::Bool;
+      out.boolean = true;
+      return true;
+    }
+    if(text.substr(pos, 5) == "false")
+    {
+      pos += 5;
+      out = Value{};
+      out.kind = ValueKind::Bool;
+      out.boolean = false;
+      return true;
+    }
+    error = "expected 'true' or 'false' at position " + std::to_string(pos);
+    return false;
+  }
+
+  bool parse_null(Value &out, std::string &error)
+  {
+    if(text.substr(pos, 4) == "null")
+    {
+      pos += 4;
+      out = Value{};
+      return true;
+    }
+    error = "expected 'null' at position " + std::to_string(pos);
+    return false;
+  }
+};
+} // namespace StrictJsonParse
 
 std::filesystem::path resolve_widget_image_path(std::string_view raw_path)
 {
@@ -1637,6 +2150,8 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
         stmt.kind = Statement::Kind::Button;
       else if(stmt.name == "map")
         stmt.kind = Statement::Kind::Map;
+      else if(stmt.name == "json")
+        stmt.kind = Statement::Kind::JsonView;
     }
     else
     {
@@ -5520,6 +6035,704 @@ bool row_conditions_pass(EvalContext &ctx, const Row &row, std::vector<std::stri
   return true;
 }
 
+namespace
+{
+struct JsonWidgetState
+{
+  std::unordered_map<std::string, bool> expanded;
+  std::unordered_map<std::string, std::string> rename_buffers;
+  std::unordered_map<std::string, std::string> add_key_buffers;
+  std::string last_error;
+};
+
+std::unordered_map<std::string, JsonWidgetState> &json_widget_states()
+{
+  static std::unordered_map<std::string, JsonWidgetState> states;
+  return states;
+}
+
+bool parse_value_text(std::string_view text, Value &out, std::string &error)
+{
+  size_t a = 0;
+  while(a < text.size() && (text[a] == ' ' || text[a] == '\t' || text[a] == '\n' || text[a] == '\r')) ++a;
+  size_t b = text.size();
+  while(b > a && (text[b - 1] == ' ' || text[b - 1] == '\t' || text[b - 1] == '\n' || text[b - 1] == '\r')) --b;
+  const std::string_view trimmed = text.substr(a, b - a);
+  if(trimmed == "null")
+  {
+    out = Value{};
+    return true;
+  }
+  ParsedBlock empty_block;
+  EvalContext ctx{empty_block};
+  ExprParser p(text, ctx);
+  ExprResult r = p.parse_expression();
+  if(!r.error.empty())
+  {
+    error = r.error;
+    return false;
+  }
+  p.skip_ws();
+  if(!p.eof())
+  {
+    error = "unexpected trailing input";
+    return false;
+  }
+  out = r.value;
+  return true;
+}
+
+std::string make_json_path(const std::vector<std::string> &segments)
+{
+  std::string out;
+  for(const auto &seg : segments)
+  {
+    out.push_back('/');
+    out += seg;
+  }
+  return out;
+}
+
+ImVec4 json_value_color(ValueKind kind)
+{
+  switch(kind)
+  {
+  case ValueKind::String:
+    return ImVec4(0.55f, 0.80f, 0.55f, 1.0f);
+  case ValueKind::Number:
+    return ImVec4(0.55f, 0.70f, 0.95f, 1.0f);
+  case ValueKind::Bool:
+    return ImVec4(0.95f, 0.70f, 0.45f, 1.0f);
+  case ValueKind::Array:
+    return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+  case ValueKind::Object:
+    return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+  default:
+    return ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
+  }
+}
+
+bool try_parse_number_text(const char *text, Value &out, std::string &error)
+{
+  if(!text || !*text)
+  {
+    error = "empty number";
+    return false;
+  }
+  const char *p = text;
+  if(*p == '+') ++p;
+  if(*p == '-' || (*p >= '0' && *p <= '9'))
+  {
+    bool has_dot = false;
+    bool has_exp = false;
+    const char *digits_start = p;
+    if(*p == '-') ++p;
+    while(*p >= '0' && *p <= '9') ++p;
+    if(*p == '.')
+    {
+      has_dot = true;
+      ++p;
+      if(!(*p >= '0' && *p <= '9'))
+      {
+        error = "missing digits after decimal point";
+        return false;
+      }
+      while(*p >= '0' && *p <= '9') ++p;
+    }
+    if(*p == 'e' || *p == 'E')
+    {
+      has_exp = true;
+      ++p;
+      if(*p == '+' || *p == '-') ++p;
+      if(!(*p >= '0' && *p <= '9'))
+      {
+        error = "missing digits in exponent";
+        return false;
+      }
+      while(*p >= '0' && *p <= '9') ++p;
+    }
+    if(*p != '\0')
+    {
+      error = "unexpected trailing character in number";
+      return false;
+    }
+    out = Value{};
+    out.kind = ValueKind::Number;
+    out.is_integer = !has_dot && !has_exp;
+    if(out.is_integer)
+    {
+      out.number = static_cast<double>(std::strtoll(digits_start, nullptr, 10));
+    }
+    else
+    {
+      out.number = std::strtod(digits_start, nullptr);
+    }
+    return true;
+  }
+  error = "not a valid number";
+  return false;
+}
+
+void remove_value_at_path(Value &root, const std::vector<std::string> &path)
+{
+  if(path.empty()) return;
+  Value *parent = &root;
+  for(size_t i = 0; i + 1 < path.size(); ++i)
+  {
+    if(parent->kind != ValueKind::Object && parent->kind != ValueKind::Array) return;
+    if(parent->kind == ValueKind::Object)
+    {
+      bool found = false;
+      for(auto &kv : parent->object)
+      {
+        if(kv.first == path[i])
+        {
+          parent = &kv.second;
+          found = true;
+          break;
+        }
+      }
+      if(!found) return;
+    }
+    else
+    {
+      char *endp = nullptr;
+      const long idx = std::strtol(path[i].c_str(), &endp, 10);
+      if(endp == path[i].c_str() || idx < 0 || static_cast<size_t>(idx) >= parent->array.size()) return;
+      parent = &parent->array[static_cast<size_t>(idx)];
+    }
+  }
+  const std::string &last = path.back();
+  if(parent->kind == ValueKind::Object)
+  {
+    for(auto it = parent->object.begin(); it != parent->object.end(); ++it)
+    {
+      if(it->first == last)
+      {
+        parent->object.erase(it);
+        return;
+      }
+    }
+  }
+  else if(parent->kind == ValueKind::Array)
+  {
+    char *endp = nullptr;
+    const long idx = std::strtol(last.c_str(), &endp, 10);
+    if(endp == last.c_str() || idx < 0 || static_cast<size_t>(idx) >= parent->array.size()) return;
+    parent->array.erase(parent->array.begin() + idx);
+  }
+}
+
+void add_object_key(Value &container, const std::string &key, const Value &value)
+{
+  if(container.kind != ValueKind::Object) return;
+  for(const auto &kv : container.object)
+  {
+    if(kv.first == key) return;
+  }
+  container.object.emplace_back(key, value);
+}
+
+void append_array_element(Value &container, const Value &value)
+{
+  if(container.kind != ValueKind::Array) return;
+  container.array.push_back(value);
+}
+
+bool value_text_from_clipboard(Value &out, std::string &error)
+{
+  const char *clip = ImGui::GetClipboardText();
+  if(!clip)
+  {
+    error = "clipboard is empty";
+    return false;
+  }
+  std::string text(clip);
+  std::string value_text;
+  if(!try_parse_strict_json(text, value_text, error)) return false;
+  return parse_value_text(value_text, out, error);
+}
+
+void copy_value_as_json(const Value &value, bool pretty)
+{
+  const std::string text = pretty ? serialize_value_pretty_json(value) : serialize_value_compact_json(value);
+  ImGui::SetClipboardText(text.c_str());
+}
+
+void draw_summary_text(const Value &value)
+{
+  std::string value_str;
+  if(value.kind == ValueKind::Object)
+  {
+    value_str = "{ " + std::to_string(value.object.size()) + (value.object.size() == 1 ? " key }" : " keys }");
+  }
+  else if(value.kind == ValueKind::Array)
+  {
+    value_str = "[ " + std::to_string(value.array.size()) + (value.array.size() == 1 ? " item ]" : " items ]");
+  }
+  else if(value.kind == ValueKind::Invalid)
+  {
+    value_str = "null";
+  }
+  else
+  {
+    value_str = display_value(value);
+  }
+  ImGui::TextColored(json_value_color(value.kind), "%s", value_str.c_str());
+}
+
+bool render_scalar_editor(Value &value, const std::string &path_text, bool readonly, bool &changed)
+{
+  changed = false;
+  const std::string id = "##json_edit_" + path_text;
+  if(value.kind == ValueKind::Bool)
+  {
+    bool b = value.boolean;
+    ImGui::BeginDisabled(readonly);
+    if(ImGui::Checkbox(id.c_str(), &b))
+    {
+      value.boolean = b;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    return true;
+  }
+  if(value.kind == ValueKind::String)
+  {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf), "%s", value.str.c_str());
+    const float avail = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(std::max(80.0f, std::min(280.0f, avail)));
+    ImGui::BeginDisabled(readonly);
+    if(ImGui::InputText(id.c_str(), buf, sizeof(buf)))
+    {
+      value.str = buf;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    return true;
+  }
+  if(value.kind == ValueKind::Number)
+  {
+    char buf[64];
+    if(value.is_integer)
+    {
+      std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(value.number));
+    }
+    else
+    {
+      std::snprintf(buf, sizeof(buf), "%g", value.number);
+    }
+    const float avail = ImGui::GetContentRegionAvail().x;
+    ImGui::SetNextItemWidth(std::max(60.0f, std::min(180.0f, avail)));
+    ImGui::BeginDisabled(readonly);
+    if(ImGui::InputText(id.c_str(), buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue))
+    {
+      Value updated;
+      std::string err;
+      if(try_parse_number_text(buf, updated, err))
+      {
+        value = updated;
+        changed = true;
+      }
+    }
+    ImGui::EndDisabled();
+    return true;
+  }
+  return false;
+}
+
+void render_type_changer_menu(Value &value, const char *popup_id)
+{
+  if(!ImGui::BeginMenu("Change type"))
+  {
+    return;
+  }
+  auto change_to = [&](ValueKind k) {
+    if(value.kind == k) return;
+    switch(k)
+    {
+    case ValueKind::String:
+      value = Value{};
+      value.kind = ValueKind::String;
+      break;
+    case ValueKind::Number:
+      value = Value{};
+      value.kind = ValueKind::Number;
+      value.is_integer = true;
+      value.number = 0.0;
+      break;
+    case ValueKind::Bool:
+      value = Value{};
+      value.kind = ValueKind::Bool;
+      value.boolean = false;
+      break;
+    case ValueKind::Array:
+      value = Value{};
+      value.kind = ValueKind::Array;
+      break;
+    case ValueKind::Object:
+      value = Value{};
+      value.kind = ValueKind::Object;
+      break;
+    default:
+      value = Value{};
+      break;
+    }
+    (void)popup_id;
+  };
+  if(ImGui::MenuItem("String")) change_to(ValueKind::String);
+  if(ImGui::MenuItem("Number")) change_to(ValueKind::Number);
+  if(ImGui::MenuItem("Bool")) change_to(ValueKind::Bool);
+  if(ImGui::MenuItem("Object")) change_to(ValueKind::Object);
+  if(ImGui::MenuItem("Array")) change_to(ValueKind::Array);
+  if(ImGui::MenuItem("Null")) change_to(ValueKind::Invalid);
+  ImGui::EndMenu();
+}
+
+void render_json_node(
+    EvalContext &ctx,
+    const ParsedBlock &block,
+    const std::string &widget_id,
+    Value &root,
+    Value &node,
+    const std::vector<std::string> &path,
+    const std::string &display_key,
+    bool is_root,
+    bool readonly,
+    std::unordered_map<std::string, std::string> &replacements,
+    std::vector<std::string> &errors,
+    bool &changed);
+
+void render_json_node(
+    EvalContext &ctx,
+    const ParsedBlock &block,
+    const std::string &widget_id,
+    Value &root,
+    Value &node,
+    const std::vector<std::string> &path,
+    const std::string &display_key,
+    bool is_root,
+    bool readonly,
+    std::unordered_map<std::string, std::string> &replacements,
+    std::vector<std::string> &errors,
+    bool &changed)
+{
+  JsonWidgetState &state = json_widget_states()[widget_id];
+  const std::string path_text = widget_id + make_json_path(path);
+  const std::string popup_id = "##json_menu_" + path_text;
+  const std::string rename_popup_id = "##json_rename_" + path_text;
+  const std::string add_key_popup_id = "##json_add_key_" + path_text;
+
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float indent_px = static_cast<float>(path.size()) * 16.0f;
+  if(indent_px > 0.0f) ImGui::Indent(indent_px);
+
+  const std::string row_id = "##json_row_" + path_text;
+  const float row_height = ImGui::GetTextLineHeight() + style.FramePadding.y * 2.0f;
+  ImGui::InvisibleButton(row_id.c_str(), ImVec2(-1.0f, row_height));
+
+  const bool hovered = ImGui::IsItemHovered();
+  const bool active = ImGui::IsItemActive();
+  if(hovered || active)
+  {
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_HeaderHovered), 4.0f);
+  }
+
+  bool is_expandable = (node.kind == ValueKind::Object || node.kind == ValueKind::Array);
+  const bool is_expanded = is_expandable && state.expanded[path_text];
+  const bool row_right_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+  if(row_right_clicked) ImGui::OpenPopup(popup_id.c_str());
+
+  if(is_expandable)
+  {
+    const ImVec2 p = ImGui::GetItemRectMin();
+    const float cx = p.x + 6.0f;
+    const float cy = p.y + row_height * 0.5f;
+    const float triangle_w = 14.0f;
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    if(is_expanded)
+    {
+      dl->AddTriangleFilled(ImVec2(cx - 3.0f, cy - 4.0f), ImVec2(cx - 3.0f, cy + 4.0f), ImVec2(cx + 4.0f, cy), col);
+    }
+    else
+    {
+      dl->AddTriangleFilled(ImVec2(cx - 4.0f, cy - 3.0f), ImVec2(cx + 4.0f, cy - 3.0f), ImVec2(cx, cy + 4.0f), col);
+    }
+    if(hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::GetMousePos().x <= p.x + triangle_w)
+    {
+      state.expanded[path_text] = !is_expanded;
+      ctx.preview_state_changed = true;
+    }
+  }
+
+  // Continue on the same line as the InvisibleButton, offset past the triangle.
+  ImGui::SameLine(0.0f, 18.0f);
+
+  if(!display_key.empty())
+  {
+    const std::string key_text = display_key + ":";
+    const float key_w = ImGui::CalcTextSize(key_text.c_str()).x;
+    ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "%s", key_text.c_str());
+    ImGui::SameLine(0.0f, key_w + ImGui::GetStyle().ItemInnerSpacing.x);
+  }
+
+  if(is_expandable)
+  {
+    draw_summary_text(node);
+  }
+  else
+  {
+    bool scalar_changed = false;
+    render_scalar_editor(node, path_text, readonly, scalar_changed);
+    if(scalar_changed) changed = true;
+  }
+
+  if(ImGui::BeginPopup(popup_id.c_str()))
+  {
+    ctx.consumed_right_click = true;
+    if(ImGui::MenuItem("Copy as JSON (pretty)")) copy_value_as_json(node, true);
+    if(ImGui::MenuItem("Copy as JSON (compact)")) copy_value_as_json(node, false);
+    ImGui::Separator();
+
+    if(node.kind == ValueKind::Object)
+    {
+      if(ImGui::MenuItem("Add key"))
+      {
+        ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing);
+        ImGui::OpenPopup(add_key_popup_id.c_str());
+      }
+      if(ImGui::BeginPopup(add_key_popup_id.c_str()))
+      {
+        std::string &name_buf = state.add_key_buffers[path_text];
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%s", name_buf.c_str());
+        ImGui::Text("New key name");
+        const float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(std::max(140.0f, std::min(260.0f, avail)));
+        ImGui::PushID("##newkey_label");
+        const bool entered = ImGui::InputText("##newkey", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::PopID();
+        if(ImGui::Button("Add") || entered)
+        {
+          name_buf = buf;
+          if(!name_buf.empty())
+          {
+            add_object_key(node, name_buf, Value{});
+            name_buf.clear();
+            changed = true;
+            ImGui::CloseCurrentPopup();
+          }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel"))
+        {
+          name_buf.clear();
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+    }
+    else if(node.kind == ValueKind::Array)
+    {
+      if(ImGui::MenuItem("Append element"))
+      {
+        append_array_element(node, Value{});
+        changed = true;
+      }
+    }
+
+    if(!is_root)
+    {
+      if(node.kind == ValueKind::Object)
+      {
+        if(ImGui::MenuItem("Rename key..."))
+        {
+          state.rename_buffers[path_text] = display_key;
+          ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing);
+          ImGui::OpenPopup(rename_popup_id.c_str());
+        }
+        if(ImGui::BeginPopup(rename_popup_id.c_str()))
+        {
+          std::string &name_buf = state.rename_buffers[path_text];
+          char buf[256];
+          std::snprintf(buf, sizeof(buf), "%s", name_buf.c_str());
+          ImGui::Text("Rename key");
+          const float avail = ImGui::GetContentRegionAvail().x;
+          ImGui::SetNextItemWidth(std::max(140.0f, std::min(260.0f, avail)));
+          ImGui::PushID("##rename_label");
+          const bool entered = ImGui::InputText("##rename", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue);
+          ImGui::PopID();
+          if(ImGui::Button("Apply") || entered)
+          {
+            name_buf = buf;
+            if(!name_buf.empty() && path.size() >= 2)
+            {
+              Value *parent = &root;
+              for(size_t i = 0; i + 1 < path.size(); ++i)
+              {
+                if(parent->kind != ValueKind::Object && parent->kind != ValueKind::Array) break;
+                if(parent->kind == ValueKind::Object)
+                {
+                  bool found = false;
+                  for(auto &kv : parent->object)
+                  {
+                    if(kv.first == path[i])
+                    {
+                      parent = &kv.second;
+                      found = true;
+                      break;
+                    }
+                  }
+                  if(!found) break;
+                }
+                else
+                {
+                  char *endp = nullptr;
+                  const long idx = std::strtol(path[i].c_str(), &endp, 10);
+                  if(endp == path[i].c_str() || idx < 0 || static_cast<size_t>(idx) >= parent->array.size()) break;
+                  parent = &parent->array[static_cast<size_t>(idx)];
+                }
+              }
+              if(parent->kind == ValueKind::Object)
+              {
+                for(auto &kv : parent->object)
+                {
+                  if(kv.first == path.back())
+                  {
+                    kv.first = name_buf;
+                    break;
+                  }
+                }
+                changed = true;
+              }
+              ImGui::CloseCurrentPopup();
+            }
+          }
+          ImGui::SameLine();
+          if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+      }
+      if(ImGui::MenuItem("Remove"))
+      {
+        remove_value_at_path(root, path);
+        changed = true;
+        ImGui::CloseCurrentPopup();
+      }
+    }
+
+    render_type_changer_menu(node, popup_id.c_str());
+
+    ImGui::Separator();
+    if(ImGui::MenuItem("Paste from clipboard"))
+    {
+      Value pasted;
+      std::string err;
+      if(value_text_from_clipboard(pasted, err))
+      {
+        node = std::move(pasted);
+        changed = true;
+        state.last_error.clear();
+      }
+      else
+      {
+        state.last_error = "Paste failed: " + err;
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+
+  if(is_expandable && is_expanded)
+  {
+    if(node.kind == ValueKind::Object)
+    {
+      for(size_t i = 0; i < node.object.size(); ++i)
+      {
+        std::vector<std::string> child_path = path;
+        child_path.push_back(node.object[i].first);
+        std::unordered_map<std::string, std::string> child_repl;
+        std::vector<std::string> child_errs;
+        bool child_changed = false;
+        render_json_node(ctx, block, widget_id, root, node.object[i].second, child_path, node.object[i].first, false, readonly, child_repl, child_errs, child_changed);
+        if(child_changed) changed = true;
+        for(auto &kv : child_repl) replacements[kv.first] = std::move(kv.second);
+        for(auto &e : child_errs) errors.push_back(std::move(e));
+      }
+    }
+    else
+    {
+      for(size_t i = 0; i < node.array.size(); ++i)
+      {
+        std::vector<std::string> child_path = path;
+        child_path.push_back(std::to_string(i));
+        std::unordered_map<std::string, std::string> child_repl;
+        std::vector<std::string> child_errs;
+        bool child_changed = false;
+        render_json_node(ctx, block, widget_id, root, node.array[i], child_path, std::to_string(i), false, readonly, child_repl, child_errs, child_changed);
+        if(child_changed) changed = true;
+        for(auto &kv : child_repl) replacements[kv.first] = std::move(kv.second);
+        for(auto &e : child_errs) errors.push_back(std::move(e));
+      }
+    }
+  }
+
+  if(indent_px > 0.0f) ImGui::Unindent(indent_px);
+}
+} // namespace
+
+void render_json_widget(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
+{
+  if(stmt.args.size() < 2)
+  {
+    render_error_inline("json() expects variable, title");
+    return;
+  }
+  const auto var_name = parse_identifier_arg(stmt.args[0]);
+  if(!var_name)
+  {
+    render_error_inline("json() must bind to a variable name");
+    return;
+  }
+  const VariableDecl *decl = find_declaration(ctx, block, *var_name);
+  if(!decl)
+  {
+    render_error_inline("unknown variable '" + *var_name + "'");
+    return;
+  }
+  ExprResult value_result = ctx.resolve_variable(*var_name);
+  if(!value_result.error.empty())
+  {
+    render_error_inline(value_result.error);
+    return;
+  }
+  const bool readonly = decl->computed;
+  const StyledLabel label = evaluate_label(ctx, stmt.args[1], *var_name);
+
+  const std::string widget_id = make_hidden_widget_id("json", stmt);
+  JsonWidgetState &state = json_widget_states()[widget_id];
+
+  if(!label.text.empty())
+  {
+    render_styled_label(label);
+  }
+  if(!state.last_error.empty())
+  {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.45f, 0.45f, 1.0f));
+    ImGui::TextWrapped("%s", state.last_error.c_str());
+    ImGui::PopStyleColor();
+  }
+
+  std::vector<std::string> root_path;
+  std::string display_key;
+  bool changed = false;
+  render_json_node(ctx, block, widget_id, value_result.value, value_result.value, root_path, display_key, true, readonly, replacements, errors, changed);
+  if(changed) set_override(ctx, block, *var_name, value_result.value, replacements, errors);
+}
+
 void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statement &stmt, std::unordered_map<std::string, std::string> &replacements, std::vector<std::string> &errors)
 {
   if(!stmt.error.empty())
@@ -5614,6 +6827,9 @@ void render_statement(EvalContext &ctx, const ParsedBlock &block, const Statemen
     break;
   case Statement::Kind::Map:
     render_map_widget(ctx, block, stmt, replacements, errors);
+    break;
+  case Statement::Kind::JsonView:
+    render_json_widget(ctx, block, stmt, replacements, errors);
     break;
   case Statement::Kind::Error:
     render_error_inline(stmt.error.empty() ? "invalid UI statement" : stmt.error);
@@ -6047,5 +7263,34 @@ std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::str
   }
 
   return result;
+}
+
+bool try_parse_strict_json(std::string_view text, std::string &value_text, std::string &error)
+{
+  Value parsed;
+  StrictJsonParse::Parser parser(text);
+  if(!parser.parse_value(parsed, error)) return false;
+  parser.skip_ws();
+  if(!parser.eof())
+  {
+    error = "unexpected trailing input at position " + std::to_string(parser.pos);
+    return false;
+  }
+  value_text = serialize_value(parsed);
+  return true;
+}
+
+std::string value_to_compact_json(std::string_view value_text, std::string &error)
+{
+  Value v;
+  if(!parse_value_text(value_text, v, error)) return {};
+  return serialize_value_compact_json(v);
+}
+
+std::string value_to_pretty_json(std::string_view value_text, std::string &error)
+{
+  Value v;
+  if(!parse_value_text(value_text, v, error)) return {};
+  return serialize_value_pretty_json(v);
 }
 } // namespace MarkdownWidgets

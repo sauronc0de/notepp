@@ -760,6 +760,59 @@ The markers, strokes, zoom, and pan offset are all **persisted** in the note. Zo
 
 ---
 
+#### `json` — Interactive JSON tree view and editor
+
+Renders any object or array variable as a collapsible, editable tree. Designed for managing structured data inside a note, and for exporting that data as standard JSON to other tools.
+
+```
+json(variable, "Title")
+```
+
+| Arg | Description |
+|-----|-------------|
+| variable | Object or array variable to display and edit. |
+| Title    | Label shown above the tree. |
+
+##### Interaction
+
+- Click the triangle on the left of a row to expand or collapse an object or array.
+- **String** values are edited inline as a text field.
+- **Number** values are edited inline as a text field; parsed as integer when no decimal point is present, otherwise as float. Press **Enter** to commit.
+- **Bool** values are toggled with a checkbox.
+- **null** values are displayed as `null`; use the right-click menu to change the type.
+- **Right-click** on any row opens the context menu (see below).
+- Variables declared `computed` (or `readonly`) are not editable.
+
+##### Right-click context menu
+
+| Item | Description |
+|------|-------------|
+| Copy as JSON (pretty)   | Copies the subtree rooted at this node to the clipboard as indented, multi-line strict JSON. |
+| Copy as JSON (compact)  | Copies the subtree rooted at this node to the clipboard as a single-line strict JSON. |
+| Add key                 | (Objects only) Opens a small prompt to type a new key name. The new key starts with an empty string value. |
+| Append element          | (Arrays only) Appends a `null` element at the end. |
+| Rename key…             | (Object keys only) Opens a prompt to rename the key in place. |
+| Remove                  | (Non-root nodes only) Removes this entry from its parent. |
+| Change type             | Submenu: convert this value to `string`, `number`, `bool`, `object`, `array`, or `null`. |
+| Paste from clipboard    | Replaces the value of this node with the result of parsing the clipboard as strict JSON. On parse failure, an error is shown in the widget header. |
+
+**Example:**
+
+````markdown
+```ui
+contacts([
+  {name:"Ana",   role:"Designer",  email:"ana@x.com",   active:true},
+  {name:"Bruno", role:"Developer", email:"bruno@x.com", active:true},
+  {name:"Cris",  role:"PM",        email:"cris@x.com",  active:false}
+])
+json(contacts, "Contacts")
+```
+````
+
+The `Copy as JSON` actions produce **strict JSON (RFC 8259)**: keys are always quoted, all control characters are escaped, and the output is valid in any external tool. The `Paste from clipboard` action accepts the same format and rejects relaxed syntax (unquoted keys, single quotes, trailing commas) with a clear error message.
+
+---
+
 ### 13.3 Expressions & Operators
 
 Expressions are used in variable declarations and `if()` conditions.
