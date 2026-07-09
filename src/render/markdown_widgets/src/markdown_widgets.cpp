@@ -3764,6 +3764,11 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   const std::string child_id = make_hidden_widget_id("inventory", stmt);
   static constexpr const char *kInvXferPayload = "NOTEPP_INV_XFER";
   static std::unordered_map<std::string, int> selected_slot_by_widget;
+  // Per-widget press state used to distinguish click from drag. The press is
+  // recorded on mouse-down (IsItemClicked) and resolved on mouse-up. If the
+  // release happens on the same cell with no significant drag distance, it is
+  // treated as a click; otherwise it is treated as a drag (no toggle).
+  static std::unordered_map<std::string, std::pair<ImVec2, int>> widget_press_state;
   static std::unordered_map<std::string, InventoryPopupEditorState> popup_states;
   static std::unordered_map<std::string, InventoryGridEditorState> grid_editor_states;
 
@@ -3929,30 +3934,58 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
 
         if(ImGui::IsItemClicked(ImGuiMouseButton_Left))
         {
-          // Disabled cells are not selectable. Clicking them is a no-op so the
-          // user can't accidentally toggle their highlight via the render button.
-          if(!slot.enabled)
+          // Record the press so we can decide later whether it became a click or
+          // a drag. We must not toggle selection on the press frame because
+          // IsItemClicked fires on mouse-down — a drag that begins on a selected
+          // cell would otherwise deselect it before the drag source opens.
+          widget_press_state[child_id] = {ImGui::GetMousePos(), index};
+        }
+
+        if(ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::IsItemHovered())
+        {
+          // Resolve a pending press into a click only if:
+          //   - the press was on this same cell, and
+          //   - the cursor did not move past the drag threshold during the press.
+          // A release on a different cell (drag) or a release with significant
+          // movement is treated as a drag and does not toggle anything here.
+          const float drag_threshold_sq = 5.0f * 5.0f;
+          auto press_it = widget_press_state.find(child_id);
+          if(press_it != widget_press_state.end())
           {
-            // Mode 0 (none): ignore clicks for selection purposes.
+            const ImVec2 press_pos = press_it->second.first;
+            const int pressed_index = press_it->second.second;
+            const ImVec2 release_pos = ImGui::GetMousePos();
+            const float release_dx = release_pos.x - press_pos.x;
+            const float release_dy = release_pos.y - press_pos.y;
+            if(pressed_index == index && (release_dx * release_dx + release_dy * release_dy) < drag_threshold_sq)
+            {
+              // Disabled cells are not selectable. Clicking them is a no-op so the
+              // user can't accidentally toggle their highlight via the render button.
+              if(!slot.enabled)
+              {
+                // Mode 0 (none): ignore clicks for selection purposes.
+              }
+              else if(selection_mode == 1)
+              {
+                // Single-select: replace the selection with this cell.
+                selected_cells.clear();
+                selected_cells.push_back(index);
+                selection_changed = true;
+              }
+              else if(selection_mode == 2)
+              {
+                // Multi-select: toggle membership of this cell.
+                auto it = std::find(selected_cells.begin(), selected_cells.end(), index);
+                if(it == selected_cells.end())
+                  selected_cells.push_back(index);
+                else
+                  selected_cells.erase(it);
+                selection_changed = true;
+              }
+              // Mode 0 (none): ignore clicks for selection purposes.
+            }
+            widget_press_state.erase(press_it);
           }
-          else if(selection_mode == 1)
-          {
-            // Single-select: replace the selection with this cell.
-            selected_cells.clear();
-            selected_cells.push_back(index);
-            selection_changed = true;
-          }
-          else if(selection_mode == 2)
-          {
-            // Multi-select: toggle membership of this cell.
-            auto it = std::find(selected_cells.begin(), selected_cells.end(), index);
-            if(it == selected_cells.end())
-              selected_cells.push_back(index);
-            else
-              selected_cells.erase(it);
-            selection_changed = true;
-          }
-          // Mode 0 (none): ignore clicks for selection purposes.
         }
         const bool hovered = ImGui::IsItemHovered();
         if(hovered) any_slot_hovered = true;
@@ -4443,6 +4476,13 @@ void render_inventory_widget(EvalContext &ctx, const ParsedBlock &block, const S
   }
   ImGui::EndChild();
   ImGui::EndDisabled();
+
+  // Clear any stale press state when the mouse button is released. The per-cell
+  // branch above handles releases that landed on a cell; this catches releases
+  // that happened outside the grid (e.g. the user dragged out of the widget and
+  // dropped on empty space or another widget). Without this, a press recorded
+  // for this widget could survive across frames and fire a phantom click later.
+  if(ImGui::IsMouseReleased(ImGuiMouseButton_Left)) widget_press_state.erase(child_id);
 
   // Persist selection changes from this frame. The click handlers set
   // selection_changed; the call-args rewrite is the only way the user's
