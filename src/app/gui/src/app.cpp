@@ -1063,10 +1063,12 @@ int App::run()
         // viewports are enabled, or ImGui fires a sanity-check assertion.
         if(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
           ImGui::UpdatePlatformWindows();
-        // Block until an event arrives. The file-watch timer may wake us to scan,
-        // but unchanged static notes do not redraw just because time passed.
+        // Sleep without trusting every platform/window-manager stack to wake us
+        // reliably from an unbounded wait. Older Linux/X11 systems have shown
+        // input delivery issues after the app becomes fully idle, so keep a
+        // bounded wait while still pushing real events back for frame_begin().
         SDL_Event ev;
-        if(SDL_WaitEvent(&ev) == 1)
+        if(SDL_WaitEventTimeout(&ev, 33) == 1)
           SDL_PushEvent(&ev);
       }
     }
