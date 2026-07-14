@@ -4,7 +4,7 @@
 
 ![title](assets/icon/notepp.ico)
 
-![Version](https://img.shields.io/badge/version-0.0.2-green)
+![Version](https://img.shields.io/badge/version-0.0.9-green)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Language](https://img.shields.io/badge/C++-00599C?style=flat-square&logo=C%2B%2B&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-orange)
@@ -13,8 +13,15 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
 
 ---
 
+## Getting Started / Demo
+
+At build time, this root README is embedded in the application. On a first run with no notes, it becomes the default in-app `demo` note. The checked-in `data/demo.md` mirrors it for the development demo.
+
+---
+
 ## Table of Contents
 
+- [Getting Started / Demo](#getting-started--demo)
 1. [Interface Overview](#1-interface-overview)
 2. [Folders & Notes](#2-folders--notes)
 3. [Editing & Markdown](#3-editing--markdown)
@@ -39,9 +46,7 @@ A **C++ desktop note-taking app** powered by Dear ImGui. Notes are stored as pla
     - [Full Examples](#138-full-examples)
 14. [Reactive Diagrams (ui-mermaid)](#14-reactive-diagrams-ui-mermaid)
 15. [Mermaid Diagrams](#15-mermaid-diagrams)
-    - [Flowchart / Graph](#151-flowchart--graph)
-    - [Pie Chart](#152-pie-chart)
-    - [Recognized Types (Placeholder)](#153-recognized-types-placeholder)
+    - [Diagram families](#15-mermaid-diagrams) — flowcharts, sequence/class/state diagrams, charts, planning, and architecture
 
 ---
 
@@ -595,28 +600,33 @@ list(items, "Inventory", 220, true)
 #### `inventory` — Icon grid
 
 ```
-inventory(variable, "Label", width, rows, cols)
+inventory(variable, "Label", width, rows, cols[, cell_size, popup_width, selection_mode, selected_cells])
 ```
 
-`variable` is an **array of slot objects**. Each slot supports:
+`variable` is an **object** containing an `items` array of slot objects. `rows` and `cols` belong to the `inventory()` invocation, not the data object. The optional arguments set the cell size, hover popup width, selection mode (`0` none, `1` single, `2` multi), and selected cells (`"x,y;x,y;..."`).
+
+Each slot supports:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | string | Item title shown on hover |
+| `title` / `name` | string | Item title shown on hover (`title` takes precedence) |
 | `image` | string | Image path (relative, absolute, or filename from `assets/icons/`) |
 | `tooltip` | string | Hover tooltip text |
-| `quantity` | number | Badge number shown in the slot corner |
-| `color` | string `#RRGGBB` | Corner mark color |
+| `quantity` | number or string | Badge value shown in the slot corner |
+| `color` | string `#RRGGBB` or `#RRGGBBAA` | Corner mark color |
 | `enabled` | bool | Grayed-out when `false` |
+| `x`, `y` | number | Required non-negative zero-based coordinates for each visible authored slot; legacy `position` is also accepted |
 
 **Example:**
 ```
-backpack([
-  {name:"Sword",  image:"sword.png",  tooltip:"Iron sword",  quantity:1},
-  {name:"Coin",   image:"coin.png",   tooltip:"Gold coin",   quantity:42, color:"#FFD700"},
-  {name:"Potion", image:"potion.png", tooltip:"Health pot",  enabled:false}
-])
-inventory(backpack, "Backpack", 300, 2, 4)
+backpack({
+  items:[
+    {title:"Sword", image:"sword.png", tooltip:"Iron sword", quantity:1, x:0, y:0},
+    {name:"Coin", image:"coin.png", tooltip:"Gold coin", quantity:42, color:"#FFD700", x:1, y:0},
+    {name:"Potion", image:"potion.png", tooltip:"Health pot", enabled:false, x:2, y:0}
+  ]
+})
+inventory(backpack, "Backpack", 300, 2, 4, 48, 320, 1, "1,0")
 ```
 
 ---
@@ -824,7 +834,7 @@ if(condition) {
 
 - The `{` must be on the **same line** as `if(...)`.
 - The closing `}` must be on its **own line**.
-- Conditions use the full expression syntax from [12.3](#123-expressions--operators).
+- Conditions use the full expression syntax from [13.3](#133-expressions--operators).
 - Conditionals can reference any declared variable.
 
 **Conditional assignments** — assign a value to a variable when a condition is true:
@@ -989,11 +999,9 @@ list(tasks, "Tasks", 260, true)
 ````markdown
 ```ui
 inventory_data({
-  rows:2,
-  cols:2,
   items:[
-    {name:"Potion", image:"potion.png", tooltip:"Consumable item", quantity:3, color:"#57A7FF"},
-    {tooltip:"Disabled example cell", color:"#FFB347", enabled:false}
+    {name:"Potion", image:"potion.png", tooltip:"Consumable item", quantity:3, color:"#57A7FF", x:0, y:0},
+    {tooltip:"Disabled example cell", color:"#FFB347", enabled:false, x:1, y:0}
   ]
 })
 inventory(inventory_data, "Inventory", 220, 2, 2)
@@ -1752,20 +1760,21 @@ treeview
 
 ## Data Files
 
-Notes are stored in plain text — easy to version-control or edit externally.
+Notes are stored as plain Markdown files — easy to version-control or edit externally. The checked-in demo examples are:
 
 | File | Contents |
 |------|----------|
-| `data/notes/<Folder>/<Note>.md` | Note content (Markdown) |
-| `data/notes_index.json` | Folder/note metadata, colors, layout |
-| `data/drawings_state.txt` | Drawing strokes per folder |
-| `data/imgui_layout.ini` | Window positions and UI state |
-| `data/markdown_preview_state.json` | Collapsed/expanded section states |
-| `data/note_clipboard.json` | Internal copy/paste clipboard |
+| `data/demo.md` | Mirror of the root README demo note |
+| `data/inv.md` | Inventory widget example |
+| `data/json.md` | UI block JSON example |
+| `config/notes_index.json` | Folder and note metadata |
+| `config/imgui_layout.ini` | ImGui window layout |
+| `config/layout_profiles.json` | Layout profiles |
+| `config/markdown_preview_state.json` | Collapsed/expanded section states |
 
 ---
 
-*Built with C++20 · Dear ImGui · SDL2 · OpenGL*
+*Built with C++23 · Dear ImGui · SDL2 · OpenGL*
 
 *Created by*  
 ![title](docs/img/sauroncode_reduced.png)
