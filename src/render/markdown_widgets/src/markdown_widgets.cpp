@@ -3563,7 +3563,7 @@ void draw_inventory_slot_preview(const InventorySlotInfo &slot, const ImVec2 &mi
     const ImU32 tint = ImGui::GetColorU32(slot.enabled ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.72f, 0.72f, 0.72f, 0.55f));
     if(texture != static_cast<ImTextureID>(0))
     {
-      draw_list->AddImage(texture, min, max, ImVec2(0, 0), ImVec2(1, 1), tint);
+      draw_list->AddImageRounded(texture, min, max, ImVec2(0, 0), ImVec2(1, 1), tint, 6.0f, ImDrawFlags_RoundCornersAll);
     }
     else
     {
