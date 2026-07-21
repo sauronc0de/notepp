@@ -477,6 +477,7 @@ static void invalidate_folder_image_cache(const std::string &folder_name)
 {
   auto it = g_explorer_image_cache.find(folder_name);
   if(it != g_explorer_image_cache.end()) it->second.valid = false;
+  MarkdownView::clear_sidebar_thumbnail_cache();
 }
 
 // --- Font file helpers ---
@@ -987,6 +988,7 @@ void App::switch_project(const std::filesystem::path &new_root)
   g_drawings_dirty = false;
   g_explorer_image_cache.clear();
   g_explorer_font_cache.clear();
+  MarkdownView::clear_sidebar_thumbnail_cache();
 
   MarkdownView::set_document_path(config_.dataPath);
 
@@ -1042,11 +1044,13 @@ int App::run()
         keep_alive_frames = (had_event || imgui_active || animation_active) ? 2
                                                                             : keep_alive_frames - 1;
         frame_ui();
+        const bool sidebar_thumbnail_work_deferred =
+            MarkdownView::sidebar_thumbnail_work_deferred();
 #ifdef NOTEPP_DEBUG_UI
         const Uint64 dbg_t2 = SDL_GetPerformanceCounter();
 #endif
         frame_end();
-        dirty_ = imgui_active || animation_active;
+        dirty_ = imgui_active || animation_active || sidebar_thumbnail_work_deferred;
         limit_frame_rate();
 #ifdef NOTEPP_DEBUG_UI
         const Uint64 dbg_t3 = SDL_GetPerformanceCounter();
@@ -1085,6 +1089,7 @@ int App::run()
 void App::shutdown()
 {
   clear_toolbar_icon_cache();
+  MarkdownView::shutdown_sidebar_thumbnail_cache();
 
   // Permanently remove soft-deleted profiles before final save
   layout_profiles_.erase(
@@ -3333,6 +3338,8 @@ bool App::frame_begin()
 }
 void App::frame_ui()
 {
+  MarkdownView::begin_sidebar_thumbnail_frame();
+
   // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
   const float explorer_w = 280.0f;
@@ -3433,6 +3440,7 @@ void App::frame_ui()
   }
   if(request_sync_files)
   {
+    MarkdownView::clear_sidebar_thumbnail_cache();
     sync_project_files();
     request_sync_files = false;
   }
@@ -5076,7 +5084,7 @@ void App::frame_ui()
           const ExplorerImageEntry &img = img_entries[(size_t)img_idx];
           ImGui::PushID(img_idx + 0x40000);
 
-          const auto tex = MarkdownView::get_or_load_texture(img.path);
+          const auto tex = MarkdownView::get_or_load_sidebar_thumbnail(img.path);
           const float row_h = ImGui::GetTextLineHeightWithSpacing();
           const float thumb_h = ImGui::GetTextLineHeight();
           const float thumb_w = (tex.valid && tex.height > 0.0f)

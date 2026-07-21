@@ -13,6 +13,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 #include <SDL.h>
 #ifndef _WIN32
 #include <sys/types.h>
@@ -96,8 +97,17 @@ struct TextureRecord
 static std::unordered_map<std::string, TextureRecord> g_image_cache{};
 static std::size_t g_image_cache_bytes = 0;
 static unsigned long long g_image_cache_clock = 0;
+static std::unordered_map<std::string, TextureRecord> g_sidebar_thumbnail_cache{};
+static std::vector<Texture> g_retired_sidebar_thumbnail_textures{};
+static std::size_t g_sidebar_thumbnail_cache_bytes = 0;
+static unsigned long long g_sidebar_thumbnail_cache_clock = 0;
+static int g_sidebar_thumbnail_load_budget = 0;
+static bool g_sidebar_thumbnail_work_deferred = false;
 constexpr int kMaxPreviewTextureSize = 2048;
+constexpr int kMaxSidebarThumbnailSize = 256;
+constexpr int kSidebarThumbnailLoadsPerFrame = 2;
 constexpr std::size_t kMaxImageCacheBytes = 128ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaxSidebarThumbnailCacheBytes = 32ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaxMarkdownCacheEntries = 64;
 
 struct ParsedMarkdownCacheEntry
@@ -672,7 +682,15 @@ static void start_url_fetch(const std::string &url)
   }).detach();
 }
 
-static TextureRecord load_texture_from_file(const std::filesystem::path &file)
+enum class ScaleFailurePolicy
+{
+  upload_original,
+  fail
+};
+
+static TextureRecord load_texture_from_file(
+    const std::filesystem::path &file, int max_texture_size,
+    ScaleFailurePolicy scale_failure_policy)
 {
   TextureRecord rec{};
   if(file.empty()) return rec;
@@ -691,15 +709,23 @@ static TextureRecord load_texture_from_file(const std::filesystem::path &file)
   if(!rgba) return rec;
 
   SDL_Surface *upload = rgba;
-  if(rgba->w > kMaxPreviewTextureSize || rgba->h > kMaxPreviewTextureSize)
+  if(rgba->w > max_texture_size || rgba->h > max_texture_size)
   {
     const float scale = std::min(
-        static_cast<float>(kMaxPreviewTextureSize) / static_cast<float>(std::max(1, rgba->w)),
-        static_cast<float>(kMaxPreviewTextureSize) / static_cast<float>(std::max(1, rgba->h)));
+        static_cast<float>(max_texture_size) / static_cast<float>(std::max(1, rgba->w)),
+        static_cast<float>(max_texture_size) / static_cast<float>(std::max(1, rgba->h)));
     const int target_w = std::max(1, static_cast<int>(std::floor(static_cast<float>(rgba->w) * scale)));
     const int target_h = std::max(1, static_cast<int>(std::floor(static_cast<float>(rgba->h) * scale)));
     SDL_Surface *scaled = SDL_CreateRGBSurfaceWithFormat(0, target_w, target_h, 32, SDL_PIXELFORMAT_RGBA32);
-    if(scaled != nullptr)
+    if(scaled == nullptr)
+    {
+      if(scale_failure_policy == ScaleFailurePolicy::fail)
+      {
+        SDL_FreeSurface(rgba);
+        return rec;
+      }
+    }
+    else
     {
       SDL_BlitScaled(rgba, nullptr, scaled, nullptr);
       upload = scaled;
@@ -769,6 +795,44 @@ static std::unordered_map<std::string, TextureRecord>::iterator cache_texture_re
 static void touch_texture_record(TextureRecord &rec)
 {
   rec.last_used = ++g_image_cache_clock;
+}
+
+static void retire_sidebar_thumbnail(TextureRecord &record)
+{
+  if(record.texture.id != 0)
+    g_retired_sidebar_thumbnail_textures.emplace_back(std::move(record.texture));
+}
+
+static void evict_sidebar_thumbnail_cache_if_needed()
+{
+  while(g_sidebar_thumbnail_cache_bytes > kMaxSidebarThumbnailCacheBytes &&
+        !g_sidebar_thumbnail_cache.empty())
+  {
+    auto victim = g_sidebar_thumbnail_cache.begin();
+    for(auto it = g_sidebar_thumbnail_cache.begin(); it != g_sidebar_thumbnail_cache.end(); ++it)
+    {
+      if(it->second.last_used < victim->second.last_used) victim = it;
+    }
+    g_sidebar_thumbnail_cache_bytes -=
+        std::min(g_sidebar_thumbnail_cache_bytes, victim->second.bytes);
+    retire_sidebar_thumbnail(victim->second);
+    g_sidebar_thumbnail_cache.erase(victim);
+  }
+}
+
+static std::unordered_map<std::string, TextureRecord>::iterator cache_sidebar_thumbnail_record(
+    std::string key, TextureRecord rec)
+{
+  rec.last_used = ++g_sidebar_thumbnail_cache_clock;
+  g_sidebar_thumbnail_cache_bytes += rec.bytes;
+  auto it = g_sidebar_thumbnail_cache.emplace(std::move(key), std::move(rec)).first;
+  evict_sidebar_thumbnail_cache_if_needed();
+  return it;
+}
+
+static void touch_sidebar_thumbnail_record(TextureRecord &rec)
+{
+  rec.last_used = ++g_sidebar_thumbnail_cache_clock;
 }
 
 // Remove a single leading '>' (and one optional following space) from a line
@@ -1070,7 +1134,8 @@ struct MyMarkdown : public imgui_md
       const std::filesystem::path local = fetch_it->second.local_path;
       lk.unlock();
 
-      auto inserted = cache_texture_record(m_href, load_texture_from_file(local));
+      auto inserted = cache_texture_record(m_href, load_texture_from_file(
+                                                       local, kMaxPreviewTextureSize, ScaleFailurePolicy::upload_original));
       return fill_image_nfo(inserted->second, nfo);
     }
 
@@ -1079,7 +1144,8 @@ struct MyMarkdown : public imgui_md
     auto it = g_image_cache.find(cache_key);
     if(it == g_image_cache.end())
     {
-      it = cache_texture_record(cache_key, load_texture_from_file(resolved));
+      it = cache_texture_record(cache_key, load_texture_from_file(
+                                               resolved, kMaxPreviewTextureSize, ScaleFailurePolicy::upload_original));
     }
     else
     {
@@ -1401,7 +1467,8 @@ MarkdownView::TextureHandle MarkdownView::get_or_load_texture(const std::filesys
   auto it = g_image_cache.find(key);
   if(it == g_image_cache.end())
   {
-    it = cache_texture_record(key, load_texture_from_file(path));
+    it = cache_texture_record(key, load_texture_from_file(
+                                       path, kMaxPreviewTextureSize, ScaleFailurePolicy::upload_original));
   }
   else
   {
@@ -1414,6 +1481,71 @@ MarkdownView::TextureHandle MarkdownView::get_or_load_texture(const std::filesys
   h.height = it->second.size.y;
   h.valid = true;
   return h;
+}
+
+void MarkdownView::begin_sidebar_thumbnail_frame()
+{
+  g_retired_sidebar_thumbnail_textures.clear();
+  g_sidebar_thumbnail_load_budget = kSidebarThumbnailLoadsPerFrame;
+  g_sidebar_thumbnail_work_deferred = false;
+}
+
+MarkdownView::TextureHandle MarkdownView::get_or_load_sidebar_thumbnail(
+    const std::filesystem::path &path)
+{
+  if(path.empty()) return TextureHandle{};
+  const std::string key = path.string();
+  auto it = g_sidebar_thumbnail_cache.find(key);
+  if(it == g_sidebar_thumbnail_cache.end())
+  {
+    if(g_sidebar_thumbnail_load_budget == 0)
+    {
+      g_sidebar_thumbnail_work_deferred = true;
+      return TextureHandle{};
+    }
+    --g_sidebar_thumbnail_load_budget;
+    it = cache_sidebar_thumbnail_record(
+        key, load_texture_from_file(
+                 path, kMaxSidebarThumbnailSize, ScaleFailurePolicy::fail));
+  }
+  else
+  {
+    touch_sidebar_thumbnail_record(it->second);
+  }
+  if(!it->second.loaded || it->second.texture.id == 0) return TextureHandle{};
+  TextureHandle h;
+  h.id = (ImTextureID)(uintptr_t)it->second.texture.id;
+  h.width = it->second.size.x;
+  h.height = it->second.size.y;
+  h.valid = true;
+  return h;
+}
+
+bool MarkdownView::sidebar_thumbnail_work_deferred()
+{
+  return g_sidebar_thumbnail_work_deferred;
+}
+
+void MarkdownView::clear_sidebar_thumbnail_cache()
+{
+  for(auto &[key, record] : g_sidebar_thumbnail_cache)
+  {
+    (void)key;
+    retire_sidebar_thumbnail(record);
+  }
+  g_sidebar_thumbnail_cache.clear();
+  g_sidebar_thumbnail_cache_bytes = 0;
+  g_sidebar_thumbnail_cache_clock = 0;
+}
+
+void MarkdownView::shutdown_sidebar_thumbnail_cache()
+{
+  g_sidebar_thumbnail_cache.clear();
+  g_retired_sidebar_thumbnail_textures.clear();
+  g_sidebar_thumbnail_cache_bytes = 0;
+  g_sidebar_thumbnail_cache_clock = 0;
+  g_sidebar_thumbnail_load_budget = 0;
+  g_sidebar_thumbnail_work_deferred = false;
 }
 
 bool MarkdownView::take_hover_preview(MarkdownHoverPreviewData &out)

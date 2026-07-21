@@ -42,5 +42,10 @@ struct MarkdownView
   static void render_inline(std::string_view markdown_inline);
   static void set_assets_path(std::filesystem::path path);
   static TextureHandle get_or_load_texture(const std::filesystem::path &path);
+  static void begin_sidebar_thumbnail_frame();
+  static TextureHandle get_or_load_sidebar_thumbnail(const std::filesystem::path &path);
+  static bool sidebar_thumbnail_work_deferred();
+  static void clear_sidebar_thumbnail_cache();
+  static void shutdown_sidebar_thumbnail_cache();
   static ImageContextResult render_image_context_menu(std::string &markdown);
 };
