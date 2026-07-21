@@ -423,6 +423,130 @@ void test_kanban_missing_header()
   expect_true(!md::parse_kanban("todo[T]\n", d), "missing header rejected");
 }
 
+// Regression: round-trip the user's content (5 columns, duplicate card
+// ids, emoji labels, multiline descriptions with literal '\n', trailing
+// empty column). The kanban must parse, serialize, and re-parse without
+// losing structure.
+void test_kanban_user_content_roundtrip()
+{
+  // Build the source by concatenating literals. We split each hex escape
+  // across a string boundary so C++23 does not greedily merge adjacent
+  // hex digits (e.g. "\x8C" + " Failed" would otherwise become
+  // "\x8CFailed" and overflow a char).
+  const std::string src =
+      std::string("kanban\n"
+                  "  a[") + "\xF0\x9F\x94\x8D" + " To Investigate]\n"
+      "    c1[Undermountain]: Necessitem diners o m" + "\xC3\xA9" + "s poder per anar al undermountain.\n"
+      "    c4[Find anchor team]: Hauria de trobar alguna cosa que ens uneixi a tots. \\n Fer alguna cosa perqu" + "\xC3\xA8" + " tots vagin m" + "\xC3\xA9" + "s o menys a una. \\n Feia molt que no podia est" + "\xC3\xA0" + " tant temps amb unes mateixes persones sense haver de fugir.\\n Haig de lluitar per la unitat.\n"
+      "  a[" + "\xF0\x9F\x93\x9D" + " Available]\n"
+      "    c2[Somni]: Un somni misterios amb una ciutat i una criatura terrorifica. Possiblament al Undermountain ja que era un lloc tancat.\n"
+      "    c2[Escriptor]: Vol veurens a la taverna\n"
+      "    c3[Tresor de Neverenguer]: Ajudarem al fill Neverenguer a trobar el tresor si existeix. Ens d" + "\xC3\xB3" + "na entrades per anar a l'Opera amb en Mirth. Clarament el penjoll tenia alguna pista de tot plegat.\n"
+      "  a[" + "\xE2\x9A\x94" + " In Progress]\n"
+      "    c1[Necklace]: Fill the necklace with charms related to my 7 lifes\n"
+      "    c2[Obrir una taverna]\n"
+      "  a[" + "\xE2\x9C\x85" + " Completed]\n"
+      "    c1[Bolo]: Ha perdut un amic pels carrers de la ciutat amb la violencia que hi ha " + "\xC3\xBA" + "ltimament pels carrers de prop del port. 500 Dracs per trobar el seu amic. (50 per avan" + "\xC3\xA7" + "at)\n"
+      "  a[" + "\xE2\x9D\x8C" + " Failed]\n";
+
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "user kanban parses");
+
+  // Structure checks: 5 columns, last one empty.
+  expect_eq_size(d.columns.size(), 5, "five columns");
+  expect_eq_size(d.columns[0].cards.size(), 2, "col 0 two cards");
+  expect_eq_size(d.columns[1].cards.size(), 3, "col 1 three cards");
+  expect_eq_size(d.columns[2].cards.size(), 2, "col 2 two cards");
+  expect_eq_size(d.columns[3].cards.size(), 1, "col 3 one card");
+  expect_eq_size(d.columns[4].cards.size(), 0, "col 4 empty");
+
+  // Descriptions are preserved verbatim, including the literal '\n' runs.
+  expect_eq_str(d.columns[0].cards[1].description,
+                "Hauria de trobar alguna cosa que ens uneixi a tots. \\n Fer alguna cosa perqu\xC3\xA8 tots vagin m\xC3\xA9s o menys a una. \\n Feia molt que no podia est\xC3\xA0 tant temps amb unes mateixes persones sense haver de fugir.\\n Haig de lluitar per la unitat.",
+                "long description with literal \\n");
+
+  // Simulate drag-drop: move card 0 of col 0 to col 4, then re-serialize
+  // (using the same algorithm as kanban_renderer's serialize_kanban) and
+  // re-parse. Structure must remain identical.
+  md::KanbanDiagram moved = d;
+  md::KanbanCard card = moved.columns[0].cards[0];
+  moved.columns[0].cards.erase(moved.columns[0].cards.begin());
+  moved.columns[4].cards.insert(moved.columns[4].cards.begin(), card);
+
+  std::string serialized;
+  serialized += "kanban\n";
+  for(const auto &col : moved.columns)
+  {
+    serialized += "  ";
+    serialized += col.id;
+    serialized += "[";
+    serialized += col.label;
+    serialized += "]\n";
+    for(const auto &cd : col.cards)
+    {
+      serialized += "    ";
+      serialized += cd.id;
+      serialized += "[";
+      serialized += cd.label;
+      serialized += "]";
+      if(!cd.description.empty())
+      {
+        serialized += ": ";
+        serialized += cd.description;
+      }
+      serialized += "\n";
+    }
+  }
+
+  md::KanbanDiagram r;
+  expect_true(md::parse_kanban(serialized, r), "round-trip parses");
+  expect_eq_size(r.columns.size(), 5, "round-trip five columns");
+  expect_eq_size(r.columns[0].cards.size(), 1, "col 0 lost one card");
+  expect_eq_size(r.columns[4].cards.size(), 1, "col 4 gained one card");
+  expect_eq_str(r.columns[4].cards[0].id, "c1", "moved card id");
+  expect_eq_str(r.columns[4].cards[0].label, "Undermountain", "moved card label");
+}
+
+// Same round-trip, but with the corrected "{column_id}{N}" convention
+// instead of legacy "c{N}". The parser is invariant to the format;
+// this test guards against regressions if the convention ever becomes
+// load-bearing for cross-diagram linking.
+void test_kanban_user_content_convention()
+{
+  const std::string src =
+      "kanban\n"
+      "  inv[" "\xF0\x9F\x94\x8D" " To Investigate]\n"
+      "    inv1[Undermountain]: Necessitem diners o m" "\xC3\xA9" "s poder per anar al undermountain.\n"
+      "    inv2[Find anchor team]: Haig de lluitar per la unitat.\n"
+      "  avail[" "\xF0\x9F\x93\x9D" " Available]\n"
+      "    avail1[Somni]: Possiblement al Undermountain ja que era un lloc tancat.\n"
+      "  prog[" "\xE2\x9A\x94" " In Progress]\n"
+      "    prog1[Necklace]: Fill the necklace with charms related to my 7 lifes\n"
+      "  done[" "\xE2\x9C\x85" " Completed]\n"
+      "    done1[Bolo]: Ha perdut un amic.\n";
+
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "convention kanban parses");
+  expect_eq_size(d.columns.size(), 4, "four columns");
+
+  expect_eq_str(d.columns[0].id, "inv", "col 0 id");
+  expect_eq_size(d.columns[0].cards.size(), 2, "col 0 cards");
+  expect_eq_str(d.columns[0].cards[0].id, "inv1", "inv1");
+  expect_eq_str(d.columns[0].cards[1].id, "inv2", "inv2");
+
+  expect_eq_str(d.columns[1].id, "avail", "col 1 id");
+  expect_eq_size(d.columns[1].cards.size(), 1, "col 1 cards");
+  expect_eq_str(d.columns[1].cards[0].id, "avail1", "avail1");
+
+  expect_eq_str(d.columns[2].id, "prog", "col 2 id");
+  expect_eq_size(d.columns[2].cards.size(), 1, "col 2 cards");
+  expect_eq_str(d.columns[2].cards[0].id, "prog1", "prog1");
+
+  expect_eq_str(d.columns[3].id, "done", "col 3 id");
+  expect_eq_size(d.columns[3].cards.size(), 1, "col 3 cards");
+  expect_eq_str(d.columns[3].cards[0].id, "done1", "done1");
+}
+
 void test_architecture_basic_valid()
 {
   const std::string src =
@@ -660,6 +784,8 @@ int main()
   test_block_missing_header();
   test_kanban_basic_valid();
   test_kanban_missing_header();
+  test_kanban_user_content_roundtrip();
+  test_kanban_user_content_convention();
   test_architecture_basic_valid();
   test_architecture_missing_header();
   test_radar_basic_valid();

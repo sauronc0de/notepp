@@ -57,6 +57,8 @@ static std::unordered_map<int, KanbanEditState> s_kb_states;
 
 static std::string next_card_id(const KanbanDiagram &d)
 {
+  // Legacy: a global "c{N}" counter that ignores the column's id. Kept
+  // for callers that have no concept of column (the registry, etc.).
   int mx = 0;
   for(auto &col : d.columns)
     for(auto &card : col.cards)
@@ -67,6 +69,37 @@ static std::string next_card_id(const KanbanDiagram &d)
       if(i < static_cast<int>(s.size())) mx = std::max(mx, std::atoi(s.c_str() + i));
     }
   return "c" + std::to_string(mx + 1);
+}
+
+// Column-scoped id generator that respects the convention
+// "{column_id}{N}". Looks only at cards that already share the column's
+// id prefix and are purely numeric after it; cards with unrelated ids
+// (e.g. legacy "c1" living next to "inv1") are ignored for counting.
+static std::string next_card_id_for_column(const KanbanDiagram &d, int col_idx)
+{
+  if(col_idx < 0 || col_idx >= static_cast<int>(d.columns.size()))
+  {
+    return next_card_id(d);
+  }
+  const std::string &prefix = d.columns[col_idx].id;
+  if(prefix.empty()) return next_card_id(d);
+  int mx = 0;
+  for(const auto &card : d.columns[col_idx].cards)
+  {
+    const std::string &s = card.id;
+    if(s.size() <= prefix.size()) continue;
+    if(s.compare(0, prefix.size(), prefix) != 0) continue;
+    bool valid = true;
+    int n = 0;
+    for(std::size_t k = prefix.size(); k < s.size(); ++k)
+    {
+      const char c = s[k];
+      if(c < '0' || c > '9') { valid = false; break; }
+      n = n * 10 + (c - '0');
+    }
+    if(valid) mx = std::max(mx, n);
+  }
+  return prefix + std::to_string(mx + 1);
 }
 
 static std::string serialize_kanban(const KanbanDiagram &d)
@@ -239,11 +272,31 @@ void render_kanban(const KanbanDiagram &d, int id)
     }
     if(!ImGui::IsMouseDown(0))
     {
-      if(es.drop_ci >= 0)
+      // The static edit state can outlive a single drag-and-drop
+      // session if the document changes between frames (e.g. external
+      // reload, async re-parse, or the kanban being removed while a
+      // drag was in flight). Validate every index against the diagram
+      // we actually have now before touching it; otherwise we may
+      // dereference out-of-range columns/cards and crash.
+      const auto nc_d = static_cast<int>(d.columns.size());
+      const bool drop_valid =
+          es.drop_ci >= 0 && es.drop_ci < nc_d &&
+          es.drag_ci >= 0 && es.drag_ci < nc_d &&
+          es.drag_ri >= 0 && es.drag_ri < static_cast<int>(d.columns[es.drag_ci].cards.size()) &&
+          es.drop_ri >= 0;
+      if(drop_valid)
       {
         KanbanDiagram nd = d;
         KanbanCard moved = nd.columns[es.drag_ci].cards[es.drag_ri];
         nd.columns[es.drag_ci].cards.erase(nd.columns[es.drag_ci].cards.begin() + es.drag_ri);
+        // If the card is moving to a different column, retag its id
+        // with the destination's prefix so the "{column_id}{N}"
+        // convention survives interactive edits. Within the same
+        // column the id stays unchanged.
+        if(es.drop_ci != es.drag_ci)
+        {
+          moved.id = next_card_id_for_column(nd, es.drop_ci);
+        }
         int ins = es.drop_ri;
         if(es.drop_ci == es.drag_ci && es.drop_ri > es.drag_ri) --ins;
         ins = std::max(0, std::min(ins, static_cast<int>(nd.columns[es.drop_ci].cards.size())));
@@ -444,7 +497,7 @@ void render_kanban(const KanbanDiagram &d, int id)
       {
         KanbanDiagram nd = d;
         KanbanCard nc_card;
-        nc_card.id = next_card_id(d);
+        nc_card.id = next_card_id_for_column(d, es.add_ci);
         nc_card.label = es.add_label;
         nc_card.description = es.add_desc;
         nd.columns[es.add_ci].cards.push_back(nc_card);

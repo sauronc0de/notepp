@@ -1960,29 +1960,64 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     MermaidDiagrams::g_consumed_right_click = false;
   }
 
-  // Apply any interactive diagram edit committed this frame
+  // Apply any interactive diagram edit committed this frame.
+  //
+  // Diagrams are rendered through two paths in this dispatcher:
+  //   1. An explicit fence (`` ```mermaid `` / `` ```ui-mermaid `` /
+  //      `` ```ui ``) — the body is captured between the fence and the
+  //      next `` ``` `` line. `pe.id` points at the fence line.
+  //   2. An implicit block, where the parser just discovered a line
+  //      whose first token is a known mermaid type (e.g. ``kanban``)
+  //      and consumed it without any fence — `pe.id` points at that
+  //      first line of the body itself.
+  //
+  // For case 1 the body starts one line past the fence. For case 2 the
+  // body starts AT `pe.id`, otherwise the old diagram header line gets
+  // left in place before the serialised replacement and we end up with
+  // two `kanban` headers stacked on top of each other (which the next
+  // re-render then collapses into a single "kanban" column holding all
+  // cards, visibly corrupting the board).
   if(MermaidDiagrams::g_pending_edit.active())
   {
     auto &pe = MermaidDiagrams::g_pending_edit;
-    size_t fence_start = (size_t)pe.id;
-    size_t body_start = markdown.find('\n', fence_start);
-    if(body_start != std::string::npos && body_start + 1 < markdown.size())
+    const size_t fence_start = static_cast<size_t>(pe.id);
+    if(fence_start < markdown.size())
     {
-      body_start++;
-      size_t body_end = body_start;
-      while(body_end < markdown.size())
+      const size_t fence_line_end = markdown.find('\n', fence_start);
+      const std::string_view fence_first_line(
+          markdown.data() + fence_start,
+          fence_line_end == std::string_view::npos
+              ? markdown.size() - fence_start
+              : fence_line_end - fence_start);
+      const std::string_view fence_first_trim = StringUtils::trim(fence_first_line);
+      const bool explicit_fence =
+          fence_first_trim == "```mermaid" ||
+          fence_first_trim == "```ui-mermaid" ||
+          fence_first_trim == "```ui";
+
+      const size_t body_start =
+          (explicit_fence && fence_line_end != std::string_view::npos)
+              ? fence_line_end + 1
+              : fence_start;
+
+      if(body_start < markdown.size())
       {
-        if(markdown[body_end] == '`' &&
-           body_end + 2 < markdown.size() &&
-           markdown[body_end + 1] == '`' &&
-           markdown[body_end + 2] == '`') break;
-        size_t nl = markdown.find('\n', body_end);
-        body_end = (nl == std::string::npos) ? markdown.size() : nl + 1;
+        size_t body_end = body_start;
+        while(body_end < markdown.size())
+        {
+          if(markdown[body_end] == '`' &&
+             body_end + 2 < markdown.size() &&
+             markdown[body_end + 1] == '`' &&
+             markdown[body_end + 2] == '`')
+            break;
+          size_t nl = markdown.find('\n', body_end);
+          body_end = (nl == std::string::npos) ? markdown.size() : nl + 1;
+        }
+        std::string nb = pe.body;
+        if(!nb.empty() && nb.back() != '\n') nb += '\n';
+        markdown.replace(body_start, body_end - body_start, nb);
+        result.markdown_changed = true;
       }
-      std::string nb = pe.body;
-      if(!nb.empty() && nb.back() != '\n') nb += '\n';
-      markdown.replace(body_start, body_end - body_start, nb);
-      result.markdown_changed = true;
     }
     pe.clear();
   }
