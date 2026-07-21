@@ -102,6 +102,38 @@ static std::string next_card_id_for_column(const KanbanDiagram &d, int col_idx)
   return prefix + std::to_string(mx + 1);
 }
 
+// Serialize a description into the kanban source. Single-line stays on
+// the card line; multi-line (anything containing '\n') is split so the
+// first line follows the `: ` marker and the rest are emitted as
+// continuation lines indented strictly past the card line (parser rule:
+// continuation iff indent > last_card_indent). Empty descriptions fall
+// back to a single newline so the card line stays well-formed.
+static void write_description(std::ostringstream &s, const std::string &desc)
+{
+  if(desc.empty()) return;
+  const auto nl = desc.find('\n');
+  if(nl == std::string::npos)
+  {
+    s << ": " << desc;
+    return;
+  }
+  s << ": " << desc.substr(0, nl) << "\n";
+  // Continuation lines start at column 6 (card line uses 4). Any line
+  // that itself contains another '\n' is split recursively so we never
+  // emit a multi-line continuation that the parser would re-read as a
+  // fresh node.
+  std::string_view rest(desc.data() + nl + 1, desc.size() - nl - 1);
+  while(!rest.empty())
+  {
+    const auto rn = rest.find('\n');
+    const std::string_view piece =
+        rn == std::string_view::npos ? rest : rest.substr(0, rn);
+    s << "      " << piece << "\n";
+    if(rn == std::string_view::npos) break;
+    rest.remove_prefix(rn + 1);
+  }
+}
+
 static std::string serialize_kanban(const KanbanDiagram &d)
 {
   std::ostringstream s;
@@ -112,7 +144,7 @@ static std::string serialize_kanban(const KanbanDiagram &d)
     for(auto &card : col.cards)
     {
       s << "    " << card.id << "[" << card.label << "]";
-      if(!card.description.empty()) s << ": " << card.description;
+      write_description(s, card.description);
       s << "\n";
     }
   }

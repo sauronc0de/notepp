@@ -547,6 +547,68 @@ void test_kanban_user_content_convention()
   expect_eq_str(d.columns[3].cards[0].id, "done1", "done1");
 }
 
+// Multi-line descriptions via indented continuation lines. Each line
+// strictly past the card's indent should be merged into the card's
+// description, not promoted to a new column or card.
+void test_kanban_multiline_description_continuation()
+{
+  // 4-space card, 6-space continuation.
+  const std::string src =
+      "kanban\n"
+      "  inv[Investigate]\n"
+      "    inv1[Title]: line one\n"
+      "      line two with [brackets]\n"
+      "      line three\n"
+      "    inv2[Other]: single line\n";
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "multiline kanban parses");
+  expect_eq_size(d.columns.size(), 1, "one column (no phantom columns from continuations)");
+  expect_eq_size(d.columns[0].cards.size(), 2, "two cards (no phantom cards)");
+
+  expect_eq_str(d.columns[0].cards[0].id, "inv1", "inv1 id");
+  expect_eq_str(d.columns[0].cards[0].label, "Title", "inv1 label");
+  expect_eq_str(d.columns[0].cards[0].description,
+                "line one\nline two with [brackets]\nline three",
+                "inv1 has 3-line description with brackets inside");
+
+  expect_eq_str(d.columns[0].cards[1].id, "inv2", "inv2 id");
+  expect_eq_str(d.columns[0].cards[1].description, "single line", "inv2 description untouched");
+}
+
+// Multi-line via <br> on the same line. Same in-memory representation.
+void test_kanban_multiline_description_br()
+{
+  const std::string src =
+      "kanban\n"
+      "  inv[Investigate]\n"
+      "    inv1[Title]: line one<br>line two<br>line three\n";
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "<br> kanban parses");
+  expect_eq_str(d.columns[0].cards[0].description,
+                "line one\nline two\nline three",
+                "<br> becomes newlines");
+}
+
+// Without the fix, the second line of a description would be parsed as
+// a fresh column header and the user would see the board split. Make
+// sure we don't regress there.
+void test_kanban_no_phantom_columns_from_text()
+{
+  // No 'kanban' header on purpose; this guards the parser path that
+  // happens when the header is missing: the body itself must not
+  // surface as columns/cards on its own.
+  const std::string src =
+      "kanban\n"
+      "  inv[Investigate]\n"
+      "    inv1[Title]: description one\n"
+      "      description two\n"
+      "      description three\n";
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "guard kanban parses");
+  expect_eq_size(d.columns.size(), 1, "single column (no 'description two' column)");
+  expect_eq_size(d.columns[0].cards.size(), 1, "single card (no 'description two' card)");
+}
+
 void test_architecture_basic_valid()
 {
   const std::string src =
@@ -786,6 +848,9 @@ int main()
   test_kanban_missing_header();
   test_kanban_user_content_roundtrip();
   test_kanban_user_content_convention();
+  test_kanban_multiline_description_continuation();
+  test_kanban_multiline_description_br();
+  test_kanban_no_phantom_columns_from_text();
   test_architecture_basic_valid();
   test_architecture_missing_header();
   test_radar_basic_valid();
