@@ -2,12 +2,14 @@
 
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <shlobj.h>
 #endif
 
+#include "log.hpp"
 #include "nfd.hpp"
 #include "tiny_json.hpp"
 
@@ -57,12 +59,21 @@ static fs::path get_recent_projects_file()
 void save_last_project_path(const fs::path &path)
 {
   const auto configDir = get_appdata_dir();
-  fs::create_directories(configDir);
+  std::error_code ec;
+  fs::create_directories(configDir, ec);
+  if(ec)
+  {
+    LOG_ERROR("Cannot create notepp config dir '", configDir.generic_string(), "': ", ec.message());
+    return;
+  }
 
   std::ofstream file(get_config_file(), std::ios::trunc);
 
   if(!file)
+  {
+    LOG_ERROR("Cannot open notepp config file for writing");
     return;
+  }
 
   file << "{\n";
   file << "  \"lastProjectPath\": \"" << json_escape(path.generic_string()) << "\"\n";
@@ -164,20 +175,35 @@ ProjectInfo create_or_open_project(const fs::path &root)
   project.config = root / "config";
   project.projectFile = root / "notepp.project.json";
 
-  fs::create_directories(project.notes);
-  fs::create_directories(project.assets);
-  fs::create_directories(project.config);
+  bool layoutOk = true;
+  for(const auto &subdir : {project.notes, project.assets, project.config})
+  {
+    std::error_code ec;
+    fs::create_directories(subdir, ec);
+    if(ec)
+    {
+      LOG_ERROR("Cannot create project subdir '", subdir.generic_string(), "': ", ec.message());
+      layoutOk = false;
+    }
+  }
 
-  if(!fs::exists(project.projectFile))
+  if(layoutOk && !fs::exists(project.projectFile))
   {
     std::ofstream file(project.projectFile);
 
-    file << "{\n";
-    file << "  \"name\": \"" << json_escape(root.filename().generic_string()) << "\",\n";
-    file << "  \"version\": 1,\n";
-    file << "  \"notesPath\": \"notes\",\n";
-    file << "  \"assetsPath\": \"assets\"\n";
-    file << "}\n";
+    if(file)
+    {
+      file << "{\n";
+      file << "  \"name\": \"" << json_escape(root.filename().generic_string()) << "\",\n";
+      file << "  \"version\": 1,\n";
+      file << "  \"notesPath\": \"notes\",\n";
+      file << "  \"assetsPath\": \"assets\"\n";
+      file << "}\n";
+    }
+    else
+    {
+      LOG_ERROR("Cannot open project file for writing: ", project.projectFile.generic_string());
+    }
   }
 
   save_last_project_path(root);

@@ -1,9 +1,11 @@
 #include "note_project.hpp"
 
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -123,6 +125,85 @@ void test_recent_projects_dedupe_and_cap()
   auto recents = npp::load_recent_projects();
   expect_eq_int(static_cast<long long>(recents.size()), 3, "deduped to 3 unique existing paths");
 }
+
+// Regression for the WSL crash where ~/.config/Notepp could not be created
+// (permission denied). The directory-creation failure must NOT throw out of
+// the public API; it must be handled internally so the application can keep
+// running. We simulate the failure portably by pointing XDG_CONFIG_HOME at a
+// regular file: std::filesystem::create_directories fails when the target
+// exists but is not a directory.
+void test_save_last_project_path_does_not_throw_on_creation_failure()
+{
+  static int counter = 0;
+  const fs::path base = fs::temp_directory_path() /
+                        ("notepp_project_tests_readonly_" + std::to_string(static_cast<long long>(++counter)));
+  fs::create_directories(base);
+  const fs::path blockingFile = base / "Notepp";
+  {
+    std::ofstream f(blockingFile);
+    f << "not a directory";
+  }
+
+  const char *prev = std::getenv("XDG_CONFIG_HOME");
+  std::string previousValue;
+  if(prev) previousValue = prev;
+  setenv("XDG_CONFIG_HOME", blockingFile.generic_string().c_str(), 1);
+
+  const fs::path root = base / "projC";
+  fs::create_directories(root);
+
+  bool threw = false;
+  try
+  {
+    npp::save_last_project_path(root);
+  }
+  catch(const std::exception &)
+  {
+    threw = true;
+  }
+
+  if(prev)
+    setenv("XDG_CONFIG_HOME", previousValue.c_str(), 1);
+  else
+    unsetenv("XDG_CONFIG_HOME");
+
+  std::error_code cleanupEc;
+  fs::remove_all(base, cleanupEc);
+
+  expect_true(!threw, "save_last_project_path must not throw when config dir cannot be created");
+}
+
+// Companion regression for create_or_open_project: when the project root
+// cannot host subdirectories (simulated by pointing root at a regular file),
+// the function must not throw either. It still returns a ProjectInfo with
+// the originally requested paths so callers see a coherent value.
+void test_create_or_open_project_does_not_throw_on_creation_failure()
+{
+  static int counter = 0;
+  const fs::path base = fs::temp_directory_path() /
+                        ("notepp_project_tests_rootblock_" + std::to_string(static_cast<long long>(++counter)));
+  fs::create_directories(base);
+  const fs::path blockingRoot = base / "blockingRoot";
+  {
+    std::ofstream f(blockingRoot);
+    f << "not a directory";
+  }
+
+  bool threw = false;
+  try
+  {
+    (void)npp::create_or_open_project(blockingRoot);
+  }
+  catch(const std::exception &)
+  {
+    threw = true;
+  }
+
+  std::error_code cleanupEc;
+  fs::remove_all(base, cleanupEc);
+
+  expect_true(!threw, "create_or_open_project must not throw when project subdirs cannot be created");
+}
 } // namespace
 
 int main()
@@ -130,6 +211,8 @@ int main()
   test_create_or_open_project_creates_layout();
   test_save_and_load_last_project_path();
   test_recent_projects_dedupe_and_cap();
+  test_save_last_project_path_does_not_throw_on_creation_failure();
+  test_create_or_open_project_does_not_throw_on_creation_failure();
   if(failures != 0)
   {
     std::cerr << failures << " note_project test expectation(s) failed\n";
