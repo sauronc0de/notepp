@@ -41,6 +41,8 @@ pi install npm:pi-subagents
 pi install npm:pi-intercom
 pi install npm:pi-prompt-template-model
 pi install npm:@sinamtz/pi-minimax-provider
+pi update
+pi update --extensions
 
 # Update the git submodules
 # git submodule update --init --recursive

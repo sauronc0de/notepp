@@ -10,9 +10,16 @@
   "containerEnv": {
     "PI_API_KEY": "${localEnv:PI_API_KEY}"
   },
+  "mounts": [
+    {
+      "source": "${localEnv:HOME}/.pi",
+      "target": "/home/devuser/.pi",
+      "type": "bind"
+    }
+  ],
   "runArgs": [
-    "--env=DISPLAY", // forward host DISPLAY
-    "--volume=/tmp/.X11-unix:/tmp/.X11-unix", // mount X11 socket
+    "--env=DISPLAY",
+    "--volume=/tmp/.X11-unix:/tmp/.X11-unix",
     "--env=XAUTHORITY=/tmp/.docker.xauth"
   ],
   "postStartCommand": "sudo chown -R devuser:devuser /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
