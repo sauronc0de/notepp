@@ -12,7 +12,7 @@
   },
   "mounts": [
     {
-      "source": "${localEnv:HOME}/.pi",
+      "source": "${localEnv:HOME}/.pi-projects/${localWorkspaceFolderBasename}",
       "target": "/home/devuser/.pi",
       "type": "bind"
     }
@@ -22,7 +22,7 @@
     "--volume=/tmp/.X11-unix:/tmp/.X11-unix",
     "--env=XAUTHORITY=/tmp/.docker.xauth"
   ],
-  "postStartCommand": "sudo chown -R devuser:devuser /workspaces/${localWorkspaceFolderBasename} && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
+  "postStartCommand": "sudo chown -R devuser /workspaces/${localWorkspaceFolderBasename} /home/devuser/.pi && chmod +x .devcontainer/docker_entrypoint.sh && .devcontainer/docker_entrypoint.sh",
   "customizations": {
     "vscode": {
       "extensions": [
