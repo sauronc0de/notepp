@@ -4,6 +4,7 @@
 #include "note_history.hpp"
 #include "note_model.hpp"
 #include "note_storage.hpp"
+#include "terminal.hpp"
 
 #include <imgui.h>
 
@@ -168,6 +169,7 @@ private:
 
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
+  bool request_open_terminal_ = false;
 #if USE_PORTABLE_PATHS
   bool request_open_project_ = false;
 #endif
@@ -213,6 +215,9 @@ private:
   int window_drag_start_wx_ = 0, window_drag_start_wy_ = 0;
   std::vector<PendingDroppedFile> pending_dropped_files_;
   std::vector<std::string> pending_fs_delete_paths_;
+  Terminal terminal_;
+  std::string pending_terminal_text_;
+  bool terminal_visible_ = false;
   int active_folder_idx_ = 0;
   int active_note_idx_ = 0;
   bool folder_overview_mode_ = false;

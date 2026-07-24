@@ -1088,6 +1088,8 @@ int App::run()
 }
 void App::shutdown()
 {
+  terminal_.stop();
+
   clear_toolbar_icon_cache();
   MarkdownView::shutdown_sidebar_thumbnail_cache();
 
@@ -3190,6 +3192,14 @@ bool App::frame_begin()
       }
     }
 
+    // Keep a copy of composed text while still forwarding the event to
+    // ImGui. At the end of frame_ui(), current-frame focus decides whether
+    // the terminal receives this text; otherwise the active note InputText
+    // handles it normally. SDL_TEXTINPUT preserves layout, Unicode, IME,
+    // and paste data.
+    if(event.type == SDL_TEXTINPUT && terminal_visible_)
+      pending_terminal_text_.append(event.text.text);
+
     ImGui_ImplSDL2_ProcessEvent(&event);
     const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
     const bool imgui_wants_text_input = ImGui::GetIO().WantTextInput;
@@ -3218,6 +3228,17 @@ bool App::frame_begin()
     {
       request_open_project_search_ = true;
       request_open_search_ = false;
+      continue;
+    }
+    // Ctrl+Shift+P toggles the embedded terminal. Works whether or not
+    // the editor is focused — the terminal is a workspace-level tool.
+    if(event.type == SDL_KEYDOWN &&
+       event.key.repeat == 0 &&
+       ctrl_down &&
+       shift_down &&
+       event.key.keysym.sym == SDLK_p)
+    {
+      request_open_terminal_ = true;
       continue;
     }
     if(!editing_mode_ &&
@@ -3942,6 +3963,31 @@ void App::frame_ui()
     if(ImGui::Button("Close")) search_dialog.visible = false;
     ImGui::End();
     search_window_visible_ = search_dialog.visible;
+  };
+  auto render_terminal = [&]() {
+    if(request_open_terminal_)
+    {
+      terminal_visible_ = !terminal_visible_;
+      request_open_terminal_ = false;
+    }
+    if(!terminal_visible_)
+    {
+      pending_terminal_text_.clear();
+      return;
+    }
+
+    terminal_.setFont(font_regular_);
+    if(!terminal_.isRunning())
+    {
+      // First open (or restart after the shell exited): start in the
+      // project notes root. render() resizes the PTY to the panel.
+      terminal_.start(config_.dataPath, 24, 80);
+    }
+    // render() resolves current-frame focus after all note/editor widgets,
+    // then writes composed text before Enter/navigation events. This avoids
+    // stale focus stealing note input and preserves command ordering.
+    terminal_.render(&terminal_visible_, pending_terminal_text_);
+    pending_terminal_text_.clear();
   };
   auto queue_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
@@ -8566,6 +8612,7 @@ __CURSOR__)MD",
     }
     render_search_dialog();
     render_debug_history_window();
+    render_terminal();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     return;
@@ -8600,6 +8647,7 @@ __CURSOR__)MD",
     }
     render_search_dialog();
     render_debug_history_window();
+    render_terminal();
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     return;
@@ -9150,6 +9198,7 @@ __CURSOR__)MD",
   }
   render_search_dialog();
   render_debug_history_window();
+  render_terminal();
   if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
   if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
 }

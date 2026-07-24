@@ -47,6 +47,7 @@ At build time, this root README is embedded in the application. On a first run w
 14. [Reactive Diagrams (ui-mermaid)](#14-reactive-diagrams-ui-mermaid)
 15. [Mermaid Diagrams](#15-mermaid-diagrams)
     - [Diagram families](#15-mermaid-diagrams) — flowcharts, sequence/class/state diagrams, charts, planning, and architecture
+16. [Embedded Terminal](#16-embedded-terminal)
 
 ---
 
@@ -380,6 +381,7 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 | Ctrl+Z | Undo |
 | Ctrl+Y / Ctrl+Shift+Z | Redo |
 | Ctrl+F | Open Find / Search |
+| Ctrl+Shift+P | Toggle embedded terminal |
 | Ctrl+. | Open emoji picker (Linux) / native emoji panel (Windows) |
 | Ctrl+Scroll | Change font size (hover over note) |
 | Ctrl+Click | Multi-select notes in sidebar |
@@ -1771,6 +1773,52 @@ Notes are stored as plain Markdown files — easy to version-control or edit ext
 | `config/imgui_layout.ini` | ImGui window layout |
 | `config/layout_profiles.json` | Layout profiles |
 | `config/markdown_preview_state.json` | Collapsed/expanded section states |
+
+---
+
+## 16. Embedded Terminal
+
+Press **Ctrl+Shift+P** to toggle a real, full-featured terminal inside the
+application. The shell starts in the project notes root, so `ls`, `git
+status`, `grep`, and any other tool you launch operate on the same files
+the app edits.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Terminal                                                            │
+├─────────────────────────────────────────────────────────────────────┤
+│ user@host:~/notes$ ls                                               │
+│ readme.md    Inbox/    Archive/                                     │
+│ user@host:~/notes$ git status                                       │
+│ On branch main                                                      │
+│ nothing to commit, working tree clean                               │
+│ user@host:~/notes$ _                                                │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Backed by:**
+
+- a real OS-level PTY (`forkpty` on Linux/macOS, ConPTY on Windows)
+- a vt100/xterm-compatible terminal emulator ([libvterm](https://github.com/neovim/libvterm))
+
+That means anything that works in a normal terminal works here: `pi`,
+`git`, `vim`, `htop`, `less`, `ls --color`, `tmux` …
+
+**Behavior:**
+
+- The shell is **not** sandboxed — full access by design.
+- Closing the window (Esc) hides the panel; the shell is kept alive so it
+  reappears instantly. Closing the app terminates the shell cleanly.
+- The window resizes as you drag it: rows × cols are recomputed from
+  the font metrics and pushed to the PTY.
+- Standard shortcuts (Ctrl+C, Ctrl+D, Ctrl+L, arrows, Tab, Enter,
+  Backspace) all flow through to the shell as expected.
+- While the terminal window is focused, app-wide shortcuts (Ctrl+F,
+  Ctrl+Z, …) are delivered to the terminal instead of the app.
+
+This is the surface used to run coding agents like `pi` from inside the
+app, so the agent can read and write notes with full knowledge of the
+folder structure and the app's format.
 
 ---
 

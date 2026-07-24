@@ -73,5 +73,6 @@ target_link_libraries(${PROJECT_NAME}
     markdown_widgets
     markdown_code_highlight
     note_ui
+    terminal
     nfd
 )

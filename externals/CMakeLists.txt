@@ -226,6 +226,80 @@ if(TARGET nfd)
   )
 endif()
 
+# ── libvterm (vt100/xterm terminal emulator) ────────────────────────────
+# libvterm (https://github.com/neovim/libvterm, MIT) is a pure C vt100/xterm
+# terminal emulator. It is intentionally ANSI-aware: it parses the byte
+# stream a real shell produces (cursor movement, color, alternate screen,
+# scroll regions, etc.) and exposes a per-cell screen grid. We feed it
+# bytes from the PTY master and read its screen back to render cells
+# inside the ImGui terminal panel. libvterm ships no CMakeLists.txt, so
+# we generate one inline.
+FetchContent_Declare(
+  libvterm
+  GIT_REPOSITORY https://github.com/neovim/libvterm.git
+  GIT_TAG        v0.3.3
+)
+FetchContent_MakeAvailable(libvterm)
+
+# Generate the per-encoding .inc headers that src/encoding.c #includes.
+# Upstream uses perl in its Makefile; we mirror that.
+find_program(LIBVTERM_PERL NAMES perl perl5 REQUIRED)
+file(GLOB LIBVTERM_TBL_FILES "${libvterm_SOURCE_DIR}/src/encoding/*.tbl")
+
+set(LIBVTERM_GEN_INCS)
+foreach(_tbl IN LISTS LIBVTERM_TBL_FILES)
+  get_filename_component(_name "${_tbl}" NAME_WE)
+  set(_inc "${CMAKE_CURRENT_BINARY_DIR}/libvterm_gen/src/encoding/${_name}.inc")
+  list(APPEND LIBVTERM_GEN_INCS "${_inc}")
+  add_custom_command(
+    OUTPUT "${_inc}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/libvterm_gen/src/encoding"
+    COMMAND ${LIBVTERM_PERL} -CSD
+            "${libvterm_SOURCE_DIR}/tbl2inc_c.pl"
+            "${_tbl}"
+            > "${_inc}"
+    DEPENDS "${_tbl}"
+            "${libvterm_SOURCE_DIR}/tbl2inc_c.pl"
+    COMMENT "Generating libvterm encoding ${_name}.inc"
+    VERBATIM
+  )
+endforeach()
+
+# fullwidth.inc is pre-generated and committed in the source tree; copy it
+# into the build dir so the include path is predictable.
+configure_file(
+  "${libvterm_SOURCE_DIR}/src/fullwidth.inc"
+  "${CMAKE_CURRENT_BINARY_DIR}/libvterm_gen/src/fullwidth.inc"
+  COPYONLY
+)
+
+add_library(vterm STATIC
+  ${libvterm_SOURCE_DIR}/src/vterm.c
+  ${libvterm_SOURCE_DIR}/src/encoding.c
+  ${libvterm_SOURCE_DIR}/src/keyboard.c
+  ${libvterm_SOURCE_DIR}/src/mouse.c
+  ${libvterm_SOURCE_DIR}/src/parser.c
+  ${libvterm_SOURCE_DIR}/src/pen.c
+  ${libvterm_SOURCE_DIR}/src/screen.c
+  ${libvterm_SOURCE_DIR}/src/state.c
+  ${libvterm_SOURCE_DIR}/src/unicode.c
+  ${LIBVTERM_GEN_INCS}
+)
+
+target_include_directories(vterm
+  PUBLIC
+    ${libvterm_SOURCE_DIR}/include
+    ${libvterm_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}/libvterm_gen/src
+)
+target_compile_features(vterm PRIVATE c_std_99)
+# libvterm uses `static` for many internal helpers (setpenattr, putglyph,
+# erase, ...). The project's CMake-wide unity build would merge several
+# .c files into one translation unit and produce "conflicting types"
+# errors. Disable unity for this target only.
+set_target_properties(vterm PROPERTIES UNITY_BUILD OFF)
+
 # ─────────────────────────────────────────────────────────────────────────
 #  Third-party warning suppression
 # ─────────────────────────────────────────────────────────────────────────
@@ -246,6 +320,7 @@ set(_NOTEPP_THIRD_PARTY_TARGETS
   tree_sitter_python_grammar
   tree_sitter_bash_grammar
   nfd
+  vterm
 )
 foreach(_tgt IN LISTS _NOTEPP_THIRD_PARTY_TARGETS)
   if(TARGET ${_tgt})
