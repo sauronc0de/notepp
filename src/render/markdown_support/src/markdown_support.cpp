@@ -476,6 +476,68 @@ void open_table_cell_editor(
   std::snprintf(g_cell_editor_state.buffer, sizeof(g_cell_editor_state.buffer), "%s", value.c_str());
 }
 
+// Splice `new_section` into `file_content` at [start, end) and return the
+// result. Caller is responsible for the range being valid for file_content.
+// Returns the original `file_content` unchanged when the range is invalid.
+static std::string splice_section(const std::string &file_content,
+                                  size_t start,
+                                  size_t end,
+                                  const std::string &new_section)
+{
+  if(start > file_content.size() || end > file_content.size() || start > end)
+    return file_content;
+  std::string out;
+  out.reserve(file_content.size() - (end - start) + new_section.size());
+  out.append(file_content, 0, start);
+  out.append(new_section);
+  out.append(file_content, end, std::string::npos);
+  return out;
+}
+
+// Persist an interactive edit made in the hover preview back to the source
+// file at `preview.path`. Returns true when a write was actually performed.
+//
+// On success, also refreshes the cached hover-preview body so the next frame
+// re-renders the edited content instead of the stale original. This is what
+// makes the in-popup edits visible: without it, every frame re-seeds
+// preview_markdown from the cached original and the user sees the change
+// snap back to the pre-edit state.
+//
+// Defensive: refuses to write when the section range is unknown, the path
+// is empty, or the file is too small to contain the section. We intentionally
+// do NOT compare the on-disk content against the original snapshot: a single
+// hover can produce multiple consecutive edits (e.g. toggling several
+// checkboxes), and the strict compare would reject every edit after the
+// first. This matches the main note view's write behaviour.
+static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
+                                       const std::string &modified_body)
+{
+  if(preview.section_start == std::string_view::npos || preview.section_end == std::string_view::npos)
+    return false;
+  if(preview.path.empty()) return false;
+  if(preview.section_start > preview.section_end) return false;
+
+  std::ifstream in(preview.path, std::ios::binary);
+  if(!in) return false;
+  const std::string file_content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if(preview.section_end > file_content.size()) return false;
+
+  const std::string updated = splice_section(file_content,
+                                             preview.section_start,
+                                             preview.section_end,
+                                             modified_body);
+  if(updated == file_content) return false; // nothing actually changed
+
+  std::ofstream out(preview.path, std::ios::binary | std::ios::trunc);
+  if(!out) return false;
+  out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+  if(!out.good()) return false;
+
+  // Refresh the cached body so the next frame renders the edited content.
+  MarkdownView::update_hover_preview_body(modified_body);
+  return true;
+}
+
 void render_link_hover_preview_popup()
 {
   if(g_rendering_hover_preview) return;
@@ -486,13 +548,68 @@ void render_link_hover_preview_popup()
   MarkdownHoverPreviewData preview;
   if(!MarkdownView::take_hover_preview(preview)) return;
 
+  // Larger, user-resizable popup that can scroll. Sized to a typical preview
+  // column on a 1440 px screen; the user can still resize the corner.
+  constexpr ImVec2 kPreviewMinSize(360.0f, 180.0f);
+  constexpr ImVec2 kPreviewMaxSize(960.0f, 720.0f);
+  // Default size for first appearance of each link's preview window.
+  // Applied with ImGuiCond_Appearing so user resizes within the same hover
+  // are preserved; the default kicks in again on the next fresh hover.
+  constexpr ImVec2 kPreviewDefaultSize(800.0f, 540.0f);
+  // Dead-zone margin (px) so the cursor can travel from the source link to
+  // the popup without dismissing the preview.
+  constexpr float kFlightMargin = 12.0f;
+  // Gap between the cursor and the popup (px) and the safety margin kept
+  // between the popup and the viewport edge (px) when clamping.
+  constexpr float kCursorGap = 18.0f;
+  constexpr float kViewportMargin = 8.0f;
+
   g_hover_preview_drawn_frame = frame;
   g_rendering_hover_preview = true;
   const std::string previous_document_path = g_preview_document_path;
   std::string preview_markdown = preview.body;
 
-  ImGui::SetNextWindowPos(ImVec2(preview.mouse_pos.x + 18.0f, preview.mouse_pos.y + 18.0f), ImGuiCond_Always);
-  ImGui::SetNextWindowSizeConstraints(ImVec2(280.0f, 140.0f), ImVec2(560.0f, 440.0f));
+  // Smart-position the popup so it stays inside the application viewport
+  // even when the source link is near the bottom/right edge. The default
+  // is below-right of the cursor; if that would clip, try above/left, and
+  // finally clamp into the viewport work area.
+  const ImVec2 viewport_pos = ImGui::GetMainViewport()->WorkPos;
+  const ImVec2 viewport_size = ImGui::GetMainViewport()->WorkSize;
+  const float vp_x = viewport_pos.x;
+  const float vp_y = viewport_pos.y;
+  const float vp_w = viewport_size.x;
+  const float vp_h = viewport_size.y;
+
+  ImVec2 desired_pos(preview.mouse_pos.x + kCursorGap, preview.mouse_pos.y + kCursorGap);
+  const ImVec2 desired_size = kPreviewDefaultSize;
+
+  // Vertical: prefer above the cursor when below would clip the bottom.
+  if(desired_pos.y + desired_size.y > vp_y + vp_h - kViewportMargin)
+  {
+    const float above_y = preview.mouse_pos.y - kCursorGap - desired_size.y;
+    if(above_y >= vp_y + kViewportMargin)
+      desired_pos.y = above_y;
+    else
+      desired_pos.y = std::max(vp_y + kViewportMargin, vp_y + vp_h - desired_size.y - kViewportMargin);
+  }
+
+  // Horizontal: prefer left of the cursor when right would clip the edge.
+  if(desired_pos.x + desired_size.x > vp_x + vp_w - kViewportMargin)
+  {
+    const float left_x = preview.mouse_pos.x - kCursorGap - desired_size.x;
+    if(left_x >= vp_x + kViewportMargin)
+      desired_pos.x = left_x;
+    else
+      desired_pos.x = std::max(vp_x + kViewportMargin, vp_x + vp_w - desired_size.x - kViewportMargin);
+  }
+
+  // Final clamp: never let the popup cross the top/left edges either.
+  if(desired_pos.x < vp_x + kViewportMargin) desired_pos.x = vp_x + kViewportMargin;
+  if(desired_pos.y < vp_y + kViewportMargin) desired_pos.y = vp_y + kViewportMargin;
+
+  ImGui::SetNextWindowPos(desired_pos, ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(kPreviewDefaultSize, ImGuiCond_Appearing);
+  ImGui::SetNextWindowSizeConstraints(kPreviewMinSize, kPreviewMaxSize);
 
   MarkdownView::set_hover_preview_enabled(false);
   set_preview_document_path(preview.path);
@@ -500,14 +617,50 @@ void render_link_hover_preview_popup()
 
   const std::string window_title = preview.title + "##link_preview";
   bool window_hovered = false;
-  if(ImGui::Begin(window_title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize))
+  ImVec2 popup_pos(0.0f, 0.0f);
+  ImVec2 popup_size(0.0f, 0.0f);
+  MarkdownSupport::PreviewRenderResult popup_render_result;
+  // Drop AlwaysAutoResize: a scrollable body needs a stable window size so
+  // scrollbars can engage and the user can resize from the corner.
+  if(ImGui::Begin(window_title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings))
   {
+    popup_pos = ImGui::GetWindowPos();
+    popup_size = ImGui::GetWindowSize();
     window_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByPopup);
-    (void)render_preview_with_task_checkboxes_ex(preview_markdown);
+
+    // Make text wrap to the popup's content width, not the parent window's.
+    const float popup_content_w = std::max(1.0f, popup_size.x - ImGui::GetStyle().WindowPadding.x * 2.0f);
+    MarkdownView::set_render_width(popup_content_w);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + popup_content_w);
+
+    // Scrollable body — wheel & scrollbar work as expected on overflow.
+    MarkdownSupport::PreviewRenderResult popup_render_result;
+    if(ImGui::BeginChild("##link_preview_body", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_HorizontalScrollbar))
+    {
+      popup_render_result = render_preview_with_task_checkboxes_ex(preview_markdown);
+    }
+    ImGui::EndChild();
+
+    ImGui::PopTextWrapPos();
   }
   ImGui::End();
 
-  if(!preview.link_hovered && !window_hovered) MarkdownView::clear_hover_preview();
+  // Keep the preview alive when the cursor is still over the source link,
+  // inside the popup, or in-flight between them.
+  const ImVec2 mouse = ImGui::GetMousePos();
+  const bool in_flight =
+      popup_size.x > 0.0f && popup_size.y > 0.0f &&
+      mouse.x >= popup_pos.x - kFlightMargin &&
+      mouse.y >= popup_pos.y - kFlightMargin &&
+      mouse.x <= popup_pos.x + popup_size.x + kFlightMargin &&
+      mouse.y <= popup_pos.y + popup_size.y + kFlightMargin;
+  if(!preview.link_hovered && !window_hovered && !in_flight) MarkdownView::clear_hover_preview();
+
+  // Persist interactive edits (checkbox toggles, table edits, ...) to the
+  // source file. Only writes when something actually changed and the section
+  // range is known.
+  if(popup_render_result.markdown_changed)
+    persist_hover_preview_edit(preview, preview_markdown);
 
   g_force_open_preview_headers = false;
   set_preview_document_path(previous_document_path);
@@ -1629,6 +1782,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   {
     int level = 0;
     bool open = false;
+    // True when no real ImGui::TreeNode was pushed for this header
+    // (used in the hover preview, which renders headings as non-collapsible
+    // text). Prevents a spurious ImGui::TreePop on cleanup.
+    bool skip_pop = false;
   };
 
   std::vector<HeaderUi> header_stack;
@@ -1671,7 +1828,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       flush_chunk();
       while(!header_stack.empty() && header_stack.back().level >= heading_level)
       {
-        if(header_stack.back().open) ImGui::TreePop();
+        if(header_stack.back().open && !header_stack.back().skip_pop) ImGui::TreePop();
         header_stack.pop_back();
       }
       if(!all_headers_open())
@@ -1683,15 +1840,24 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       bool saved_open = false;
       const bool has_saved_open = try_get_header_open_state(doc_key, static_cast<int>(line_start), saved_open);
       if(g_force_open_preview_headers)
-        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
-      else if(has_saved_open)
+      {
+        // Hover preview: render the heading as a non-collapsible line and
+        // never let the user hide the content under it. We push a sentinel
+        // onto header_stack so the rest of the bookkeeping (and the cleanup
+        // loop at the end) keeps working without a real TreeNode.
+        ImGui::Text("%s", std::string(heading_title).c_str());
+        header_stack.push_back(HeaderUi{heading_level, true, true /* skip_pop */});
+        pos = has_newline ? line_end + 1 : line_end;
+        continue;
+      }
+      if(has_saved_open)
         ImGui::SetNextItemOpen(saved_open, ImGuiCond_Always);
       const bool open = ImGui::TreeNodeEx(
           reinterpret_cast<void *>(static_cast<intptr_t>(static_cast<int>(line_start) + 0x10000)),
-          ImGuiTreeNodeFlags_SpanAvailWidth | (g_force_open_preview_headers ? ImGuiTreeNodeFlags_DefaultOpen : 0),
+          ImGuiTreeNodeFlags_SpanAvailWidth,
           "%s",
           std::string(heading_title).c_str());
-      if(!g_force_open_preview_headers && (!has_saved_open || saved_open != open))
+      if(!has_saved_open || saved_open != open)
       {
         sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
         result.preview_state_changed = true;
@@ -1935,7 +2101,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   flush_chunk();
   while(!header_stack.empty())
   {
-    if(header_stack.back().open) ImGui::TreePop();
+    if(header_stack.back().open && !header_stack.back().skip_pop) ImGui::TreePop();
     header_stack.pop_back();
   }
 

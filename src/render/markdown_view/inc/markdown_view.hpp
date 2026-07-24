@@ -14,6 +14,10 @@ struct MarkdownHoverPreviewData
   std::string path;
   std::string body;
   bool link_hovered = false;
+  // Byte range of `body` in the source file; std::string_view::npos when
+  // not known. Used by callers to splice edits back into the file.
+  size_t section_start = std::string_view::npos;
+  size_t section_end = std::string_view::npos;
 };
 
 struct MarkdownView
@@ -37,6 +41,11 @@ struct MarkdownView
   static void set_document_path(std::filesystem::path path);
   static void set_hover_preview_enabled(bool enabled);
   static bool take_hover_preview(MarkdownHoverPreviewData &out);
+  // Update the body of the currently active hover preview in place. Also
+  // adjusts section_end so the next caller of take_hover_preview sees a
+  // consistent (start, end) range covering the new body. No-op when no
+  // preview is active.
+  static void update_hover_preview_body(std::string new_body);
   static void clear_hover_preview();
   static void render(std::string_view markdown);
   static void render_inline(std::string_view markdown_inline);

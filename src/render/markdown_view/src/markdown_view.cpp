@@ -153,6 +153,10 @@ struct HoverPreviewState
   std::string title;
   std::string body;
   std::string path;
+  // Byte range of `body` in the source file. Used to splice interactive
+  // edits back into the file. npos when the range is unknown.
+  size_t section_start = std::string_view::npos;
+  size_t section_end = std::string_view::npos;
 };
 
 static HoverPreviewState g_hover_preview;
@@ -472,8 +476,18 @@ static std::string read_text_file(const std::filesystem::path &path)
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
-static std::string extract_section_markdown(std::string_view markdown, std::string_view anchor)
+struct MarkdownSection
 {
+  // Byte offsets into the original file. [start, end) is the range that
+  // produced `body`. npos means "no section found" — only valid when body.empty().
+  size_t start = std::string_view::npos;
+  size_t end = std::string_view::npos;
+  std::string body;
+};
+
+static MarkdownSection extract_section_markdown(std::string_view markdown, std::string_view anchor)
+{
+  MarkdownSection out;
   if(anchor.empty())
   {
     size_t cutoff = 0;
@@ -484,7 +498,10 @@ static std::string extract_section_markdown(std::string_view markdown, std::stri
       cutoff = (next == std::string_view::npos) ? markdown.size() : next + 1;
       ++lines;
     }
-    return std::string(markdown.substr(0, cutoff));
+    out.start = 0;
+    out.end = cutoff;
+    out.body = std::string(markdown.substr(0, cutoff));
+    return out;
   }
 
   size_t pos = 0;
@@ -512,15 +529,23 @@ static std::string extract_section_markdown(std::string_view markdown, std::stri
       }
       else if(level <= match_level)
       {
-        return std::string(markdown.substr(match_start, line_start - match_start));
+        out.start = match_start;
+        out.end = line_start;
+        out.body = std::string(markdown.substr(match_start, line_start - match_start));
+        return out;
       }
     }
 
     pos = (line_end < markdown.size()) ? line_end + 1 : line_end;
   }
 
-  if(match_start != std::string_view::npos) return std::string(markdown.substr(match_start));
-  return {};
+  if(match_start != std::string_view::npos)
+  {
+    out.start = match_start;
+    out.end = markdown.size();
+    out.body = std::string(markdown.substr(match_start));
+  }
+  return out;
 }
 
 static bool request_internal_link_preview(std::string_view href)
@@ -533,15 +558,17 @@ static bool request_internal_link_preview(std::string_view href)
   const std::string markdown = read_text_file(target.note_path);
   if(markdown.empty()) return false;
 
-  std::string body = extract_section_markdown(markdown, target.anchor);
-  if(body.empty()) return false;
+  const MarkdownSection section = extract_section_markdown(markdown, target.anchor);
+  if(section.body.empty()) return false;
 
   g_hover_preview.active = true;
   g_hover_preview.requested_frame = ImGui::GetFrameCount();
   g_hover_preview.mouse_pos = ImGui::GetMousePos();
   g_hover_preview.path = target.note_path.string();
   g_hover_preview.title = std::string(href);
-  g_hover_preview.body = std::move(body);
+  g_hover_preview.body = section.body;
+  g_hover_preview.section_start = section.start;
+  g_hover_preview.section_end = section.end;
   return true;
 }
 
@@ -1557,7 +1584,17 @@ bool MarkdownView::take_hover_preview(MarkdownHoverPreviewData &out)
   out.path = g_hover_preview.path;
   out.body = g_hover_preview.body;
   out.link_hovered = (g_hover_preview.requested_frame == frame);
+  out.section_start = g_hover_preview.section_start;
+  out.section_end = g_hover_preview.section_end;
   return true;
+}
+
+void MarkdownView::update_hover_preview_body(std::string new_body)
+{
+  if(!g_hover_preview.active) return;
+  g_hover_preview.body = std::move(new_body);
+  if(g_hover_preview.section_start != std::string_view::npos)
+    g_hover_preview.section_end = g_hover_preview.section_start + g_hover_preview.body.size();
 }
 
 void MarkdownView::clear_hover_preview()
