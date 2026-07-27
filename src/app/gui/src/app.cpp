@@ -11,6 +11,7 @@
 #include "markdown_sections.hpp"
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
+#include "markdown_widgets.hpp"
 #include "note_ui.hpp"
 #include "string_utils.hpp"
 #include "tiny_json.hpp"
@@ -957,6 +958,17 @@ App::App(AppConfig config)
   MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
+  MarkdownWidgets::set_terminal_command_handler([this](std::string_view command) {
+    terminal_visible_ = true;
+    request_open_terminal_ = false;
+    terminal_.setDefaultWorkingDirectory(config_.dataPath);
+    if(terminal_.sessionCount() == 0) terminal_.start(config_.dataPath, 24, 80);
+
+    std::string input(command);
+    if(input.empty() || input.back() != '\n') input.push_back('\n');
+    terminal_.write(input);
+    dirty_ = true;
+  });
 
   Lang::init(config_.assetsPath / "languages");
 }
@@ -1089,6 +1101,7 @@ int App::run()
 }
 void App::shutdown()
 {
+  MarkdownWidgets::set_terminal_command_handler({});
   terminal_.stop();
 
   clear_toolbar_icon_cache();
@@ -6676,6 +6689,13 @@ __CURSOR__)MD",
           {
             insert_topbar_snippet(R"MD(count(10)
 button("Reset count", 110, count=0)
+__CURSOR__)MD",
+                                  true);
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::MenuItem("Command button"))
+          {
+            insert_topbar_snippet(R"MD(button("List files", 110, command("ls"))
 __CURSOR__)MD",
                                   true);
             ImGui::CloseCurrentPopup();

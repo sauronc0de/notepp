@@ -637,9 +637,12 @@ inventory(backpack, "Backpack", 300, 2, 4, 48, 320, 1, "1,0")
 
 ```
 button("Label", width, variable=value)
+button("Label", width, command("terminal command"))
 ```
 
-Clicking the button **assigns a value to a variable**. Multiple assignments separated by commas are not currently supported — use one assignment per button.
+Clicking the button either **assigns a value to a variable** or sends a command to Notepp's embedded terminal. A command argument may be any expression that evaluates to a string. The terminal opens automatically, creates a shell session in the notes data directory when needed, and shows the command output. Commands execute only when the button is clicked.
+
+Multiple assignments separated by commas are not currently supported — use one assignment per button. Only use command buttons in notes you trust, because they execute with your user permissions.
 
 **Example:**
 ```
@@ -647,6 +650,7 @@ count(0)
 int(count, "Count", 80, true)
 button("Reset", 80, count=0)
 button("Max",   80, count=100)
+button("List files", 100, command("ls"))
 ```
 
 ---

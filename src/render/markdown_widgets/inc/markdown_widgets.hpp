@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -15,7 +16,10 @@ struct RenderResult
   bool consumed_right_click = false;
 };
 
+using TerminalCommandHandler = std::function<void(std::string_view)>;
+
 void set_widget_document_path(std::filesystem::path path);
+void set_terminal_command_handler(TerminalCommandHandler handler);
 
 std::string capture_ui_state_snapshot();
 void apply_ui_state_snapshot(std::string_view snapshot);

@@ -1,5 +1,6 @@
 #include "markdown_widgets.hpp"
 
+#include "button_action.hpp"
 #include "markdown_view.hpp"
 #include "string_utils.hpp"
 
@@ -31,10 +32,16 @@ namespace MarkdownWidgets
 {
 
 static std::filesystem::path g_widget_document_path;
+static TerminalCommandHandler g_terminal_command_handler;
 
 void set_widget_document_path(std::filesystem::path path)
 {
   g_widget_document_path = std::move(path);
+}
+
+void set_terminal_command_handler(TerminalCommandHandler handler)
+{
+  g_terminal_command_handler = std::move(handler);
 }
 
 namespace
@@ -5487,20 +5494,43 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
   }
   const StyledLabel label = evaluate_label(ctx, stmt.args[0], "Button");
   const float width = evaluate_width(ctx, stmt.args[1], 90.0f);
-  const auto assignment = parse_assignment(stmt.args[2]);
-  if(!assignment)
+  const detail::CommandAction command_action = detail::parseCommandAction(stmt.args[2]);
+  const auto assignment = command_action.status == detail::CommandActionStatus::NotCommand
+                              ? parse_assignment(stmt.args[2])
+                              : std::nullopt;
+  if(command_action.status == detail::CommandActionStatus::Invalid)
   {
-    render_error_inline("button() action must be assignment like variable=value");
+    render_error_inline(command_action.error);
+    return;
+  }
+  if(command_action.status == detail::CommandActionStatus::NotCommand && !assignment)
+  {
+    render_error_inline("button() action must be an assignment or command(\"...\")");
     return;
   }
   if(label.has_color) ImGui::PushStyleColor(ImGuiCol_Text, label.color);
   if(ImGui::Button((label.text + "##button_" + make_statement_token(stmt)).c_str(), ImVec2(width, 0.0f)))
   {
-    ExprResult value_result = ctx.evaluate(assignment->second);
-    if(!value_result.error.empty())
-      errors.push_back(value_result.error);
+    if(command_action.status == detail::CommandActionStatus::Valid)
+    {
+      ExprResult command_result = ctx.evaluate(command_action.argument);
+      if(!command_result.error.empty())
+        errors.push_back("button() command error: " + command_result.error);
+      else if(command_result.value.kind != ValueKind::String)
+        errors.push_back("button() command argument must evaluate to a string");
+      else if(!g_terminal_command_handler)
+        errors.push_back("button() terminal command handler is unavailable");
+      else
+        g_terminal_command_handler(command_result.value.str);
+    }
     else
-      set_override(ctx, block, assignment->first, value_result.value, replacements, errors);
+    {
+      ExprResult value_result = ctx.evaluate(assignment->second);
+      if(!value_result.error.empty())
+        errors.push_back(value_result.error);
+      else
+        set_override(ctx, block, assignment->first, value_result.value, replacements, errors);
+    }
   }
   if(label.has_color) ImGui::PopStyleColor();
 }
