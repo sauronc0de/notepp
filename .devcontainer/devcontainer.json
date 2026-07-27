@@ -15,6 +15,11 @@
       "source": "${localEnv:HOME}/.pi-projects/${localWorkspaceFolderBasename}",
       "target": "/home/devuser/.pi",
       "type": "bind"
+    },
+    {
+      "source": "${localEnv:HOME}/.pi-projects/${localWorkspaceFolderBasename}/subagents",
+      "target": "${containerWorkspaceFolder}/.pi-subagents",
+      "type": "bind"
     }
   ],
   "runArgs": [
