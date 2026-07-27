@@ -6820,6 +6820,15 @@ __CURSOR__)MD",
         ImGui::SameLine();
       }
 
+      const auto render_terminal_button = [&]() {
+        const ImTextureID terminal_icon = get_toolbar_icon_texture("terminal.png");
+        const ImVec2 terminal_sz = icon_sz("terminal.png");
+        if(shaded_icon_button("##terminal_btn", terminal_icon, terminal_sz, ">_", terminal_visible_))
+          request_open_terminal_ = true;
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("%s", Lang::t("Terminal"));
+      };
+
       if(!editing_mode_)
       {
         const ImTextureID mouse_icon = get_toolbar_icon_texture("cursor.png");
@@ -7029,174 +7038,13 @@ __CURSOR__)MD",
           ImGui::SameLine();
         }
 
-        // Layout profiles — compact selector + manage button
-        {
-          // Build list of visible (non-deleted) profiles
-          std::vector<int> visible_pidx;
-          for(int pi = 0; pi < (int)layout_profiles_.size(); ++pi)
-            if(!layout_profiles_[(size_t)pi].pending_delete)
-              visible_pidx.push_back(pi);
-
-          const LayoutProfile *active_p = find_active_profile();
-          const char *combo_label = active_p ? active_p->name.c_str() : Lang::t("(Custom)");
-          ImGui::PushItemWidth(120.0f);
-          if(ImGui::BeginCombo("##layout_profile_combo", combo_label, ImGuiComboFlags_HeightSmall))
-          {
-            for(int pi : visible_pidx)
-            {
-              const auto &p = layout_profiles_[(size_t)pi];
-              const bool selected = (p.id == active_profile_id_);
-              ImGui::PushID(pi);
-              if(ImGui::Selectable(p.name.c_str(), selected) && !selected)
-              {
-                capture_to_active_profile();
-                active_profile_id_ = p.id;
-                apply_profile(layout_profiles_[(size_t)pi], true);
-                static constexpr int kProfileSwitchSettle = 20;
-                window_profile_check_pending_ = false;
-                window_profile_check_delay_ = kProfileSwitchSettle;
-                save_profiles();
-                save_index();
-                if(editing_mode_) refocus_folder_editor = true;
-              }
-              ImGui::PopID();
-            }
-            ImGui::EndCombo();
-          }
-          ImGui::PopItemWidth();
-          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            topbar_tooltip_text = Lang::t("Layout profile");
-
-          ImGui::SameLine(0.0f, 2.0f);
-          if(ImGui::SmallButton(Lang::t("Profiles...")))
-            manage_profiles_open_ = true;
-          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-            topbar_tooltip_text = Lang::t("Manage profiles");
-          ImGui::SameLine();
-
-          // ---- Profile management popup ----
-          if(manage_profiles_open_)
-            ImGui::OpenPopup("##manage_profiles_popup");
-
-          static bool profiles_popup_was_open = false;
-          if(ImGui::BeginPopup("##manage_profiles_popup",
-                               ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize))
-          {
-            profiles_popup_was_open = true;
-            manage_profiles_open_ = false; // reset — popup stays open via BeginPopup
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
-            ImGui::TextUnformatted(Lang::t("Layout Profiles"));
-            ImGui::PopStyleColor();
-            ImGui::Separator();
-
-            if(visible_pidx.empty())
-            {
-              ImGui::TextDisabled("%s", Lang::t("No profiles."));
-            }
-            for(int pi : visible_pidx)
-            {
-              auto &p = layout_profiles_[(size_t)pi];
-              const bool is_active = (p.id == active_profile_id_);
-              ImGui::PushID(pi);
-
-              // Active indicator
-              if(is_active)
-              {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.75f, 0.35f, 1.0f));
-                ImGui::TextUnformatted("○");
-                ImGui::PopStyleColor();
-              }
-              else
-              {
-                ImGui::TextDisabled("○");
-              }
-              ImGui::SameLine();
-
-              // Profile name (click to switch)
-              ImGui::PushStyleColor(ImGuiCol_Text, is_active ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.75f, 0.78f, 0.85f, 1.0f));
-              if(ImGui::Selectable(p.name.c_str(), is_active,
-                                   ImGuiSelectableFlags_None, ImVec2(140.0f, 0.0f)) &&
-                 !is_active)
-              {
-                ImGui::CloseCurrentPopup();
-                capture_to_active_profile();
-                active_profile_id_ = p.id;
-                apply_profile(layout_profiles_[(size_t)pi], true);
-                static constexpr int kSettle = 20;
-                window_profile_check_pending_ = false;
-                window_profile_check_delay_ = kSettle;
-                save_profiles();
-                save_index();
-              }
-              ImGui::PopStyleColor();
-              ImGui::SameLine();
-
-              // Edit
-              if(ImGui::SmallButton(Lang::t("Edit")))
-              {
-                ImGui::CloseCurrentPopup();
-                profile_modal_.open = true;
-                profile_modal_.first_frame = true;
-                profile_modal_.edit_idx = pi;
-                profile_modal_.copy_mode = false;
-              }
-              ImGui::SameLine();
-              // Copy
-              if(ImGui::SmallButton(Lang::t("Copy")))
-              {
-                ImGui::CloseCurrentPopup();
-                profile_modal_.open = true;
-                profile_modal_.first_frame = true;
-                profile_modal_.edit_idx = pi;
-                profile_modal_.copy_mode = true;
-              }
-              ImGui::SameLine();
-              // Delete
-              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.35f, 0.35f, 1.0f));
-              if(ImGui::SmallButton(Lang::t("Delete")))
-              {
-                push_profile_snapshot();
-                p.pending_delete = true;
-                if(active_profile_id_ == p.id) active_profile_id_.clear();
-                // If last visible profile was deleted, open create dialog
-                int remaining = 0;
-                for(const auto &q : layout_profiles_)
-                  if(!q.pending_delete) ++remaining;
-                if(remaining == 0)
-                {
-                  profile_modal_.open = true;
-                  profile_modal_.first_frame = true;
-                  profile_modal_.edit_idx = -1;
-                  profile_modal_.copy_mode = false;
-                  std::strncpy(profile_modal_.name_buf, "Default",
-                               sizeof(profile_modal_.name_buf) - 1);
-                }
-                save_profiles();
-                ImGui::CloseCurrentPopup();
-              }
-              ImGui::PopStyleColor();
-              ImGui::PopID();
-            }
-
-            ImGui::Separator();
-            if(ImGui::Button(Lang::t("+ New Profile"), ImVec2(-1.0f, 0.0f)))
-            {
-              ImGui::CloseCurrentPopup();
-              profile_modal_.open = true;
-              profile_modal_.first_frame = true;
-              profile_modal_.edit_idx = -1;
-              profile_modal_.copy_mode = false;
-            }
-            ImGui::EndPopup();
-          }
-          else if(profiles_popup_was_open)
-          {
-            profiles_popup_was_open = false;
-            if(editing_mode_ && !profile_modal_.open) refocus_folder_editor = true;
-          }
-        }
+        render_terminal_button();
       }
+
+      if(editing_mode_) render_terminal_button();
+
+      const float left_toolbar_right = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+
       {
         const char *ver = "v" NOTEPP_VERSION;
         const ImVec2 ver_sz = ImGui::CalcTextSize(ver);
@@ -7212,10 +7060,8 @@ __CURSOR__)MD",
         const float lang_btn_w = lang_flag_tex ? lang_flag_display.x : (ImGui::CalcTextSize(lang_short).x + 10.0f);
         const float lang_btn_h = lang_flag_tex ? lang_flag_display.y : 18.0f;
         // Custom window control buttons (quit / minimize) — rightmost
-        const ImTextureID terminal_icon = get_toolbar_icon_texture("terminal.png");
         const ImTextureID quit_icon = get_toolbar_icon_texture("quit.png");
         const ImTextureID min_icon = get_toolbar_icon_texture("minimize.png");
-        const ImVec2 terminal_sz = icon_sz("terminal.png");
         const ImVec2 quit_sz = icon_sz("quit.png");
         const ImVec2 min_sz = icon_sz("minimize.png");
         const float ctrl_y = (bar_h - kIconH) * 0.5f;
@@ -7236,15 +7082,188 @@ __CURSOR__)MD",
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           ImGui::SetTooltip("%s", Lang::t("Minimize"));
 
-        // Language selector
+        // Language selector and layout profiles
         constexpr float gap = 6.0f;
+        constexpr float profile_combo_w = 120.0f;
+        constexpr float profile_controls_gap = 2.0f;
         const float lang_x = min_x - ver_sz.x - gap - lang_btn_w - gap;
-        const float terminal_x = lang_x - terminal_sz.x - gap;
-        ImGui::SetCursorPos(ImVec2(terminal_x, (bar_h - terminal_sz.y) * 0.5f));
-        if(shaded_icon_button("##terminal_btn", terminal_icon, terminal_sz, ">_", terminal_visible_))
-          request_open_terminal_ = true;
-        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-          ImGui::SetTooltip("%s", Lang::t("Terminal"));
+        const float profile_button_w = ImGui::CalcTextSize(Lang::t("Profiles...")).x +
+                                       ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float profile_group_w = profile_combo_w + profile_controls_gap + profile_button_w;
+        const float profile_x = lang_x - gap - profile_group_w;
+
+        // Keep the essential right-side controls visible when the toolbar is too narrow.
+        if(profile_x >= left_toolbar_right + gap)
+        {
+          ImGui::SetCursorPos(ImVec2(profile_x, (bar_h - ImGui::GetFrameHeight()) * 0.5f));
+          // Layout profiles — compact selector + manage button
+          {
+            // Build list of visible (non-deleted) profiles
+            std::vector<int> visible_pidx;
+            for(int pi = 0; pi < (int)layout_profiles_.size(); ++pi)
+              if(!layout_profiles_[(size_t)pi].pending_delete)
+                visible_pidx.push_back(pi);
+
+            const LayoutProfile *active_p = find_active_profile();
+            const char *combo_label = active_p ? active_p->name.c_str() : Lang::t("(Custom)");
+            ImGui::PushItemWidth(profile_combo_w);
+            if(ImGui::BeginCombo("##layout_profile_combo", combo_label, ImGuiComboFlags_HeightSmall))
+            {
+              for(int pi : visible_pidx)
+              {
+                const auto &p = layout_profiles_[(size_t)pi];
+                const bool selected = (p.id == active_profile_id_);
+                ImGui::PushID(pi);
+                if(ImGui::Selectable(p.name.c_str(), selected) && !selected)
+                {
+                  capture_to_active_profile();
+                  active_profile_id_ = p.id;
+                  apply_profile(layout_profiles_[(size_t)pi], true);
+                  static constexpr int kProfileSwitchSettle = 20;
+                  window_profile_check_pending_ = false;
+                  window_profile_check_delay_ = kProfileSwitchSettle;
+                  save_profiles();
+                  save_index();
+                  if(editing_mode_) refocus_folder_editor = true;
+                }
+                ImGui::PopID();
+              }
+              ImGui::EndCombo();
+            }
+            ImGui::PopItemWidth();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+              topbar_tooltip_text = Lang::t("Layout profile");
+
+            ImGui::SameLine(0.0f, 2.0f);
+            if(ImGui::SmallButton(Lang::t("Profiles...")))
+              manage_profiles_open_ = true;
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+              topbar_tooltip_text = Lang::t("Manage profiles");
+            ImGui::SameLine();
+
+            // ---- Profile management popup ----
+            if(manage_profiles_open_)
+              ImGui::OpenPopup("##manage_profiles_popup");
+
+            static bool profiles_popup_was_open = false;
+            if(ImGui::BeginPopup("##manage_profiles_popup",
+                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize))
+            {
+              profiles_popup_was_open = true;
+              manage_profiles_open_ = false; // reset — popup stays open via BeginPopup
+
+              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.8f, 1.0f, 1.0f));
+              ImGui::TextUnformatted(Lang::t("Layout Profiles"));
+              ImGui::PopStyleColor();
+              ImGui::Separator();
+
+              if(visible_pidx.empty())
+              {
+                ImGui::TextDisabled("%s", Lang::t("No profiles."));
+              }
+              for(int pi : visible_pidx)
+              {
+                auto &p = layout_profiles_[(size_t)pi];
+                const bool is_active = (p.id == active_profile_id_);
+                ImGui::PushID(pi);
+
+                // Active indicator
+                if(is_active)
+                {
+                  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.75f, 0.35f, 1.0f));
+                  ImGui::TextUnformatted("○");
+                  ImGui::PopStyleColor();
+                }
+                else
+                {
+                  ImGui::TextDisabled("○");
+                }
+                ImGui::SameLine();
+
+                // Profile name (click to switch)
+                ImGui::PushStyleColor(ImGuiCol_Text, is_active ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.75f, 0.78f, 0.85f, 1.0f));
+                if(ImGui::Selectable(p.name.c_str(), is_active,
+                                     ImGuiSelectableFlags_None, ImVec2(140.0f, 0.0f)) &&
+                   !is_active)
+                {
+                  ImGui::CloseCurrentPopup();
+                  capture_to_active_profile();
+                  active_profile_id_ = p.id;
+                  apply_profile(layout_profiles_[(size_t)pi], true);
+                  static constexpr int kSettle = 20;
+                  window_profile_check_pending_ = false;
+                  window_profile_check_delay_ = kSettle;
+                  save_profiles();
+                  save_index();
+                }
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+
+                // Edit
+                if(ImGui::SmallButton(Lang::t("Edit")))
+                {
+                  ImGui::CloseCurrentPopup();
+                  profile_modal_.open = true;
+                  profile_modal_.first_frame = true;
+                  profile_modal_.edit_idx = pi;
+                  profile_modal_.copy_mode = false;
+                }
+                ImGui::SameLine();
+                // Copy
+                if(ImGui::SmallButton(Lang::t("Copy")))
+                {
+                  ImGui::CloseCurrentPopup();
+                  profile_modal_.open = true;
+                  profile_modal_.first_frame = true;
+                  profile_modal_.edit_idx = pi;
+                  profile_modal_.copy_mode = true;
+                }
+                ImGui::SameLine();
+                // Delete
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.35f, 0.35f, 1.0f));
+                if(ImGui::SmallButton(Lang::t("Delete")))
+                {
+                  push_profile_snapshot();
+                  p.pending_delete = true;
+                  if(active_profile_id_ == p.id) active_profile_id_.clear();
+                  // If last visible profile was deleted, open create dialog
+                  int remaining = 0;
+                  for(const auto &q : layout_profiles_)
+                    if(!q.pending_delete) ++remaining;
+                  if(remaining == 0)
+                  {
+                    profile_modal_.open = true;
+                    profile_modal_.first_frame = true;
+                    profile_modal_.edit_idx = -1;
+                    profile_modal_.copy_mode = false;
+                    std::strncpy(profile_modal_.name_buf, "Default",
+                                 sizeof(profile_modal_.name_buf) - 1);
+                  }
+                  save_profiles();
+                  ImGui::CloseCurrentPopup();
+                }
+                ImGui::PopStyleColor();
+                ImGui::PopID();
+              }
+
+              ImGui::Separator();
+              if(ImGui::Button(Lang::t("+ New Profile"), ImVec2(-1.0f, 0.0f)))
+              {
+                ImGui::CloseCurrentPopup();
+                profile_modal_.open = true;
+                profile_modal_.first_frame = true;
+                profile_modal_.edit_idx = -1;
+                profile_modal_.copy_mode = false;
+              }
+              ImGui::EndPopup();
+            }
+            else if(profiles_popup_was_open)
+            {
+              profiles_popup_was_open = false;
+              if(editing_mode_ && !profile_modal_.open) refocus_folder_editor = true;
+            }
+          }
+        }
 
         ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
         bool lang_clicked = shaded_icon_button("##lang_btn", lang_flag_tex, ImVec2(lang_btn_w, lang_btn_h), lang_short);
