@@ -67,7 +67,7 @@ The Reviewer can't modify any file, only report to Orchestrator the result.
   - Never violate these rules.
   - If a requested change conflicts with the guidelines, explain why.
   - Prefer extending existing presets instead of creating duplicates.
-* Before considering a task complete, read and follow docs/verification.md.
+* If asking for release verification read and follow docs/verification.md in any other case execute a review by visual inspection of code only.
 
 ---
 
