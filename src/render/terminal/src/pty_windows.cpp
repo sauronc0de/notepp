@@ -112,7 +112,7 @@ public:
 
     PROCESS_INFORMATION pi{};
     std::wstring shell_w = widen(shell.empty() ? std::string("cmd.exe") : shell);
-    std::wstring cwd_w = widen(cwd.string());
+    const std::wstring cwd_w = cwd.native();
     const std::wstring cmdline = shell_w;
 
     BOOL ok = CreateProcessW(nullptr, const_cast<LPWSTR>(cmdline.data()), nullptr, nullptr, FALSE,
@@ -139,13 +139,20 @@ public:
     return true;
   }
 
-  void stop() override
+  void interruptRead() override
   {
+    // Closing the pseudo console breaks its output pipe, releasing a blocking
+    // ReadFile without closing the handle used by the reader thread.
     if(hpc_ != nullptr)
     {
       ClosePseudoConsole(hpc_);
       hpc_ = nullptr;
     }
+  }
+
+  void stop() override
+  {
+    interruptRead();
     if(process_handle_ != kNoHandle)
     {
       // Give the process a chance to exit gracefully, then kill.

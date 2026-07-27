@@ -141,6 +141,7 @@ private:
   ImFont *font_regular_ = nullptr;
   ImFont *font_italic_ = nullptr;
   ImFont *font_bold_ = nullptr;
+  ImFont *font_terminal_ = nullptr;
   std::string default_font_path_;
   int max_fps_ = 60;
   unsigned int file_watch_timer_ = 0;

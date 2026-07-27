@@ -1036,13 +1036,14 @@ int App::run()
       // Keep rendering while the history indicator fade animation is running.
       const bool animation_active =
           !history_indicator_.text.empty() && history_indicator_.until > ImGui::GetTime();
+      const bool terminal_active = terminal_visible_;
 
-      dirty_ = dirty_ || had_event || state_dirty_ || layout_dirty_ || g_drawings_dirty || animation_active;
+      dirty_ = dirty_ || had_event || state_dirty_ || layout_dirty_ || g_drawings_dirty || animation_active || terminal_active;
 
       if(dirty_ || imgui_active || keep_alive_frames > 0)
       {
-        keep_alive_frames = (had_event || imgui_active || animation_active) ? 2
-                                                                            : keep_alive_frames - 1;
+        keep_alive_frames = (had_event || imgui_active || animation_active || terminal_active) ? 2
+                                                                                               : keep_alive_frames - 1;
         frame_ui();
         const bool sidebar_thumbnail_work_deferred =
             MarkdownView::sidebar_thumbnail_work_deferred();
@@ -1050,7 +1051,7 @@ int App::run()
         const Uint64 dbg_t2 = SDL_GetPerformanceCounter();
 #endif
         frame_end();
-        dirty_ = imgui_active || animation_active || sidebar_thumbnail_work_deferred;
+        dirty_ = imgui_active || animation_active || terminal_active || sidebar_thumbnail_work_deferred;
         limit_frame_rate();
 #ifdef NOTEPP_DEBUG_UI
         const Uint64 dbg_t3 = SDL_GetPerformanceCounter();
@@ -3120,7 +3121,8 @@ bool App::frame_begin()
 
     if(event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE &&
-       search_window_visible_)
+       search_window_visible_ &&
+       !(terminal_visible_ && terminal_.hasFocus()))
     {
       request_close_search_ = true;
       continue;
@@ -3129,6 +3131,7 @@ bool App::frame_begin()
     // While editing a note, swallow editor control shortcuts before ImGui sees them
     // so our grouped history handles them instead of InputText's per-character stack.
     if(editing_mode_ &&
+       !(terminal_visible_ && terminal_.hasFocus()) &&
        event.type == SDL_KEYDOWN)
     {
       const SDL_Keycode edit_key_sym = event.key.keysym.sym;
@@ -3210,6 +3213,21 @@ bool App::frame_begin()
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
     const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
+    // Ctrl+Shift+P toggles the embedded terminal. Works whether or not
+    // the editor is focused — the terminal is a workspace-level tool.
+    if(event.type == SDL_KEYDOWN &&
+       event.key.repeat == 0 &&
+       ctrl_down &&
+       shift_down &&
+       event.key.keysym.sym == SDLK_p)
+    {
+      request_open_terminal_ = true;
+      continue;
+    }
+    // The focused terminal owns all other key presses, including controls
+    // that are also workspace shortcuts (for example Ctrl+F and Ctrl+L).
+    if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_.hasFocus())
+      continue;
     if(!editing_mode_ &&
        event.type == SDL_KEYDOWN &&
        ctrl_down &&
@@ -3228,17 +3246,6 @@ bool App::frame_begin()
     {
       request_open_project_search_ = true;
       request_open_search_ = false;
-      continue;
-    }
-    // Ctrl+Shift+P toggles the embedded terminal. Works whether or not
-    // the editor is focused — the terminal is a workspace-level tool.
-    if(event.type == SDL_KEYDOWN &&
-       event.key.repeat == 0 &&
-       ctrl_down &&
-       shift_down &&
-       event.key.keysym.sym == SDLK_p)
-    {
-      request_open_terminal_ = true;
       continue;
     }
     if(!editing_mode_ &&
@@ -3965,6 +3972,7 @@ void App::frame_ui()
     search_window_visible_ = search_dialog.visible;
   };
   auto render_terminal = [&]() {
+    const bool terminal_opened_this_frame = request_open_terminal_ && !terminal_visible_;
     if(request_open_terminal_)
     {
       terminal_visible_ = !terminal_visible_;
@@ -3972,21 +3980,20 @@ void App::frame_ui()
     }
     if(!terminal_visible_)
     {
+      terminal_.releaseFocus();
       pending_terminal_text_.clear();
       return;
     }
 
-    terminal_.setFont(font_regular_);
-    if(!terminal_.isRunning())
-    {
-      // First open (or restart after the shell exited): start in the
-      // project notes root. render() resizes the PTY to the panel.
+    terminal_.setFont(font_terminal_);
+    terminal_.setDefaultWorkingDirectory(config_.dataPath);
+    if(terminal_opened_this_frame && terminal_.sessionCount() == 0)
       terminal_.start(config_.dataPath, 24, 80);
-    }
     // render() resolves current-frame focus after all note/editor widgets,
     // then writes composed text before Enter/navigation events. This avoids
     // stale focus stealing note input and preserves command ordering.
-    terminal_.render(&terminal_visible_, pending_terminal_text_);
+    terminal_.render(&terminal_visible_, pending_terminal_text_, !terminal_opened_this_frame);
+    if(!terminal_visible_) terminal_.releaseFocus();
     pending_terminal_text_.clear();
   };
   auto queue_pending_delete_path = [&](const std::string &path) {
@@ -7185,8 +7192,10 @@ __CURSOR__)MD",
         const float lang_btn_w = lang_flag_tex ? lang_flag_display.x : (ImGui::CalcTextSize(lang_short).x + 10.0f);
         const float lang_btn_h = lang_flag_tex ? lang_flag_display.y : 18.0f;
         // Custom window control buttons (quit / minimize) — rightmost
+        const ImTextureID terminal_icon = get_toolbar_icon_texture("terminal.png");
         const ImTextureID quit_icon = get_toolbar_icon_texture("quit.png");
         const ImTextureID min_icon = get_toolbar_icon_texture("minimize.png");
+        const ImVec2 terminal_sz = icon_sz("terminal.png");
         const ImVec2 quit_sz = icon_sz("quit.png");
         const ImVec2 min_sz = icon_sz("minimize.png");
         const float ctrl_y = (bar_h - kIconH) * 0.5f;
@@ -7210,6 +7219,13 @@ __CURSOR__)MD",
         // Language selector
         constexpr float gap = 6.0f;
         const float lang_x = min_x - ver_sz.x - gap - lang_btn_w - gap;
+        const float terminal_x = lang_x - terminal_sz.x - gap;
+        ImGui::SetCursorPos(ImVec2(terminal_x, (bar_h - terminal_sz.y) * 0.5f));
+        if(shaded_icon_button("##terminal_btn", terminal_icon, terminal_sz, ">_", terminal_visible_))
+          request_open_terminal_ = true;
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("%s", Lang::t("Terminal"));
+
         ImGui::SetCursorPos(ImVec2(lang_x, (bar_h - lang_btn_h) * 0.5f));
         bool lang_clicked = shaded_icon_button("##lang_btn", lang_flag_tex, ImVec2(lang_btn_w, lang_btn_h), lang_short);
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))

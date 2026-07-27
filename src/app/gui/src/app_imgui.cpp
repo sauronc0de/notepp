@@ -34,8 +34,12 @@ void App::init_imgui()
   ImGuiIO &io = ImGui::GetIO();
   io.IniFilename = nullptr;
 
-  // Pick a font family that has Bold/Italic files available.
-  io.Fonts->AddFontDefault();
+  // Keep ImGui's embedded font for the fixed-width terminal grid. The main
+  // interface uses the proportional families loaded below.
+  ImFontConfig terminal_font_config;
+  terminal_font_config.SizePixels = kUiFontSize;
+  terminal_font_config.PixelSnapH = true;
+  ImFont *font_terminal = io.Fonts->AddFontDefault(&terminal_font_config);
 
   auto merge_emoji_fallback = [&](const char *emoji_font_path) {
     ImFontConfig emoji_cfg;
@@ -115,5 +119,6 @@ void App::init_imgui()
   font_regular_ = font_regular;
   font_italic_ = font_italic;
   font_bold_ = font_bold;
+  font_terminal_ = font_terminal != nullptr ? font_terminal : font_regular;
   MarkdownView::set_fonts(font_regular, font_italic, font_bold);
 }

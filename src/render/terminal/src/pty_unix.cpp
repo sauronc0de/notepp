@@ -25,6 +25,7 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <string>
 
@@ -35,6 +36,8 @@ namespace
 {
 constexpr pid_t kNoChild = -1;
 constexpr int kNoFd = -1;
+constexpr int kGracefulWaitAttempts = 50;
+constexpr long kGracefulWaitNanoseconds = 10L * 1000L * 1000L;
 
 std::string queryShell()
 {
@@ -119,27 +122,46 @@ public:
 
     master_fd_ = master_fd;
     child_pid_ = child;
+    read_interrupted_.store(false, std::memory_order_release);
     setNonBlocking(true);
     return true;
   }
 
+  void interruptRead() override
+  {
+    // Unix reads are non-blocking and retry every 2 ms. A flag interrupts the
+    // retry loop without closing the descriptor underneath an active read.
+    read_interrupted_.store(true, std::memory_order_release);
+  }
+
   void stop() override
   {
-    if(child_pid_ > 0)
-    {
-      // forkpty() creates a new session in the child, but the parent can race
-      // that setup if stop() follows start() immediately. Never signal a
-      // process group unless it is confirmed to be owned by the child;
-      // otherwise killpg() could send SIGHUP to Notepp's own process group.
-      const pid_t child_group = ::getpgid(child_pid_);
-      if(child_group == child_pid_)
-        ::killpg(child_group, SIGHUP);
-      else
-        ::kill(child_pid_, SIGHUP);
+    interruptRead();
 
-      // Reap if not already gone.
-      int status = 0;
-      ::waitpid(child_pid_, &status, WNOHANG);
+    const pid_t child = child_pid_;
+    if(child > 0)
+    {
+      signalChild(child, SIGHUP);
+
+      bool reaped = false;
+      for(int attempt = 0; attempt < kGracefulWaitAttempts && !reaped; ++attempt)
+      {
+        reaped = tryReap(child, WNOHANG);
+        if(!reaped)
+        {
+          const struct timespec pause
+          {
+            0, kGracefulWaitNanoseconds
+          };
+          (void)::nanosleep(&pause, nullptr);
+        }
+      }
+
+      if(!reaped)
+      {
+        signalChild(child, SIGKILL);
+        (void)tryReap(child, 0);
+      }
       child_pid_ = kNoChild;
     }
     if(master_fd_ != kNoFd)
@@ -171,21 +193,20 @@ public:
   int read(void *buf, size_t len) override
   {
     if(master_fd_ == kNoFd) return -1;
-    // Loop past EINTR. The kernel can spuriously interrupt a blocking read.
+    // Loop past EINTR. The descriptor is non-blocking so interruptRead() can
+    // end the retry loop without racing a close against this system call.
     for(;;)
     {
+      if(read_interrupted_.load(std::memory_order_acquire)) return 0;
       const ssize_t n = ::read(master_fd_, buf, len);
       if(n < 0 && errno == EINTR) continue;
       if(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
       {
-        // Master fd is non-blocking; sleep briefly and try again.
-        // This keeps the thread responsive to stop() without busy-spinning.
-        struct timespec ts
+        const struct timespec pause
         {
+          0, 2L * 1000L * 1000L
         };
-        ts.tv_sec = 0;
-        ts.tv_nsec = 2 * 1000 * 1000; // 2 ms
-        nanosleep(&ts, nullptr);
+        (void)::nanosleep(&pause, nullptr);
         continue;
       }
       return static_cast<int>(n);
@@ -236,8 +257,34 @@ public:
   }
 
 private:
+  static void signalChild(pid_t child, int signalNumber)
+  {
+    // forkpty() creates a new session in the child, but the parent can race
+    // that setup if stop() follows start() immediately. Never signal a
+    // process group unless it is confirmed to be owned by the child.
+    const pid_t childGroup = ::getpgid(child);
+    if(childGroup == child)
+      (void)::killpg(childGroup, signalNumber);
+    else
+      (void)::kill(child, signalNumber);
+  }
+
+  static bool tryReap(pid_t child, int options)
+  {
+    int status = 0;
+    for(;;)
+    {
+      const pid_t result = ::waitpid(child, &status, options);
+      if(result == child) return true;
+      if(result == 0) return false;
+      if(errno == EINTR) continue;
+      return errno == ECHILD;
+    }
+  }
+
   int master_fd_ = kNoFd;
   pid_t child_pid_ = kNoChild;
+  std::atomic<bool> read_interrupted_{false};
 };
 
 PtyBackend *createPtyBackend()

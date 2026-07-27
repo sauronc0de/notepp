@@ -17,6 +17,11 @@
 #include <string>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <cerrno>
+#include <sys/wait.h>
+#endif
+
 namespace
 {
 int failures = 0;
@@ -68,6 +73,28 @@ void test_stop_without_start_is_safe()
   Terminal t;
   t.stop();
   expect(!t.isRunning(), "stop() on a non-running Terminal is a no-op");
+  expect(t.sessionCount() == 0, "stopping an empty terminal preserves the zero-session state");
+}
+
+void test_multiple_sessions_are_independent()
+{
+  Terminal t;
+  const std::filesystem::path cwd = std::filesystem::temp_directory_path();
+  const Terminal::SessionId first = t.addSession(cwd);
+  const Terminal::SessionId second = t.addSession(cwd);
+
+  expect(first != second, "terminal sessions receive stable unique IDs");
+  expect(t.sessionCount() == 2, "two terminal sessions can be created");
+  expect(t.isSessionRunning(first), "first terminal session is running");
+  expect(t.isSessionRunning(second), "second terminal session is running");
+  expect(t.closeSession(first), "an existing terminal session can be closed");
+  expect(t.sessionCount() == 1, "closing one session leaves the other session");
+  expect(t.isSessionRunning(second), "closing one session does not stop the other shell");
+
+  t.stop();
+  expect(t.sessionCount() == 0, "stop removes every terminal session");
+  expect(!t.isRunning(), "stop shuts down every terminal shell");
+  expect(!t.closeSession(second), "closing a session after stop is a safe no-op");
 }
 
 void test_resize_does_not_crash()
@@ -78,6 +105,26 @@ void test_resize_does_not_crash()
   t.resize(40, 120);
   t.stop();
 }
+
+#if !defined(_WIN32)
+void test_natural_shell_exit_is_reaped()
+{
+  Terminal t;
+  const Terminal::SessionId id = t.addSession(std::filesystem::temp_directory_path());
+  t.write("exit\n");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while(t.isSessionRunning(id) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+  expect(!t.isSessionRunning(id), "natural shell exit finalizes the terminal session");
+  int status = 0;
+  errno = 0;
+  const pid_t child = ::waitpid(-1, &status, WNOHANG);
+  expect(child == -1 && errno == ECHILD, "natural shell exit is reaped without closing its tab");
+  t.stop();
+}
+#endif
 
 void test_special_key_mapping()
 {
@@ -97,8 +144,12 @@ void test_special_key_mapping()
   VTerm *vt = vterm_new(24, 80);
   vterm_output_set_callback(vt, captureVtermOutput, &output);
   vterm_keyboard_unichar(vt, ctrl_c, VTERM_MOD_CTRL);
-  vterm_free(vt);
   expect(output == std::string(1, '\x03'), "libvterm emits byte 0x03 for Ctrl+C");
+
+  output.clear();
+  vterm_keyboard_key(vt, VTERM_KEY_TAB, VTERM_MOD_NONE);
+  expect(output == std::string(1, '\t'), "libvterm emits byte 0x09 for Tab completion");
+  vterm_free(vt);
 }
 
 void test_first_render_does_not_crash()
@@ -117,11 +168,23 @@ void test_first_render_does_not_crash()
   t.start(std::filesystem::temp_directory_path(), 24, 80);
   std::this_thread::sleep_for(std::chrono::milliseconds(25));
 
+  // Model the opening shortcut already queued in ImGui. Ctrl+D has an
+  // observable side effect (shell EOF), so it verifies that all keyboard
+  // input is ignored on the hidden-to-visible frame.
+  io.AddKeyEvent(ImGuiKey_LeftCtrl, true);
+  io.AddKeyEvent(ImGuiKey_D, true);
   ImGui::NewFrame();
   bool open = true;
-  t.render(&open);
+  t.render(&open, {}, false);
   ImGui::Render();
+  io.AddKeyEvent(ImGuiKey_D, false);
+  io.AddKeyEvent(ImGuiKey_LeftCtrl, false);
+  std::this_thread::sleep_for(std::chrono::milliseconds(25));
   expect(t.hasFocus(), "first render gives the terminal keyboard focus");
+  expect(t.isRunning(), "opening-frame keyboard input is not sent to the shell");
+
+  t.releaseFocus();
+  expect(!t.hasFocus(), "hiding the terminal explicitly releases keyboard focus");
 
   // App buffers SDL_TEXTINPUT and passes it to render(); validate that a
   // printable command can traverse the focused terminal while the first
@@ -154,6 +217,11 @@ void test_first_render_does_not_crash()
   t.sendKey(ImGuiKey_KeypadEnter, false, false, false);
 
   t.stop();
+  ImGui::NewFrame();
+  t.render(&open);
+  ImGui::Render();
+  expect(t.sessionCount() == 0, "rendering the zero-session state is safe");
+
   ImGui::DestroyContext();
   expect(open, "first render leaves the terminal window open");
 }
@@ -165,7 +233,11 @@ int main()
   test_start_and_stop();
   test_double_start_is_safe();
   test_stop_without_start_is_safe();
+  test_multiple_sessions_are_independent();
   test_resize_does_not_crash();
+#if !defined(_WIN32)
+  test_natural_shell_exit_is_reaped();
+#endif
   test_special_key_mapping();
   test_first_render_does_not_crash();
   if(failures != 0)

@@ -29,7 +29,12 @@ public:
   /// Returns true on success. On failure, @ref isRunning() is false.
   virtual bool start(const std::filesystem::path &cwd, const std::string &shell, int rows, int cols) = 0;
 
-  /// Tear down the child process group and close the master fd.
+  /// Interrupt a pending @ref read() without tearing down state that the
+  /// reader thread may still be using. Call before joining that thread.
+  virtual void interruptRead() = 0;
+
+  /// Tear down the child process group and close all backend resources.
+  /// No reader thread may be using the backend when this is called.
   virtual void stop() = 0;
 
   /// Best-effort write. Returns true if all bytes were written.
@@ -37,8 +42,7 @@ public:
 
   /// Blocking read of up to @p len bytes into @p buf. Returns the number
   /// of bytes read, 0 on EOF (shell closed slave / pipe broken), or -1
-  /// on error. The implementation may be interrupted by @ref stop() and
-  /// return 0 in that case.
+  /// on error. @ref interruptRead() makes a pending call return promptly.
   virtual int read(void *buf, size_t len) = 0;
 
   /// True iff the underlying file descriptor / pipe handle can be polled
