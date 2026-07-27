@@ -2,6 +2,7 @@ build/
 .cache/
 .ccache/
 dist/
+.pi-subagents/
 
 # Ignore saves folder
 data/
