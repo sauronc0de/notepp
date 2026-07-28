@@ -13,6 +13,19 @@
 
 #if defined(_WIN32)
 
+// ConPTY (CreatePseudoConsole / ResizePseudoConsole / ClosePseudoConsole
+// and PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE) requires Windows 10 1809 /
+// Windows Server 2019 or newer. The MinGW UCRT64 SDK ships <_mingw.h>
+// with a default of _WIN32_WINNT 0x603 (Windows 8), which gates those
+// APIs out of <consoleapi.h> / <winbase.h>. We have to override the
+// value after <_mingw.h> is implicitly included (which is why this
+// cannot be an `#ifndef` guard) and before any Windows header is
+// pulled in, so that the SDK macros resolve to the Windows 10 surface.
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#undef WINVER
+#define WINVER _WIN32_WINNT
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

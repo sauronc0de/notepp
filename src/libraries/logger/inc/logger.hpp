@@ -1,5 +1,23 @@
 #pragma once
 
+// Windows headers (notably <wingdi.h>) #define ERROR, INFO, DEBUG, and
+// WARNING as preprocessor macros. Because the names below appear as both
+// enum values (in LogLevel) and case labels (in icon_for_ / color_for_),
+// the macros have to be suppressed for the entire translation of this
+// header. We save and undef them before any other code is processed, and
+// restore them at the end of the file so the rest of the translation
+// unit sees the same environment it did before including this header.
+#ifdef _WIN32
+#pragma push_macro("DEBUG")
+#pragma push_macro("INFO")
+#pragma push_macro("WARNING")
+#pragma push_macro("ERROR")
+#undef DEBUG
+#undef INFO
+#undef WARNING
+#undef ERROR
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -304,3 +322,10 @@ private:
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_{false};
 };
+
+#ifdef _WIN32
+#pragma pop_macro("ERROR")
+#pragma pop_macro("WARNING")
+#pragma pop_macro("INFO")
+#pragma pop_macro("DEBUG")
+#endif
