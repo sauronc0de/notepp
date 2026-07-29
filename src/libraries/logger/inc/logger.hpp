@@ -51,8 +51,6 @@ enum LogLevel
 class Logger
 {
 public:
-  std::atomic<bool> shutting_down_{false};
-
   struct Options
   {
     std::size_t queue_capacity = 4096; // bounded queue, producers wait when full
@@ -68,46 +66,52 @@ public:
   }
   void start(const Options &opt)
   {
-    std::lock_guard<std::mutex> lk(state_m_);
-    if(running_.load(std::memory_order_acquire))
+    std::unique_lock<std::mutex> lk(state_m_);
+    state_cv_.wait(lk, [this] { return lifecycle_ != Lifecycle::stopping; });
+    if(lifecycle_ == Lifecycle::running)
       return;
-
-    opts_ = opt;
-#ifndef _WIN32
-    if(opts_.color)
-      opts_.color = ::isatty(fileno(stdout));
-#endif
-
-    // reset state
-    {
-      std::lock_guard<std::mutex> qlk(q_m_);
-      queue_.clear();
-    }
-    stop_.store(false, std::memory_order_release);
-    worker_ = std::thread([this] { consume_loop_(); });
-    running_.store(true, std::memory_order_release);
+    start_locked_(opt);
   }
 
   void stop()
   {
     std::unique_lock<std::mutex> lk(state_m_);
-    if(!running_.load(std::memory_order_acquire))
+    if(lifecycle_ == Lifecycle::stopping)
+    {
+      const std::size_t observed_generation = stop_generation_;
+      state_cv_.wait(lk, [this, observed_generation] {
+        return stop_generation_ != observed_generation;
+      });
       return;
+    }
+    if(lifecycle_ != Lifecycle::running)
+    {
+      // An explicit stop disables lazy start until start() is called.
+      lifecycle_ = Lifecycle::stopped;
+      return;
+    }
 
-    // Announce shutdown to all producers ASAP
-    shutting_down_.store(true, std::memory_order_release);
+    lifecycle_ = Lifecycle::stopping;
     stop_.store(true, std::memory_order_release);
     lk.unlock();
 
-    // Wake everyone so nothing stays blocked
-    cv_not_empty_.notify_all(); // wake consumer
-    cv_not_full_.notify_all();  // wake producers waiting for space
-
-    if(worker_.joinable())
-      worker_.join();
+    // Wake the consumer and any producers waiting for queue capacity.
+    cv_not_empty_.notify_all();
+    cv_not_full_.notify_all();
 
     lk.lock();
-    running_.store(false, std::memory_order_release);
+    state_cv_.wait(lk, [this] { return active_producers_ == 0; });
+    std::thread worker = std::move(worker_);
+    lk.unlock();
+
+    if(worker.joinable())
+      worker.join();
+
+    lk.lock();
+    lifecycle_ = Lifecycle::stopped;
+    ++stop_generation_;
+    lk.unlock();
+    state_cv_.notify_all();
   }
 
   ~Logger()
@@ -134,13 +138,11 @@ public:
   template <typename... Args>
   void log(LogLevel level, const std::string_view &fileName, const int &fileLine, Args &&...args) const
   {
-    // Not enter if we are closing
-    if(shutting_down_.load(std::memory_order_acquire))
-      return;
-
     if((level_mask_.load(std::memory_order_relaxed) & level) == 0)
       return;
-    ensure_started_();
+    if(!begin_log_())
+      return;
+    ProducerGuard producer_guard(*this);
 
     // format message (no I/O)
     std::ostringstream oss;
@@ -179,6 +181,26 @@ public:
   }
 
 private:
+  enum class Lifecycle
+  {
+    initial,
+    running,
+    stopping,
+    stopped
+  };
+
+  class ProducerGuard
+  {
+  public:
+    explicit ProducerGuard(const Logger &logger) : logger_(logger) {}
+    ProducerGuard(const ProducerGuard &) = delete;
+    ProducerGuard &operator=(const ProducerGuard &) = delete;
+    ~ProducerGuard() { logger_.finish_log_(); }
+
+  private:
+    const Logger &logger_;
+  };
+
   struct Item
   {
     LogLevel level{};
@@ -295,11 +317,40 @@ private:
     }
   }
 
-  void ensure_started_() const
+  void start_locked_(const Options &opt)
   {
-    if(running_.load(std::memory_order_acquire))
-      return;
-    const_cast<Logger *>(this)->start(); // start() serializes concurrent lazy starts
+    opts_ = opt;
+#ifndef _WIN32
+    if(opts_.color)
+      opts_.color = ::isatty(fileno(stdout));
+#endif
+
+    {
+      std::lock_guard<std::mutex> qlk(q_m_);
+      queue_.clear();
+    }
+    stop_.store(false, std::memory_order_release);
+    worker_ = std::thread([this] { consume_loop_(); });
+    lifecycle_ = Lifecycle::running;
+  }
+
+  bool begin_log_() const
+  {
+    std::lock_guard<std::mutex> lk(state_m_);
+    if(lifecycle_ == Lifecycle::initial)
+      const_cast<Logger *>(this)->start_locked_(Options{});
+    if(lifecycle_ != Lifecycle::running)
+      return false;
+    ++active_producers_;
+    return true;
+  }
+
+  void finish_log_() const
+  {
+    std::lock_guard<std::mutex> lk(state_m_);
+    --active_producers_;
+    if(active_producers_ == 0)
+      state_cv_.notify_all();
   }
 
   // ---- state ----
@@ -312,10 +363,14 @@ private:
   mutable std::condition_variable cv_not_full_;
   mutable std::deque<Item> queue_;
 
-  // worker state
+  // worker lifecycle. An explicit stop is terminal for lazy logging until
+  // start() explicitly begins a new cycle.
   mutable std::mutex state_m_;
+  mutable std::condition_variable state_cv_;
+  mutable std::size_t active_producers_ = 0;
+  std::size_t stop_generation_ = 0;
+  Lifecycle lifecycle_ = Lifecycle::initial;
   std::thread worker_;
-  std::atomic<bool> running_{false};
   std::atomic<bool> stop_{false};
 };
 
