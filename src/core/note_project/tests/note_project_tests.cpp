@@ -82,12 +82,45 @@ void test_create_or_open_project_creates_layout()
   expect_true(fs::exists(info.assets), "assets dir created");
   expect_true(fs::exists(info.config), "config dir created");
   expect_true(fs::exists(info.projectFile), "project file created");
+  expect_true(!info.projectId.empty(), "project has a stable id");
+  expect_eq_int(info.schemaVersion, 2, "project manifest uses current schema");
 
-  // Reopen should not overwrite project file.
+  const std::string projectId = info.projectId;
+  // Reopen should not overwrite project file or change its identity.
   const auto mtime1 = fs::last_write_time(info.projectFile);
-  npp::create_or_open_project(root);
+  const npp::ProjectInfo reopened = npp::create_or_open_project(root);
   const auto mtime2 = fs::last_write_time(info.projectFile);
   expect_eq_int(static_cast<long long>(mtime1 == mtime2), 1, "reopen does not rewrite project file");
+  expect_eq_str(reopened.projectId, projectId, "reopen retains stable project id");
+}
+
+void test_existing_manifest_is_upgraded_compatibly()
+{
+  ScopedXdgConfig env;
+  const fs::path root = env.base() / "legacyProject";
+  fs::create_directories(root);
+  {
+    std::ofstream manifest(root / "notepp.project.json");
+    manifest << "{\n"
+             << "  \"name\": \"Legacy Name\",\n"
+             << "  \"version\": 1,\n"
+             << "  \"notesPath\": \"notes\",\n"
+             << "  \"assetsPath\": \"assets\",\n"
+             << "  \"customField\": \"preserved\"\n"
+             << "}\n";
+  }
+
+  const npp::ProjectInfo first = npp::create_or_open_project(root);
+  expect_true(!first.projectId.empty(), "legacy manifest receives project id");
+  expect_eq_int(first.schemaVersion, 2, "legacy manifest receives current schema");
+
+  std::ifstream manifest(root / "notepp.project.json");
+  const std::string content((std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
+  expect_true(content.find("Legacy Name") != std::string::npos, "legacy project name preserved");
+  expect_true(content.find("customField") != std::string::npos, "unknown manifest fields preserved");
+
+  const npp::ProjectInfo second = npp::create_or_open_project(root);
+  expect_eq_str(second.projectId, first.projectId, "upgraded manifest id remains stable");
 }
 
 void test_save_and_load_last_project_path()
@@ -209,6 +242,7 @@ void test_create_or_open_project_does_not_throw_on_creation_failure()
 int main()
 {
   test_create_or_open_project_creates_layout();
+  test_existing_manifest_is_upgraded_compatibly();
   test_save_and_load_last_project_path();
   test_recent_projects_dedupe_and_cap();
   test_save_last_project_path_does_not_throw_on_creation_failure();

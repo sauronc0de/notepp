@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace notepp::project
@@ -13,6 +14,8 @@ struct ProjectInfo
   std::filesystem::path assets;
   std::filesystem::path config;
   std::filesystem::path projectFile;
+  std::string projectId;
+  int schemaVersion = 0;
 };
 
 std::filesystem::path get_appdata_dir();

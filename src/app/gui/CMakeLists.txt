@@ -68,6 +68,7 @@ target_link_libraries(${PROJECT_NAME}
     markdown_view
     markdown_sections
     note_project
+    project_paths
     tiny_json
     markdown_support
     markdown_widgets

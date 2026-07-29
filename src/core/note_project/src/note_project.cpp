@@ -1,8 +1,13 @@
 #include "note_project.hpp"
 
+#include <array>
+#include <cstdio>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <system_error>
+
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -19,6 +24,118 @@ namespace fs = std::filesystem;
 
 namespace notepp::project
 {
+namespace
+{
+constexpr int kProjectSchemaVersion = 2;
+
+std::string generate_project_id()
+{
+  std::random_device random;
+  std::uniform_int_distribution<unsigned int> distribution(0, 255);
+  std::array<unsigned char, 16> bytes{};
+  for(auto &byte : bytes)
+    byte = static_cast<unsigned char>(distribution(random));
+  bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0FU) | 0x40U);
+  bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3FU) | 0x80U);
+
+  char value[37]{};
+  std::snprintf(value, sizeof(value),
+                "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+                bytes[12], bytes[13], bytes[14], bytes[15]);
+  return value;
+}
+
+void load_or_create_manifest(ProjectInfo &project, bool layout_ok)
+{
+  if(!layout_ok) return;
+  using Json = nlohmann::json;
+  Json manifest = Json::object();
+  bool should_write = !fs::exists(project.projectFile);
+
+  if(!should_write)
+  {
+    std::ifstream input(project.projectFile);
+    try
+    {
+      input >> manifest;
+    }
+    catch(const std::exception &error)
+    {
+      LOG_ERROR("Cannot parse notepp project manifest '", project.projectFile.generic_string(), "': ", error.what());
+      return;
+    }
+    if(!manifest.is_object())
+    {
+      LOG_ERROR("Notepp project manifest is not an object: ", project.projectFile.generic_string());
+      return;
+    }
+  }
+
+  if(manifest.contains("projectId") && manifest["projectId"].is_string())
+    project.projectId = manifest["projectId"].get<std::string>();
+  if(project.projectId.empty())
+  {
+    project.projectId = generate_project_id();
+    manifest["projectId"] = project.projectId;
+    should_write = true;
+  }
+
+  if(manifest.contains("schemaVersion") && manifest["schemaVersion"].is_number_integer())
+  {
+    try
+    {
+      project.schemaVersion = manifest["schemaVersion"].get<int>();
+    }
+    catch(const std::exception &)
+    {
+      project.schemaVersion = 0;
+    }
+  }
+  if(project.schemaVersion < kProjectSchemaVersion)
+  {
+    project.schemaVersion = kProjectSchemaVersion;
+    manifest["schemaVersion"] = project.schemaVersion;
+    should_write = true;
+  }
+
+  if(!manifest.contains("name"))
+  {
+    manifest["name"] = project.root.filename().generic_string();
+    should_write = true;
+  }
+  if(!manifest.contains("notesPath"))
+  {
+    manifest["notesPath"] = "notes";
+    should_write = true;
+  }
+  if(!manifest.contains("assetsPath"))
+  {
+    manifest["assetsPath"] = "assets";
+    should_write = true;
+  }
+
+  if(!should_write) return;
+
+  std::ofstream output(project.projectFile, std::ios::trunc);
+  if(!output)
+  {
+    LOG_ERROR("Cannot open project file for writing: ", project.projectFile.generic_string());
+    project.projectId.clear();
+    project.schemaVersion = 0;
+    return;
+  }
+  output << manifest.dump(2) << '\n';
+  if(!output)
+  {
+    LOG_ERROR("Cannot write project file: ", project.projectFile.generic_string());
+    project.projectId.clear();
+    project.schemaVersion = 0;
+  }
+}
+} // namespace
+
 fs::path get_appdata_dir()
 {
 #ifdef _WIN32
@@ -187,24 +304,7 @@ ProjectInfo create_or_open_project(const fs::path &root)
     }
   }
 
-  if(layoutOk && !fs::exists(project.projectFile))
-  {
-    std::ofstream file(project.projectFile);
-
-    if(file)
-    {
-      file << "{\n";
-      file << "  \"name\": \"" << json_escape(root.filename().generic_string()) << "\",\n";
-      file << "  \"version\": 1,\n";
-      file << "  \"notesPath\": \"notes\",\n";
-      file << "  \"assetsPath\": \"assets\"\n";
-      file << "}\n";
-    }
-    else
-    {
-      LOG_ERROR("Cannot open project file for writing: ", project.projectFile.generic_string());
-    }
-  }
+  load_or_create_manifest(project, layoutOk);
 
   save_last_project_path(root);
 

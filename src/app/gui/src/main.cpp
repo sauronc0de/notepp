@@ -11,6 +11,7 @@ int main(int, char **)
   LOG_INFO("Notepp started");
 
   std::filesystem::path assetsPath = ASSETS_PATH;
+  std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
 
@@ -20,16 +21,19 @@ int main(int, char **)
   if(!project)
     return 0;
 
+  projectRoot = project->root;
   dataPath = project->notes;
   configPath = project->config;
 #else
   dataPath = DATA_PATH;
-  configPath = std::filesystem::path(DATA_PATH).parent_path() / "config";
+  projectRoot = std::filesystem::path(dataPath).parent_path();
+  configPath = projectRoot / "config";
   std::filesystem::create_directories(configPath);
 #endif
 
   AppConfig config;
   config.assetsPath = assetsPath;
+  config.projectRoot = projectRoot;
   config.dataPath = dataPath;
   config.configPath = configPath;
 

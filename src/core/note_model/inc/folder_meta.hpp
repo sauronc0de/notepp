@@ -20,7 +20,8 @@ struct FolderMeta
 
   std::string name;
   std::vector<NoteMeta> notes;
-  std::vector<std::string> images; // tracked image file paths (abs)
+  std::vector<std::string> images;                   // resolved runtime image paths
+  std::vector<std::string> unresolved_stored_images; // retained metadata, never used for I/O
   bool layout_locked = false;
   bool detached_note_windows = false;
   bool dockers_enabled = false;

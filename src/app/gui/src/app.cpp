@@ -8,6 +8,7 @@
 #if USE_PORTABLE_PATHS
 #include "note_project.hpp"
 #endif
+#include "project_paths.hpp"
 #include "markdown_sections.hpp"
 #include "markdown_support.hpp"
 #include "markdown_view.hpp"
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <iterator>
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <sstream>
@@ -133,6 +135,50 @@ std::string generate_uuid()
            bytes[6], bytes[7], bytes[8], bytes[9],
            bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
   return std::string(buf);
+}
+
+std::string project_notes_top_level(const AppConfig &config)
+{
+  const std::filesystem::path relative =
+      config.dataPath.lexically_normal().lexically_relative(config.projectRoot.lexically_normal());
+  if(relative.empty()) return "notes";
+  return (*relative.begin()).generic_string();
+}
+
+std::optional<std::filesystem::path> resolve_project_owned_path(
+    const AppConfig &config,
+    std::string_view stored_path,
+    int schema_version,
+    std::string_view expected_top_level)
+{
+  notepp::project_paths::ProjectPaths paths(config.projectRoot);
+  if(schema_version >= 2)
+  {
+    auto decoded = paths.decode(stored_path);
+    if(!decoded) return std::nullopt;
+    auto encoded = paths.encode(*decoded);
+    if(!encoded) return std::nullopt;
+    const std::string prefix = std::string(expected_top_level) + "/";
+    if(*encoded != expected_top_level && !encoded->starts_with(prefix)) return std::nullopt;
+    return *decoded;
+  }
+
+  auto migrated = paths.migrate_legacy(stored_path, expected_top_level);
+  if(!migrated) return std::nullopt;
+  return migrated->absolute_path;
+}
+
+std::optional<std::string> portable_project_path(
+    const AppConfig &config,
+    const std::filesystem::path &runtime_path,
+    std::string_view expected_top_level)
+{
+  notepp::project_paths::ProjectPaths paths(config.projectRoot);
+  auto encoded = paths.encode(runtime_path);
+  if(!encoded) return std::nullopt;
+  const std::string prefix = std::string(expected_top_level) + "/";
+  if(*encoded != expected_top_level && !encoded->starts_with(prefix)) return std::nullopt;
+  return *encoded;
 }
 
 int clamp_to_range(int value, int lo, int hi)
@@ -979,6 +1025,7 @@ void App::switch_project(const std::filesystem::path &new_root)
   save_state();
 
   auto project = notepp::project::create_or_open_project(new_root);
+  config_.projectRoot = project.root;
   config_.dataPath = project.notes;
   config_.configPath = project.config;
 
@@ -1183,11 +1230,18 @@ void App::load_state()
   detached_note_windows_enabled_ = false;
   dockers_enabled_ = false;
 
+  const std::string notes_top_level = project_notes_top_level(config_);
   bool uuid_migrated = false;
+  bool paths_migrated = false;
+  bool path_migration_failed = false;
+  index_schema_version_ = 2;
+  index_paths_portable_ = true;
   std::ifstream in_index(index_file_);
   if(in_index)
   {
     const std::string doc((std::istreambuf_iterator<char>(in_index)), std::istreambuf_iterator<char>());
+    index_schema_version_ = json_find_int(doc, "schemaVersion", 1);
+    index_paths_portable_ = index_schema_version_ >= 2;
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
     active_note_idx_ = json_find_int(doc, "active_note", 0);
     folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
@@ -1240,7 +1294,32 @@ void App::load_state()
                       uuid_migrated = true;
                     }
                     n.title = json_find_string(nobj, "title");
-                    n.path = json_find_string(nobj, "path");
+                    if(n.title.empty()) n.title = "Note";
+                    const std::string stored_note_path = json_find_string(nobj, "path");
+                    if(auto resolved = resolve_project_owned_path(
+                           config_, stored_note_path, index_schema_version_, notes_top_level))
+                    {
+                      n.path = resolved->string();
+                      paths_migrated = paths_migrated || index_schema_version_ < 2;
+                    }
+                    else
+                    {
+                      const std::filesystem::path expected_path = make_note_path(f.name, n.title);
+                      std::error_code expected_error;
+                      if(index_schema_version_ < 2 && std::filesystem::exists(expected_path, expected_error) && !expected_error)
+                      {
+                        n.path = expected_path.string();
+                        paths_migrated = true;
+                      }
+                      else
+                      {
+                        n.path.clear();
+                        n.unresolved_stored_path = stored_note_path;
+                        path_migration_failed = true;
+                        LOG_ERROR("Cannot migrate note path '", stored_note_path,
+                                  "' in folder '", f.name, "'; preserving legacy index schema");
+                      }
+                    }
                     n.pos_x = (float)json_find_int(nobj, "x", 0);
                     n.pos_y = (float)json_find_int(nobj, "y", 0);
                     n.width = (float)json_find_int(nobj, "w", 520);
@@ -1253,10 +1332,38 @@ void App::load_state()
                     n.color_r = (float)json_find_int(nobj, "color_r", 0) / 255.0f;
                     n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
                     n.color_b = (float)json_find_int(nobj, "color_b", 0) / 255.0f;
-                    n.font_path = json_find_string(nobj, "font_path");
+                    const std::string stored_font_path = json_find_string(nobj, "font_path");
+                    if(!stored_font_path.empty())
+                    {
+                      if(auto resolved_font = resolve_project_owned_path(
+                             config_, stored_font_path, index_schema_version_, notes_top_level))
+                      {
+                        n.font_path = resolved_font->string();
+                        paths_migrated = paths_migrated || index_schema_version_ < 2;
+                      }
+                      else
+                      {
+                        const std::filesystem::path folder_font =
+                            config_.dataPath / f.name / std::filesystem::path(stored_font_path);
+                        std::error_code font_error;
+                        if(index_schema_version_ < 2 && std::filesystem::exists(folder_font, font_error) && !font_error)
+                        {
+                          n.font_path = folder_font.lexically_normal().string();
+                          paths_migrated = true;
+                        }
+                        else
+                        {
+                          n.font_path.clear();
+                          n.unresolved_stored_font_path = stored_font_path;
+                          path_migration_failed = true;
+                          LOG_ERROR("Cannot migrate font path '", stored_font_path,
+                                    "'; preserving legacy index schema");
+                        }
+                      }
+                    }
                     n.font_size = json_find_float(nobj, "font_size", 0.0f);
-                    if(n.title.empty()) n.title = "Note";
-                    if(n.path.empty()) n.path = make_note_path(f.name, n.title);
+                    if(n.path.empty() && n.unresolved_stored_path.empty())
+                      n.path = make_note_path(f.name, n.title);
                     f.notes.push_back(std::move(n));
                   }
                 }
@@ -1288,7 +1395,22 @@ void App::load_state()
                       }
                       if(q2 >= img_arr.size()) break;
                       std::string img_path = json_unescape(img_arr.substr(q1 + 1, q2 - q1 - 1));
-                      if(!img_path.empty()) f.images.push_back(std::move(img_path));
+                      if(!img_path.empty())
+                      {
+                        if(auto resolved_image = resolve_project_owned_path(
+                               config_, img_path, index_schema_version_, notes_top_level))
+                        {
+                          f.images.push_back(resolved_image->string());
+                          paths_migrated = paths_migrated || index_schema_version_ < 2;
+                        }
+                        else
+                        {
+                          f.unresolved_stored_images.push_back(std::move(img_path));
+                          path_migration_failed = true;
+                          LOG_ERROR("Cannot migrate image path in folder '", f.name,
+                                    "'; preserving legacy index schema");
+                        }
+                      }
                       pos = q2 + 1;
                     }
                   }
@@ -1326,6 +1448,18 @@ void App::load_state()
     }
   }
 
+  if(path_migration_failed)
+  {
+    index_schema_version_ = 1;
+    index_paths_portable_ = false;
+  }
+  else if(index_schema_version_ < 2)
+  {
+    index_schema_version_ = 2;
+    index_paths_portable_ = true;
+    paths_migrated = true;
+  }
+
   sync_project_files();
   ensure_default_index();
 
@@ -1346,7 +1480,7 @@ void App::load_state()
   load_drawings_state();
   load_note_clipboard();
   load_note_content_for_active();
-  if(uuid_migrated) save_index();
+  if(uuid_migrated || paths_migrated) save_index();
   load_profiles();
 }
 
@@ -1415,12 +1549,52 @@ void App::save_index()
 {
   sync_active_folder_settings();
 
+  const std::string notes_top_level = project_notes_top_level(config_);
+  auto stored_path = [&](const std::string &runtime_path,
+                         std::string_view expected_top_level,
+                         const std::string &folder_name = {}) -> std::optional<std::string> {
+    if(runtime_path.empty()) return std::string{};
+    if(index_schema_version_ < 2) return runtime_path;
+
+    std::filesystem::path candidate(runtime_path);
+    if(candidate.is_relative() && !folder_name.empty())
+      candidate = config_.dataPath / folder_name / candidate;
+    return portable_project_path(config_, candidate, expected_top_level);
+  };
+
+  for(const auto &folder : folders_)
+  {
+    for(const auto &note : folder.notes)
+    {
+      if(note.unresolved_stored_path.empty() && !stored_path(note.path, notes_top_level))
+      {
+        LOG_ERROR("Refusing to save non-portable note path: ", note.path);
+        return;
+      }
+      if(note.unresolved_stored_font_path.empty() && !note.font_path.empty() &&
+         !stored_path(note.font_path, notes_top_level, folder.name))
+      {
+        LOG_ERROR("Refusing to save non-portable font path: ", note.font_path);
+        return;
+      }
+    }
+    for(const auto &image : folder.images)
+    {
+      if(!stored_path(image, notes_top_level))
+      {
+        LOG_ERROR("Refusing to save non-portable image path: ", image);
+        return;
+      }
+    }
+  }
+
   std::filesystem::path tmp = index_file_;
   tmp += ".tmp";
   std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
 
   out << "{\n";
+  out << "  \"schemaVersion\": " << index_schema_version_ << ",\n";
   out << "  \"active_folder\": " << active_folder_idx_ << ",\n";
   out << "  \"active_note\": " << active_note_idx_ << ",\n";
   out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
@@ -1443,9 +1617,12 @@ void App::save_index()
     for(size_t ni = 0; ni < f.notes.size(); ++ni)
     {
       const auto &n = f.notes[ni];
+      const std::string persisted_note_path = n.unresolved_stored_path.empty()
+                                                  ? *stored_path(n.path, notes_top_level)
+                                                  : n.unresolved_stored_path;
       out << "        {\"id\": \"" << json_escape(n.id)
           << "\", \"title\": \"" << json_escape(n.title)
-          << "\", \"path\": \"" << json_escape(n.path)
+          << "\", \"path\": \"" << json_escape(persisted_note_path)
           << "\", \"x\": " << (int)std::lround(n.pos_x)
           << ", \"y\": " << (int)std::lround(n.pos_y)
           << ", \"w\": " << (int)std::lround(n.width)
@@ -1458,8 +1635,11 @@ void App::save_index()
           << ", \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_r)) * 255.0f)
           << ", \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_g)) * 255.0f)
           << ", \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_b)) * 255.0f);
-      if(!n.font_path.empty())
-        out << ", \"font_path\": \"" << json_escape(n.font_path) << "\"";
+      if(!n.unresolved_stored_font_path.empty())
+        out << ", \"font_path\": \"" << json_escape(n.unresolved_stored_font_path) << "\"";
+      else if(!n.font_path.empty())
+        out << ", \"font_path\": \""
+            << json_escape(*stored_path(n.font_path, notes_top_level, f.name)) << "\"";
       if(n.font_size > 0.0f)
         out << ", \"font_size\": " << n.font_size;
       out << "}";
@@ -1468,10 +1648,18 @@ void App::save_index()
     }
     out << "      ],\n";
     out << "      \"images\": [";
-    for(size_t ii = 0; ii < f.images.size(); ++ii)
+    bool first_image = true;
+    for(const auto &image : f.images)
     {
-      if(ii > 0) out << ", ";
-      out << "\"" << json_escape(f.images[ii]) << "\"";
+      if(!first_image) out << ", ";
+      out << "\"" << json_escape(*stored_path(image, notes_top_level)) << "\"";
+      first_image = false;
+    }
+    for(const auto &unresolved_image : f.unresolved_stored_images)
+    {
+      if(!first_image) out << ", ";
+      out << "\"" << json_escape(unresolved_image) << "\"";
+      first_image = false;
     }
     out << "]\n";
     out << "    }";
@@ -2031,27 +2219,35 @@ bool App::sync_project_files()
   std::error_code ec;
 
   // ---- 1. Remove stale notes whose files no longer exist on disk ----
-  for(auto &f : folders_)
+  // An unresolved legacy path must remain in metadata until the user can
+  // restore or relocate its target; otherwise opening a moved project would
+  // silently discard its UUID and layout association.
+  if(index_paths_portable_)
   {
-    const size_t before = f.notes.size();
-    f.notes.erase(
-        std::remove_if(f.notes.begin(), f.notes.end(), [&](const NoteMeta &n) {
-          return !n.path.empty() && !fs::exists(fs::path(n.path), ec);
-        }),
-        f.notes.end());
-    if(f.notes.size() != before) changed = true;
-  }
+    for(auto &f : folders_)
+    {
+      const size_t before = f.notes.size();
+      f.notes.erase(
+          std::remove_if(f.notes.begin(), f.notes.end(), [&](const NoteMeta &n) {
+            std::error_code exists_error;
+            return !n.path.empty() && !fs::exists(fs::path(n.path), exists_error);
+          }),
+          f.notes.end());
+      if(f.notes.size() != before) changed = true;
+    }
 
-  // ---- 2. Remove stale image paths whose files no longer exist on disk ----
-  for(auto &f : folders_)
-  {
-    const size_t before = f.images.size();
-    f.images.erase(
-        std::remove_if(f.images.begin(), f.images.end(), [&](const std::string &img) {
-          return !img.empty() && !fs::exists(fs::path(img), ec);
-        }),
-        f.images.end());
-    if(f.images.size() != before) changed = true;
+    // ---- 2. Remove stale image paths whose files no longer exist on disk ----
+    for(auto &f : folders_)
+    {
+      const size_t before = f.images.size();
+      f.images.erase(
+          std::remove_if(f.images.begin(), f.images.end(), [&](const std::string &img) {
+            std::error_code exists_error;
+            return !img.empty() && !fs::exists(fs::path(img), exists_error);
+          }),
+          f.images.end());
+      if(f.images.size() != before) changed = true;
+    }
   }
 
   // ---- 3. Build sets of already-tracked paths ----
@@ -2214,6 +2410,15 @@ void App::load_note_content_for_active()
   const NoteMeta &n = folders_[(size_t)active_folder_idx_].notes[(size_t)active_note_idx_];
   state_file_path_ = n.path;
   note_title_ = n.title;
+  if(!n.unresolved_stored_path.empty())
+  {
+    state_file_path_.clear();
+    markdown_text_.clear();
+    discard_pending_text_history();
+    request_undo_edit_ = false;
+    request_redo_edit_ = false;
+    return;
+  }
 
   if(std::filesystem::exists(state_file_path_))
   {
@@ -8454,11 +8659,7 @@ __CURSOR__)MD",
           const char *font_abs = static_cast<const char *>(payload->Data);
           if(font_abs)
           {
-            std::error_code ec;
-            std::filesystem::path rel = std::filesystem::relative(
-                std::filesystem::path(font_abs),
-                config_.dataPath / f.name, ec);
-            n.font_path = (!ec && !rel.empty()) ? rel.generic_string() : std::string(font_abs);
+            n.font_path = std::filesystem::path(font_abs).lexically_normal().string();
             save_index();
             flash_mark_note(n.path, ImVec4(0.35f, 0.55f, 0.85f, 1.0f));
           }

@@ -3,6 +3,7 @@
 #include "markdown_sections.hpp"
 #include "markdown_view.hpp"
 #include "markdown_widgets.hpp"
+#include "project_paths.hpp"
 #include "mermaid.hpp"
 #include "mermaid_diagrams.hpp"
 #include "string_utils.hpp"
@@ -16,6 +17,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -447,6 +449,9 @@ struct FilterDialogState
 };
 
 std::string g_preview_document_path;
+std::string g_preview_document_key;
+std::filesystem::path g_preview_project_root;
+std::string g_preview_notes_top_level = "notes";
 Json g_preview_state_json;
 bool g_preview_state_loaded = false;
 bool g_preview_state_dirty = false;
@@ -668,9 +673,27 @@ void render_link_hover_preview_popup()
   g_rendering_hover_preview = false;
 }
 
+std::string portable_document_key(std::string_view document_path)
+{
+  if(document_path.empty()) return "__active_note__";
+  if(g_preview_project_root.empty()) return std::string(document_path);
+
+  notepp::project_paths::ProjectPaths paths(g_preview_project_root);
+  const std::filesystem::path path{std::string(document_path)};
+  if(path.is_absolute())
+  {
+    if(auto key = paths.stable_key(path)) return *key;
+  }
+  else if(auto decoded = paths.decode(document_path))
+  {
+    if(auto key = paths.stable_key(*decoded)) return *key;
+  }
+  return std::string(document_path);
+}
+
 std::string current_document_key()
 {
-  return g_preview_document_path.empty() ? std::string("__active_note__") : g_preview_document_path;
+  return g_preview_document_key.empty() ? std::string("__active_note__") : g_preview_document_key;
 }
 
 void ensure_preview_state_loaded()
@@ -695,6 +718,51 @@ void ensure_preview_state_loaded()
   if(!g_preview_state_json.is_object()) g_preview_state_json = Json::object();
   if(!g_preview_state_json.contains("documents") || !g_preview_state_json["documents"].is_object())
     g_preview_state_json["documents"] = Json::object();
+
+  if(!g_preview_project_root.empty())
+  {
+    Json portable_documents = Json::object();
+    Json legacy_documents = g_preview_state_json.value("legacyDocuments", Json::object());
+    if(!legacy_documents.is_object()) legacy_documents = Json::object();
+    bool migrated = false;
+    notepp::project_paths::ProjectPaths paths(g_preview_project_root);
+    for(auto &[key, value] : g_preview_state_json["documents"].items())
+    {
+      if(key == "__active_note__")
+      {
+        portable_documents[key] = value;
+        continue;
+      }
+
+      std::optional<std::string> portable_key;
+      if(auto decoded = paths.decode(key))
+      {
+        if(auto stable = paths.stable_key(*decoded)) portable_key = *stable;
+      }
+      if(!portable_key)
+      {
+        if(auto legacy = paths.migrate_legacy(key, g_preview_notes_top_level))
+          portable_key = legacy->stored_path;
+      }
+
+      if(portable_key)
+      {
+        portable_documents[*portable_key] = value;
+        migrated = migrated || *portable_key != key;
+      }
+      else
+      {
+        legacy_documents[key] = value;
+        migrated = true;
+      }
+    }
+    if(migrated)
+    {
+      g_preview_state_json["documents"] = std::move(portable_documents);
+      g_preview_state_json["legacyDocuments"] = std::move(legacy_documents);
+      g_preview_state_dirty = true;
+    }
+  }
 }
 
 std::string first_non_empty_filter(const Json &arr)
@@ -830,7 +898,7 @@ void save_preview_state_if_dirty()
 
 bool set_all_preview_headers_open_impl(std::string_view document_path, std::string_view markdown, bool open)
 {
-  const std::string doc_key(document_path);
+  const std::string doc_key = portable_document_key(document_path);
   if(doc_key.empty()) return false;
 
   bool changed = false;
@@ -866,7 +934,7 @@ bool set_all_preview_headers_open_impl(std::string_view document_path, std::stri
 PreviewHeaderStateSummary summarize_preview_header_states_impl(std::string_view document_path, std::string_view markdown)
 {
   PreviewHeaderStateSummary summary;
-  const std::string doc_key(document_path);
+  const std::string doc_key = portable_document_key(document_path);
   if(doc_key.empty()) return summary;
 
   size_t pos = 0;
@@ -1760,6 +1828,7 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
 void set_preview_document_path(std::string_view path)
 {
   g_preview_document_path.assign(path.data(), path.size());
+  g_preview_document_key = portable_document_key(path);
   MarkdownView::set_document_path(path);
   MarkdownWidgets::set_widget_document_path(std::filesystem::path(path));
 }
@@ -1767,6 +1836,17 @@ void set_preview_document_path(std::string_view path)
 void set_preview_state_path(const std::filesystem::path &path)
 {
   g_preview_state_file = path.string();
+  g_preview_project_root = path.parent_path().parent_path();
+  std::error_code path_error;
+  if(std::filesystem::is_directory(g_preview_project_root / "notes", path_error) && !path_error)
+    g_preview_notes_top_level = "notes";
+  else
+    g_preview_notes_top_level = "data";
+  g_preview_state_json = Json::object();
+  g_preview_state_loaded = false;
+  g_preview_state_dirty = false;
+  g_table_state_cache.clear();
+  g_preview_document_key = portable_document_key(g_preview_document_path);
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)

@@ -12,6 +12,10 @@ struct NoteMeta
   std::string title;
   std::string path;
   std::string font_path;
+  // Non-empty only when a legacy/invalid stored path could not be resolved.
+  // It is retained for non-destructive migration but never used for I/O.
+  std::string unresolved_stored_path;
+  std::string unresolved_stored_font_path;
   float font_size = 0.0f;
   bool use_custom_color = false;
   float color_r = 0.0f;

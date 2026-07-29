@@ -20,6 +20,7 @@ struct SDL_Window;
 struct AppConfig
 {
   std::filesystem::path assetsPath;
+  std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
 };
@@ -224,6 +225,8 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
+  int index_schema_version_ = 2;
+  bool index_paths_portable_ = true;
   NoteHistory::HistoryManager history_;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;
 
