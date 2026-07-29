@@ -8,6 +8,7 @@
 # owns its own `CMakeLists.txt`, public header `inc/<name>.hpp`, and
 # optional `tests/` directory.
 
+add_subdirectory(atomic_file)
 add_subdirectory(json_io)
 add_subdirectory(log)
 add_subdirectory(logger)
