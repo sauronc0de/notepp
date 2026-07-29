@@ -226,7 +226,7 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
-  bool last_save_succeeded_ = true;
+  bool last_save_succeeded_ = false;
   int index_schema_version_ = 2;
   bool index_paths_portable_ = true;
   NoteHistory::HistoryManager history_;

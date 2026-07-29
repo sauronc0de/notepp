@@ -35,8 +35,8 @@ namespace MarkdownWidgets
 static std::filesystem::path g_widget_document_path;
 static TerminalCommandHandler g_terminal_command_handler;
 static atomic_file::SnapshotStore &g_widget_files = atomic_file::shared_snapshot_store();
+static atomic_file::PersistenceGuard g_widget_persistence_guard;
 static std::unordered_map<std::string, std::string> g_widget_persistence_errors;
-static std::unordered_map<std::string, std::string> g_widget_suppressed_content;
 namespace
 {
 void reset_widget_caches();
@@ -47,9 +47,18 @@ void set_widget_document_path(std::filesystem::path path)
   g_widget_document_path = std::move(path);
 }
 
-void notify_document_moved(const std::filesystem::path &,
-                           const std::filesystem::path &)
+void notify_document_moved(const std::filesystem::path &from,
+                           const std::filesystem::path &to)
 {
+  atomic_file::move_path_value(g_widget_persistence_errors, from, to);
+  g_widget_persistence_guard.moved(from, to);
+  reset_widget_caches();
+}
+
+void notify_document_saved(const std::filesystem::path &path)
+{
+  g_widget_persistence_errors.erase(path.lexically_normal().generic_string());
+  g_widget_persistence_guard.forget(path);
   reset_widget_caches();
 }
 
@@ -72,7 +81,7 @@ std::string last_persistence_error()
 void reset_persistence_state()
 {
   g_widget_persistence_errors.clear();
-  g_widget_suppressed_content.clear();
+  g_widget_persistence_guard.clear();
   reset_widget_caches();
 }
 
@@ -5725,7 +5734,7 @@ static std::unordered_map<std::string, GlobalsFileCacheEntry> g_globals_file_cac
 
 static std::string read_globals_file(const std::filesystem::path &path)
 {
-  const std::string key = path.string();
+  const std::string key = path.lexically_normal().generic_string();
   std::error_code ec;
   const auto mtime = std::filesystem::last_write_time(path, ec);
   if(ec) return {};
@@ -5736,13 +5745,14 @@ static std::string read_globals_file(const std::filesystem::path &path)
   }
 
   const auto loaded = g_widget_files.load(path);
+  g_widget_persistence_guard.record_read(path, loaded);
   if(!loaded || !loaded.snapshot.existed)
   {
     if(!loaded) g_widget_persistence_errors[key] = loaded.message;
     return {};
   }
-  g_widget_persistence_errors.erase(key);
-  g_widget_suppressed_content.erase(key);
+  if(!g_widget_persistence_guard.has_preserved_stale(path))
+    g_widget_persistence_errors.erase(key);
   g_globals_file_cache[key] = {mtime, loaded.snapshot.content};
   return loaded.snapshot.content;
 }
@@ -5799,22 +5809,27 @@ static void apply_global_replacements_to_disk(
     }
 
     // Write back without overwriting an externally changed globals file.
-    const std::string key = std::filesystem::path(file_path).lexically_normal().generic_string();
-    if(const auto blocked = g_widget_suppressed_content.find(key);
-       blocked != g_widget_suppressed_content.end() && blocked->second == content)
+    const std::filesystem::path globals_path(file_path);
+    const std::string key = globals_path.lexically_normal().generic_string();
+    if(!g_widget_persistence_guard.may_write(globals_path))
+    {
+      g_widget_persistence_errors[key] =
+          "canonical file was not read successfully: " +
+          g_widget_persistence_guard.read_error(globals_path);
       continue;
-    const auto result = g_widget_files.save(file_path, content);
+    }
+    if(g_widget_persistence_guard.suppresses(globals_path, content)) continue;
+    const auto result = g_widget_files.save(globals_path, content);
+    g_widget_persistence_guard.record_save(globals_path, content, result);
     if(!result)
     {
       std::string error = result.message;
       if(!result.recovery_path.empty())
         error += " Recovery: " + result.recovery_path.generic_string();
       g_widget_persistence_errors[key] = std::move(error);
-      g_widget_suppressed_content[key] = content;
       continue;
     }
     g_widget_persistence_errors.erase(key);
-    g_widget_suppressed_content.erase(key);
 
     // Update the in-memory file cache with the new content so subsequent
     // reads in the same frame see the updated values without a false mtime miss

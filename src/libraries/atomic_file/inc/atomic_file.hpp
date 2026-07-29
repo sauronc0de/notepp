@@ -94,6 +94,37 @@ public:
 
 private:
   std::unordered_map<std::string, Snapshot> snapshots_;
+  std::unordered_map<std::string, std::string> read_errors_;
+};
+
+// Moves a normalized path-keyed value without retaining stale destination
+// state. Used by persistence surfaces when a project file is renamed.
+void move_path_value(std::unordered_map<std::string, std::string> &values,
+                     const std::filesystem::path &from,
+                     const std::filesystem::path &to);
+
+// Tracks read failures and stale-save suppression independently of snapshots.
+// Plain I/O failures are always retryable. Only a stale save whose desired
+// bytes were successfully preserved may suppress an identical retry.
+class PersistenceGuard
+{
+public:
+  void record_read(const std::filesystem::path &path, const ReadResult &result);
+  bool may_write(const std::filesystem::path &path) const;
+  std::string read_error(const std::filesystem::path &path) const;
+
+  bool has_preserved_stale(const std::filesystem::path &path) const;
+  bool suppresses(const std::filesystem::path &path, std::string_view content) const;
+  void record_save(const std::filesystem::path &path, std::string_view content,
+                   const SaveResult &result);
+
+  void moved(const std::filesystem::path &from, const std::filesystem::path &to);
+  void forget(const std::filesystem::path &path);
+  void clear() noexcept;
+
+private:
+  std::unordered_map<std::string, std::string> read_errors_;
+  std::unordered_map<std::string, std::string> preserved_stale_content_;
 };
 
 // One registry is shared by all project-content writers in the process so a

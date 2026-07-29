@@ -396,28 +396,43 @@ using Json = nlohmann::json;
 
 static std::string g_preview_state_file = DATA_PATH "/markdown_preview_state.json";
 static atomic_file::SnapshotStore &g_preview_files = atomic_file::shared_snapshot_store();
+static atomic_file::PersistenceGuard g_preview_persistence_guard;
 static std::unordered_map<std::string, std::string> g_preview_persistence_errors;
-static std::unordered_map<std::string, std::string> g_preview_suppressed_content;
+
+void record_preview_read(const std::filesystem::path &path,
+                         const atomic_file::ReadResult &result)
+{
+  g_preview_persistence_guard.record_read(path, result);
+  const std::string key = path.lexically_normal().generic_string();
+  if(result && !g_preview_persistence_guard.has_preserved_stale(path))
+    g_preview_persistence_errors.erase(key);
+  else if(!result)
+    g_preview_persistence_errors[key] = result.message;
+}
 
 bool save_preview_file(const std::filesystem::path &path, std::string_view content)
 {
   const std::string key = path.lexically_normal().generic_string();
-  if(const auto blocked = g_preview_suppressed_content.find(key);
-     blocked != g_preview_suppressed_content.end() && blocked->second == content)
+  if(!g_preview_persistence_guard.may_write(path))
+  {
+    g_preview_persistence_errors[key] =
+        "canonical file was not read successfully: " +
+        g_preview_persistence_guard.read_error(path);
     return false;
+  }
+  if(g_preview_persistence_guard.suppresses(path, content)) return false;
 
   const auto result = g_preview_files.save(path, content);
+  g_preview_persistence_guard.record_save(path, content, result);
   if(result)
   {
     g_preview_persistence_errors.erase(key);
-    g_preview_suppressed_content.erase(key);
     return true;
   }
   std::string error = "cannot save '" + path.generic_string() + "': " + result.message;
   if(!result.recovery_path.empty())
     error += " Recovery: " + result.recovery_path.generic_string();
   g_preview_persistence_errors[key] = std::move(error);
-  g_preview_suppressed_content[key] = std::string(content);
   return false;
 }
 
@@ -550,6 +565,7 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
   if(preview.section_start > preview.section_end) return false;
 
   const auto loaded = g_preview_files.load(preview.path);
+  record_preview_read(preview.path, loaded);
   const std::string preview_key = std::filesystem::path(preview.path).lexically_normal().generic_string();
   if(!loaded || !loaded.snapshot.existed)
   {
@@ -557,7 +573,6 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
     return false;
   }
   g_preview_persistence_errors.erase(preview_key);
-  g_preview_suppressed_content.erase(preview_key);
   const std::string &file_content = loaded.snapshot.content;
   if(preview.section_end > file_content.size()) return false;
 
@@ -732,10 +747,15 @@ void ensure_preview_state_loaded()
   g_preview_state_loaded = true;
 
   g_preview_state_json = Json::object();
+  g_preview_state_json["documents"] = Json::object();
   const auto loaded = g_preview_files.load(g_preview_state_file);
+  record_preview_read(g_preview_state_file, loaded);
   if(!loaded)
-    g_preview_persistence_errors[g_preview_state_file] = loaded.message;
-  else if(loaded.snapshot.existed)
+  {
+    g_preview_state_loaded = false;
+    return;
+  }
+  if(loaded.snapshot.existed)
   {
     g_preview_state_json = Json::parse(loaded.snapshot.content, nullptr, false);
     if(g_preview_state_json.is_discarded())
@@ -1886,38 +1906,23 @@ void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to)
 {
   MarkdownWidgets::notify_document_moved(from, to);
-  const std::string from_key = from.lexically_normal().generic_string();
-  const std::string to_key = to.lexically_normal().generic_string();
-  if(auto error = g_preview_persistence_errors.extract(from_key); !error.empty())
-  {
-    error.key() = to_key;
-    g_preview_persistence_errors.insert(std::move(error));
-  }
-  if(auto blocked = g_preview_suppressed_content.extract(from_key); !blocked.empty())
-  {
-    blocked.key() = to_key;
-    g_preview_suppressed_content.insert(std::move(blocked));
-  }
+  atomic_file::move_path_value(g_preview_persistence_errors, from, to);
+  g_preview_persistence_guard.moved(from, to);
 }
 
 void notify_document_saved(const std::filesystem::path &path)
 {
+  MarkdownWidgets::notify_document_saved(path);
+  g_preview_persistence_guard.forget(path);
   const auto loaded = g_preview_files.load(path);
-  const std::string key = path.lexically_normal().generic_string();
-  if(!loaded)
-    g_preview_persistence_errors[key] = loaded.message;
-  else
-  {
-    g_preview_persistence_errors.erase(key);
-    g_preview_suppressed_content.erase(key);
-  }
+  record_preview_read(path, loaded);
 }
 
 void set_preview_state_path(const std::filesystem::path &path)
 {
   g_preview_files.clear();
+  g_preview_persistence_guard.clear();
   g_preview_persistence_errors.clear();
-  g_preview_suppressed_content.clear();
   g_preview_state_file = path.string();
   g_preview_project_root = path.parent_path().parent_path();
   g_preview_project_paths.emplace(g_preview_project_root);

@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -364,6 +365,36 @@ void test_snapshot_store_retains_expected_state_after_io_failure()
   expect_equal(read_direct(target), "local", "retry publishes retained dirty content");
 }
 
+void test_snapshot_store_requires_reload_after_read_failure()
+{
+  TempDirectory temp;
+  const fs::path target = temp.path() / "state.json";
+  fs::create_directory(target);
+
+  af::SnapshotStore store;
+  expect(!store.load(target), "directory produces an initial read failure");
+  fs::remove(target);
+  write_direct(target, "external");
+
+  const af::SaveResult blocked = store.save(target, "derived");
+  expect(blocked.disposition == af::SaveDisposition::io_error,
+         "save remains blocked until an explicit successful reload");
+  expect_equal(read_direct(target), "external", "blocked save preserves unseen canonical bytes");
+
+  expect(static_cast<bool>(store.load(target)), "explicit reload clears read guard");
+  expect(static_cast<bool>(store.save(target, "derived")), "save succeeds after explicit reload");
+  expect_equal(read_direct(target), "derived", "post-reload save publishes desired bytes");
+
+  fs::remove(target);
+  fs::create_directory(target);
+  expect(!store.load(target), "reload failure blocks a previously tracked snapshot");
+  fs::remove(target);
+  write_direct(target, "new external");
+  const af::ReadResult retried = store.ensure_loaded(target);
+  expect(static_cast<bool>(retried), "ensure_loaded retries after a recorded read failure");
+  expect_equal(retried.snapshot.content, "new external", "retry reads current canonical bytes");
+}
+
 void test_shared_snapshot_store_coordinates_writers()
 {
   TempDirectory temp;
@@ -425,6 +456,80 @@ void test_save_batch_aggregates_failures()
   expect(batch.canonical_saves_succeeded(), "cleared batch starts successful");
 }
 
+void test_persistence_guard_retries_io_failures()
+{
+  af::PersistenceGuard guard;
+  const fs::path path = "note.md";
+  af::SaveResult failed;
+  failed.disposition = af::SaveDisposition::io_error;
+  failed.message = "temporary failure";
+
+  guard.record_save(path, "local", failed);
+  expect(!guard.suppresses(path, "local"), "plain I/O failure remains retryable");
+
+  af::SaveResult stale;
+  stale.disposition = af::SaveDisposition::stale_preserved;
+  stale.recovery_path = "note.notepp-local-conflict.md";
+  guard.record_save(path, "local", stale);
+  expect(guard.has_preserved_stale(path), "guard retains successfully preserved stale state");
+  expect(guard.suppresses(path, "local"), "preserved stale bytes suppress identical retry");
+  expect(!guard.suppresses(path, "changed"), "changed bytes remain retryable");
+
+  af::ReadResult reloaded;
+  reloaded.success = true;
+  reloaded.snapshot = {true, "external"};
+  guard.record_read(path, reloaded);
+  expect(guard.has_preserved_stale(path), "ordinary reload does not forget preserved local bytes");
+}
+
+void test_persistence_guard_blocks_after_read_failure_until_reload()
+{
+  af::PersistenceGuard guard;
+  const fs::path path = "state.json";
+  af::ReadResult failed;
+  failed.message = "permission denied";
+  guard.record_read(path, failed);
+  expect(!guard.may_write(path), "failed canonical read blocks derived write");
+  expect_equal(guard.read_error(path), "permission denied", "read failure is retained");
+
+  af::ReadResult loaded;
+  loaded.success = true;
+  loaded.snapshot = {true, "canonical"};
+  guard.record_read(path, loaded);
+  expect(guard.may_write(path), "successful reload unblocks derived write");
+  expect(guard.read_error(path).empty(), "successful reload clears read error");
+}
+
+void test_persistence_guard_moves_path_state()
+{
+  std::unordered_map<std::string, std::string> errors{{"old.md", "old error"},
+                                                      {"new.md", "stale error"}};
+  af::move_path_value(errors, "old.md", "new.md");
+  expect(!errors.contains("old.md"), "path-value move clears old key");
+  expect_equal(errors["new.md"], "old error", "path-value move replaces destination state");
+
+  af::PersistenceGuard guard;
+  const fs::path from = "old.md";
+  const fs::path to = "new.md";
+  af::ReadResult failed;
+  failed.message = "read failed";
+  guard.record_read(from, failed);
+
+  af::SaveResult stale;
+  stale.disposition = af::SaveDisposition::stale_preserved;
+  stale.recovery_path = "old.notepp-local-conflict.md";
+  guard.record_save(from, "local", stale);
+  guard.moved(from, to);
+
+  expect(guard.may_write(from), "move clears old read guard key");
+  expect(!guard.may_write(to), "move transfers read guard to new key");
+  expect(guard.suppresses(to, "local"), "move transfers stale suppression to new key");
+
+  guard.forget(to);
+  expect(guard.may_write(to), "forget clears moved read guard");
+  expect(!guard.suppresses(to, "local"), "forget clears moved suppression");
+}
+
 void test_io_errors_are_structured_and_clean()
 {
   TempDirectory temp;
@@ -458,9 +563,13 @@ int main()
   test_snapshot_store_advances_only_after_success();
   test_snapshot_store_follows_renamed_file();
   test_snapshot_store_retains_expected_state_after_io_failure();
+  test_snapshot_store_requires_reload_after_read_failure();
   test_shared_snapshot_store_coordinates_writers();
   test_move_no_replace_preserves_collision();
   test_save_batch_aggregates_failures();
+  test_persistence_guard_retries_io_failures();
+  test_persistence_guard_blocks_after_read_failure_until_reload();
+  test_persistence_guard_moves_path_state();
   test_io_errors_are_structured_and_clean();
 
   if(failures != 0)

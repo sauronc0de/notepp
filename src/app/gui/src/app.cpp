@@ -444,9 +444,9 @@ std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
 
 atomic_file::SnapshotStore &g_project_files = atomic_file::shared_snapshot_store();
+atomic_file::PersistenceGuard g_project_persistence_guard;
 atomic_file::SaveBatch g_project_save_batch;
 std::unordered_map<std::string, std::string> g_unresolved_persistence_errors;
-std::unordered_map<std::string, std::string> g_suppressed_save_content;
 std::string g_last_persistence_error;
 
 bool record_project_save(const std::filesystem::path &path,
@@ -457,7 +457,6 @@ bool record_project_save(const std::filesystem::path &path,
   if(result)
   {
     g_unresolved_persistence_errors.erase(key);
-    g_suppressed_save_content.erase(key);
     if(!result.message.empty())
     {
       LOG_WARNING("Saved '", path.generic_string(), "' with warning: ", result.message);
@@ -477,18 +476,8 @@ void track_project_file_move(const std::filesystem::path &from,
                              const std::filesystem::path &to)
 {
   g_project_files.moved(from, to);
-  const std::string from_key = from.lexically_normal().generic_string();
-  const std::string to_key = to.lexically_normal().generic_string();
-  if(auto error = g_unresolved_persistence_errors.extract(from_key); !error.empty())
-  {
-    error.key() = to_key;
-    g_unresolved_persistence_errors.insert(std::move(error));
-  }
-  if(auto blocked = g_suppressed_save_content.extract(from_key); !blocked.empty())
-  {
-    blocked.key() = to_key;
-    g_suppressed_save_content.insert(std::move(blocked));
-  }
+  atomic_file::move_path_value(g_unresolved_persistence_errors, from, to);
+  g_project_persistence_guard.moved(from, to);
   MarkdownSupport::notify_document_moved(from, to);
 }
 
@@ -499,6 +488,17 @@ bool record_project_save_error(const std::filesystem::path &path,
   result.disposition = atomic_file::SaveDisposition::io_error;
   result.message = std::move(message);
   return record_project_save(path, result);
+}
+
+void record_project_read(const std::filesystem::path &path,
+                         const atomic_file::ReadResult &result)
+{
+  g_project_persistence_guard.record_read(path, result);
+  const std::string key = path.lexically_normal().generic_string();
+  if(result && !g_project_persistence_guard.has_preserved_stale(path))
+    g_unresolved_persistence_errors.erase(key);
+  else if(!result)
+    g_unresolved_persistence_errors[key] = result.message;
 }
 
 #ifdef NOTEPP_DEBUG_UI
@@ -531,6 +531,7 @@ std::string read_text_file(const std::string &path)
   ++g_dbg_disk_reads;
 #endif
   const auto result = g_project_files.ensure_loaded(path);
+  record_project_read(path, result);
   if(!result)
   {
     LOG_ERROR(result.message);
@@ -542,16 +543,15 @@ std::string read_text_file(const std::string &path)
 bool save_project_text(const std::filesystem::path &path, std::string_view content)
 {
   if(path.empty()) return false;
-  const std::string key = path.lexically_normal().generic_string();
-  if(const auto blocked = g_suppressed_save_content.find(key);
-     blocked != g_suppressed_save_content.end() && blocked->second == content)
-    return false;
+  if(!g_project_persistence_guard.may_write(path))
+    return record_project_save_error(
+        path, "canonical file was not read successfully: " +
+                  g_project_persistence_guard.read_error(path));
+  if(g_project_persistence_guard.suppresses(path, content)) return false;
 
   const auto result = g_project_files.save(path, content);
-  const bool saved = record_project_save(path, result);
-  if(!saved)
-    g_suppressed_save_content[key] = std::string(content);
-  return saved;
+  g_project_persistence_guard.record_save(path, content, result);
+  return record_project_save(path, result);
 }
 
 bool write_text_file(const std::string &path, std::string_view content)
@@ -575,14 +575,13 @@ bool move_project_file(const std::filesystem::path &from,
 {
   if(from == to) return true;
   const auto loaded = g_project_files.ensure_loaded(from);
+  record_project_read(from, loaded);
   if(!loaded)
     return record_project_operation_error(from, loaded.message);
   const auto moved = atomic_file::move_no_replace(from, to);
   if(!moved)
     return record_project_operation_error(to, moved.message);
   track_project_file_move(from, to);
-  g_suppressed_save_content.erase(from.lexically_normal().generic_string());
-  g_suppressed_save_content.erase(to.lexically_normal().generic_string());
   return true;
 }
 
@@ -981,6 +980,7 @@ void load_drawings_state()
   g_drawings_legacy_checked.clear();
 
   const auto loaded = g_project_files.load(g_drawings_file);
+  record_project_read(g_drawings_file, loaded);
   if(!loaded)
   {
     LOG_ERROR(loaded.message);
@@ -1089,6 +1089,7 @@ void load_note_clipboard()
   g_copied_notes_batch.clear();
 
   const auto loaded = g_project_files.load(g_clipboard_file);
+  record_project_read(g_clipboard_file, loaded);
   if(!loaded)
   {
     LOG_ERROR(loaded.message);
@@ -1171,9 +1172,9 @@ App::App(AppConfig config)
     : config_(std::move(config))
 {
   g_project_files.clear();
+  g_project_persistence_guard.clear();
   g_project_save_batch.clear();
   g_unresolved_persistence_errors.clear();
-  g_suppressed_save_content.clear();
   g_last_persistence_error.clear();
   MarkdownWidgets::reset_persistence_state();
   std::filesystem::create_directories(config_.dataPath);
@@ -1231,9 +1232,9 @@ bool App::switch_project(const std::filesystem::path &new_root)
     return false;
   }
   g_project_files.clear();
+  g_project_persistence_guard.clear();
   g_project_save_batch.clear();
   g_unresolved_persistence_errors.clear();
-  g_suppressed_save_content.clear();
   g_last_persistence_error.clear();
   MarkdownWidgets::reset_persistence_state();
 
@@ -1281,6 +1282,7 @@ int App::run()
     init_imgui();
     load_state();
     const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
+    record_project_read(imgui_ini_file_, ini_snapshot);
     if(!ini_snapshot)
     {
       LOG_ERROR(ini_snapshot.message);
@@ -1362,6 +1364,7 @@ int App::run()
   catch(const std::exception &e)
   {
     LOG_ERROR("Fatal: ", e.what());
+    last_save_succeeded_ = false;
     shutdown();
     return 1;
   }
@@ -1474,6 +1477,7 @@ void App::load_state()
   index_paths_portable_ = true;
   index_source_document_.clear();
   const auto loaded_index = g_project_files.load(index_file_);
+  record_project_read(index_file_, loaded_index);
   if(!loaded_index)
   {
     LOG_ERROR(loaded_index.message);
@@ -1949,6 +1953,7 @@ void App::load_profiles()
   reduced_profile_id_.clear();
 
   const auto loaded_profiles = g_project_files.load(profiles_file_);
+  record_project_read(profiles_file_, loaded_profiles);
   if(!loaded_profiles)
   {
     LOG_ERROR(loaded_profiles.message);
@@ -2621,6 +2626,7 @@ bool App::sync_project_files()
         {
           note_content_cache_.invalidate(n.path);
           const auto refreshed = g_project_files.load(n.path);
+          record_project_read(n.path, refreshed);
           if(!refreshed)
           {
             LOG_ERROR(refreshed.message);
@@ -2647,6 +2653,7 @@ bool App::sync_project_files()
 const std::string &App::cached_note_text(const std::string &path)
 {
   const auto snapshot = g_project_files.ensure_loaded(path);
+  record_project_read(path, snapshot);
   if(!snapshot)
   {
     LOG_ERROR(snapshot.message);
@@ -2702,12 +2709,7 @@ void App::load_note_content_for_active()
   }
 
   const auto loaded_note = g_project_files.load(state_file_path_);
-  const std::string loaded_key = std::filesystem::path(state_file_path_).lexically_normal().generic_string();
-  if(loaded_note)
-  {
-    g_unresolved_persistence_errors.erase(loaded_key);
-    g_suppressed_save_content.erase(loaded_key);
-  }
+  record_project_read(state_file_path_, loaded_note);
   if(!loaded_note)
   {
     LOG_ERROR(loaded_note.message);
@@ -3223,7 +3225,11 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
   const bool previous_replay = history_replay_in_progress_;
   history_replay_in_progress_ = true;
 
-  write_text_file(std::string(note_path), text);
+  if(!write_text_file(std::string(note_path), text))
+  {
+    history_replay_in_progress_ = previous_replay;
+    return;
+  }
 
   folder_overview_mode_ = context.value("folder_overview", folder_overview_mode_);
   editing_mode_ = context.value("editing_mode", editing_mode_);

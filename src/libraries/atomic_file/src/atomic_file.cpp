@@ -680,15 +680,24 @@ MoveResult move_no_replace(const std::filesystem::path &from,
 
 ReadResult SnapshotStore::load(const std::filesystem::path &path) noexcept
 {
+  const std::string key = path.lexically_normal().generic_string();
   ReadResult result = read_text(path);
   if(result)
-    snapshots_[path.lexically_normal().generic_string()] = result.snapshot;
+  {
+    snapshots_[key] = result.snapshot;
+    read_errors_.erase(key);
+  }
+  else
+  {
+    read_errors_[key] = result.message;
+  }
   return result;
 }
 
 ReadResult SnapshotStore::ensure_loaded(const std::filesystem::path &path) noexcept
 {
   const std::string key = path.lexically_normal().generic_string();
+  if(read_errors_.contains(key)) return load(path);
   if(const auto found = snapshots_.find(key); found != snapshots_.end())
     return {true, found->second, {}};
   return load(path);
@@ -698,6 +707,15 @@ SaveResult SnapshotStore::save(const std::filesystem::path &path,
                                std::string_view desired) noexcept
 {
   const std::string key = path.lexically_normal().generic_string();
+  if(const auto read_error = read_errors_.find(key); read_error != read_errors_.end())
+  {
+    SaveResult failed;
+    failed.disposition = SaveDisposition::io_error;
+    failed.message = "canonical file must be reloaded after read failure: " +
+                     read_error->second;
+    return failed;
+  }
+
   auto found = snapshots_.find(key);
   if(found == snapshots_.end())
   {
@@ -720,7 +738,9 @@ SaveResult SnapshotStore::save(const std::filesystem::path &path,
 
 void SnapshotStore::expect_missing(const std::filesystem::path &path)
 {
-  snapshots_[path.lexically_normal().generic_string()] = Snapshot{};
+  const std::string key = path.lexically_normal().generic_string();
+  snapshots_[key] = Snapshot{};
+  read_errors_.erase(key);
 }
 
 void SnapshotStore::moved(const std::filesystem::path &from,
@@ -729,21 +749,130 @@ void SnapshotStore::moved(const std::filesystem::path &from,
   const std::string from_key = from.lexically_normal().generic_string();
   const std::string to_key = to.lexically_normal().generic_string();
   snapshots_.erase(to_key);
+  read_errors_.erase(to_key);
   if(auto node = snapshots_.extract(from_key); !node.empty())
   {
     node.key() = to_key;
     snapshots_.insert(std::move(node));
   }
+  if(auto error = read_errors_.extract(from_key); !error.empty())
+  {
+    error.key() = to_key;
+    read_errors_.insert(std::move(error));
+  }
 }
 
 void SnapshotStore::forget(const std::filesystem::path &path)
 {
-  snapshots_.erase(path.lexically_normal().generic_string());
+  const std::string key = path.lexically_normal().generic_string();
+  snapshots_.erase(key);
+  read_errors_.erase(key);
 }
 
 void SnapshotStore::clear() noexcept
 {
   snapshots_.clear();
+  read_errors_.clear();
+}
+
+namespace
+{
+std::string persistence_key(const std::filesystem::path &path)
+{
+  return path.lexically_normal().generic_string();
+}
+
+} // namespace
+
+void move_path_value(std::unordered_map<std::string, std::string> &values,
+                     const std::filesystem::path &from,
+                     const std::filesystem::path &to)
+{
+  const std::string from_key = persistence_key(from);
+  const std::string to_key = persistence_key(to);
+  values.erase(to_key);
+  if(auto node = values.extract(from_key); !node.empty())
+  {
+    node.key() = to_key;
+    values.insert(std::move(node));
+  }
+}
+
+void PersistenceGuard::record_read(const std::filesystem::path &path,
+                                   const ReadResult &result)
+{
+  const std::string key = persistence_key(path);
+  if(result)
+  {
+    read_errors_.erase(key);
+  }
+  else
+  {
+    read_errors_[key] = result.message;
+  }
+}
+
+bool PersistenceGuard::may_write(const std::filesystem::path &path) const
+{
+  return !read_errors_.contains(persistence_key(path));
+}
+
+std::string PersistenceGuard::read_error(const std::filesystem::path &path) const
+{
+  if(const auto found = read_errors_.find(persistence_key(path)); found != read_errors_.end())
+    return found->second;
+  return {};
+}
+
+bool PersistenceGuard::has_preserved_stale(const std::filesystem::path &path) const
+{
+  return preserved_stale_content_.contains(persistence_key(path));
+}
+
+bool PersistenceGuard::suppresses(const std::filesystem::path &path,
+                                  std::string_view content) const
+{
+  if(const auto found = preserved_stale_content_.find(persistence_key(path));
+     found != preserved_stale_content_.end())
+    return found->second == content;
+  return false;
+}
+
+void PersistenceGuard::record_save(const std::filesystem::path &path,
+                                   std::string_view content,
+                                   const SaveResult &result)
+{
+  const std::string key = persistence_key(path);
+  if(result)
+  {
+    read_errors_.erase(key);
+    preserved_stale_content_.erase(key);
+    return;
+  }
+
+  if(result.disposition == SaveDisposition::stale_preserved &&
+     !result.recovery_path.empty())
+    preserved_stale_content_[key] = std::string(content);
+}
+
+void PersistenceGuard::moved(const std::filesystem::path &from,
+                             const std::filesystem::path &to)
+{
+  move_path_value(read_errors_, from, to);
+  move_path_value(preserved_stale_content_, from, to);
+}
+
+void PersistenceGuard::forget(const std::filesystem::path &path)
+{
+  const std::string key = persistence_key(path);
+  read_errors_.erase(key);
+  preserved_stale_content_.erase(key);
+}
+
+void PersistenceGuard::clear() noexcept
+{
+  read_errors_.clear();
+  preserved_stale_content_.clear();
 }
 
 SnapshotStore &shared_snapshot_store() noexcept

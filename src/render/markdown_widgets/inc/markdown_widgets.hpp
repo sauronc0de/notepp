@@ -21,6 +21,7 @@ using TerminalCommandHandler = std::function<void(std::string_view)>;
 void set_widget_document_path(std::filesystem::path path);
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
+void notify_document_saved(const std::filesystem::path &path);
 void set_terminal_command_handler(TerminalCommandHandler handler);
 std::string last_persistence_error();
 void reset_persistence_state();
