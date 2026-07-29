@@ -33,6 +33,7 @@ int main(int, char **)
 
   AppConfig config;
   config.assetsPath = assetsPath;
+  config.appSettingsPath = notepp::project::get_config_file();
   config.projectRoot = projectRoot;
   config.dataPath = dataPath;
   config.configPath = configPath;

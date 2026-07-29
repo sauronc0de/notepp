@@ -137,6 +137,33 @@ void test_save_and_load_last_project_path()
   expect_eq_str(loaded->generic_string(), root.generic_string(), "loaded path matches");
 }
 
+void test_project_open_preserves_git_sync_setting()
+{
+  ScopedXdgConfig env;
+  const fs::path config = env.base() / "Notepp" / "config.json";
+  fs::create_directories(config.parent_path());
+  {
+    std::ofstream output(config);
+    output << "{\n"
+           << "  \"schemaVersion\": 2,\n"
+           << "  \"gitSyncEnabled\": true,\n"
+           << "  \"lastProjectPath\": null,\n"
+           << "  \"recentProjects\": []\n"
+           << "}\n";
+  }
+  const fs::path root = env.base() / "syncProject";
+  fs::create_directories(root);
+  (void)npp::create_or_open_project(root);
+
+  std::ifstream input(config);
+  const std::string content((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+  expect_true(content.find("\"gitSyncEnabled\": true") != std::string::npos,
+              "opening a project preserves the Git Sync toggle");
+  expect_true(content.find(root.generic_string()) != std::string::npos,
+              "opening a project updates the last project path");
+}
+
 void test_recent_projects_dedupe_and_cap()
 {
   ScopedXdgConfig env;
@@ -244,6 +271,7 @@ int main()
   test_create_or_open_project_creates_layout();
   test_existing_manifest_is_upgraded_compatibly();
   test_save_and_load_last_project_path();
+  test_project_open_preserves_git_sync_setting();
   test_recent_projects_dedupe_and_cap();
   test_save_last_project_path_does_not_throw_on_creation_failure();
   test_create_or_open_project_does_not_throw_on_creation_failure();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_settings.hpp"
 #include "emoji_picker.hpp"
 #include "note_history.hpp"
 #include "note_model.hpp"
@@ -20,6 +21,7 @@ struct SDL_Window;
 struct AppConfig
 {
   std::filesystem::path assetsPath;
+  std::filesystem::path appSettingsPath;
   std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
@@ -33,6 +35,10 @@ public:
 
 private:
   AppConfig config_;
+  notepp::app_settings::Store app_settings_store_;
+  bool git_sync_enabled_ = false;
+  std::string app_settings_error_;
+  bool poll_app_settings();
   void init_sdl_gl();
   void init_imgui();
   void load_state();

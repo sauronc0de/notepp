@@ -8,6 +8,7 @@
 # owns its own `CMakeLists.txt`, public header `inc/<name>.hpp`, and
 # optional `tests/` directory.
 
+add_subdirectory(app_settings)
 add_subdirectory(lang)
 add_subdirectory(markdown_images)
 add_subdirectory(markdown_sections)

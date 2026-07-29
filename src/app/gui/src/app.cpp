@@ -1179,8 +1179,20 @@ bool App::save_note_clipboard()
 }
 
 App::App(AppConfig config)
-    : config_(std::move(config))
+    : config_(std::move(config)),
+      app_settings_store_(config_.appSettingsPath)
 {
+  const auto app_settings = app_settings_store_.load();
+  if(app_settings)
+  {
+    git_sync_enabled_ = app_settings.settings.git_sync_enabled;
+  }
+  else
+  {
+    app_settings_error_ = app_settings.message;
+    LOG_ERROR("Cannot load Notepp app settings: ", app_settings_error_);
+  }
+
   g_project_files.clear();
   g_project_persistence_guard.clear();
   g_project_save_batch.clear();
@@ -1231,6 +1243,26 @@ App::App(AppConfig config)
   });
 
   Lang::init(config_.assetsPath / "languages");
+}
+
+bool App::poll_app_settings()
+{
+  const auto polled = app_settings_store_.poll();
+  if(!polled)
+  {
+    if(app_settings_error_ != polled.message)
+      LOG_ERROR("Cannot reload Notepp app settings: ", polled.message);
+    app_settings_error_ = polled.message;
+    return false;
+  }
+  app_settings_error_.clear();
+  if(!polled.changed) return false;
+
+  const bool toggle_changed = git_sync_enabled_ != polled.settings.git_sync_enabled;
+  git_sync_enabled_ = polled.settings.git_sync_enabled;
+  if(toggle_changed)
+    LOG_INFO("Git Sync setting reloaded: ", git_sync_enabled_ ? "enabled" : "disabled");
+  return toggle_changed;
 }
 
 #if USE_PORTABLE_PATHS
@@ -1496,7 +1528,7 @@ void App::load_state()
   {
     const std::string &doc = loaded_index.snapshot.content;
     index_source_document_ = doc;
-    index_schema_version_ = json_find_int(doc, "schemaVersion", 1);
+    index_schema_version_ = json_find_int(doc, "schema_version", 1);
     index_paths_portable_ = index_schema_version_ >= 2;
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
     active_note_idx_ = json_find_int(doc, "active_note", 0);
@@ -1883,7 +1915,7 @@ bool App::save_index()
   if(!source_root.is_object()) source_root = Json::object();
   Json root = Json::object();
 
-  root["schemaVersion"] = index_schema_version_;
+  root["schema_version"] = index_schema_version_;
   root["active_folder"] = active_folder_idx_;
   root["active_note"] = active_note_idx_;
   root["folder_view"] = folder_overview_mode_;
@@ -3623,6 +3655,7 @@ bool App::frame_begin()
   {
     if(event.type == kProjectFilesChangedEvent)
     {
+      if(poll_app_settings()) had_event = true;
       if(sync_project_files()) had_event = true;
       continue;
     }
@@ -5066,6 +5099,28 @@ void App::frame_ui()
   {
     if(ImGui::MenuItem(Lang::t("Reveal in File Explorer")))
       open_directory(config_.dataPath);
+    ImGui::Separator();
+    if(ImGui::MenuItem(Lang::t("Enable Git Sync"), nullptr, git_sync_enabled_))
+    {
+      const bool requested = !git_sync_enabled_;
+      const auto updated = app_settings_store_.set_git_sync_enabled(requested);
+      if(updated)
+      {
+        git_sync_enabled_ = updated.settings.git_sync_enabled;
+        app_settings_error_.clear();
+      }
+      else
+      {
+        app_settings_error_ = updated.message;
+        LOG_ERROR("Cannot save Git Sync setting: ", app_settings_error_);
+      }
+    }
+    if(!app_settings_error_.empty())
+    {
+      ImGui::PushTextWrapPos(420.0f);
+      ImGui::TextDisabled("%s: %s", Lang::t("Settings error"), app_settings_error_.c_str());
+      ImGui::PopTextWrapPos();
+    }
     ImGui::Separator();
 #if USE_PORTABLE_PATHS
     if(ImGui::MenuItem(Lang::t("Open project...")))

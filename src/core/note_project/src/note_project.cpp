@@ -1,12 +1,11 @@
 #include "note_project.hpp"
 
+#include "app_settings.hpp"
 #include "atomic_file.hpp"
 
 #include <array>
 #include <cstdio>
-#include <fstream>
 #include <random>
-#include <sstream>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -18,9 +17,6 @@
 
 #include "log.hpp"
 #include "nfd.hpp"
-#include "tiny_json.hpp"
-
-using TinyJson::json_escape;
 
 namespace fs = std::filesystem;
 
@@ -29,7 +25,6 @@ namespace notepp::project
 namespace
 {
 constexpr int kProjectSchemaVersion = 2;
-atomic_file::SnapshotStore g_settings_files;
 
 std::string generate_project_id()
 {
@@ -179,108 +174,40 @@ static fs::path get_recent_projects_file()
 
 void save_last_project_path(const fs::path &path)
 {
-  const auto configDir = get_appdata_dir();
-  std::error_code ec;
-  fs::create_directories(configDir, ec);
-  if(ec)
-  {
-    LOG_ERROR("Cannot create notepp config dir '", configDir.generic_string(), "': ", ec.message());
-    return;
-  }
-
-  std::ostringstream config_content;
-  config_content << "{\n";
-  config_content << "  \"lastProjectPath\": \"" << json_escape(path.generic_string()) << "\"\n";
-  config_content << "}\n";
-  const auto config_saved = g_settings_files.save(get_config_file(), config_content.str());
-  if(!config_saved)
-  {
-    LOG_ERROR("Cannot write notepp config file: ", config_saved.message);
-    return;
-  }
-
-  // Maintain the recent projects list (most recent first, max 10)
-  const auto recentFile = get_recent_projects_file();
-  const std::string pathStr = path.generic_string();
-  std::vector<std::string> lines;
-  const auto recent_loaded = g_settings_files.load(recentFile);
-  if(!recent_loaded)
-  {
-    LOG_ERROR("Cannot read recent projects before update: ", recent_loaded.message);
-    return;
-  }
-  std::istringstream recent_input(recent_loaded.snapshot.content);
-  std::string line;
-  while(std::getline(recent_input, line))
-    if(!line.empty() && line != pathStr)
-      lines.push_back(line);
-  lines.insert(lines.begin(), pathStr);
-  if(lines.size() > 10) lines.resize(10);
-
-  std::ostringstream recent_content;
-  for(const auto &l : lines)
-    recent_content << l << "\n";
-  const auto recent_saved = g_settings_files.save(recentFile, recent_content.str());
-  if(!recent_saved)
-  {
-    LOG_ERROR("Cannot write recent projects: ", recent_saved.message);
-  }
+  notepp::app_settings::Store store(get_config_file(), get_recent_projects_file());
+  const auto updated = store.record_project(path);
+  if(!updated)
+    LOG_ERROR("Cannot update Notepp app settings: ", updated.message);
 }
 
 std::vector<fs::path> load_recent_projects()
 {
-  const auto loaded = g_settings_files.load(get_recent_projects_file());
+  notepp::app_settings::Store store(get_config_file(), get_recent_projects_file());
+  const auto loaded = store.load();
   if(!loaded)
   {
-    LOG_ERROR(loaded.message);
+    LOG_ERROR("Cannot load Notepp app settings: ", loaded.message);
     return {};
   }
 
   std::vector<fs::path> result;
-  std::istringstream file(loaded.snapshot.content);
-  std::string line;
-  while(std::getline(file, line))
-  {
-    if(line.empty()) continue;
-    fs::path p(line);
-    if(fs::exists(p))
-      result.push_back(p);
-  }
+  for(const auto &path : loaded.settings.recent_projects)
+    if(fs::exists(path)) result.push_back(path);
   return result;
 }
 
 std::optional<fs::path> load_last_project_path()
 {
-  const auto configFile = get_config_file();
-
-  if(!fs::exists(configFile))
+  notepp::app_settings::Store store(get_config_file(), get_recent_projects_file());
+  const auto loaded = store.load();
+  if(!loaded)
+  {
+    LOG_ERROR("Cannot load Notepp app settings: ", loaded.message);
     return std::nullopt;
-
-  const auto loaded = g_settings_files.load(configFile);
-  if(!loaded || !loaded.snapshot.existed)
+  }
+  if(!loaded.settings.last_project_path || !fs::exists(*loaded.settings.last_project_path))
     return std::nullopt;
-
-  const std::string &content = loaded.snapshot.content;
-  const std::string key = "\"lastProjectPath\": \"";
-
-  auto start = content.find(key);
-
-  if(start == std::string::npos)
-    return std::nullopt;
-
-  start += key.size();
-
-  auto end = content.find("\"", start);
-
-  if(end == std::string::npos)
-    return std::nullopt;
-
-  fs::path result = content.substr(start, end - start);
-
-  if(!fs::exists(result))
-    return std::nullopt;
-
-  return result;
+  return loaded.settings.last_project_path;
 }
 
 std::optional<fs::path> select_project_folder()

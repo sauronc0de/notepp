@@ -20,6 +20,8 @@
         "Demo": "./demo.sh",
         "Find in project...": "grep -R \"${query}\" .",
         "Open project...": "cd ~/project",
+        "Enable Git Sync": "git sync --enable",
+        "Settings error": "config error",
         "Reveal in File Explorer": "xdg-open .",
         "New Folder": "mkdir",
         "New Note": "touch",

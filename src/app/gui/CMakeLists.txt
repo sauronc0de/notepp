@@ -56,6 +56,7 @@ target_include_directories(${PROJECT_NAME}
 
 target_link_libraries(${PROJECT_NAME}
   PRIVATE
+    app_settings
     atomic_file
     log
     imgui
