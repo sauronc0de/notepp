@@ -451,6 +451,7 @@ struct FilterDialogState
 std::string g_preview_document_path;
 std::string g_preview_document_key;
 std::filesystem::path g_preview_project_root;
+std::optional<notepp::project_paths::ProjectPaths> g_preview_project_paths;
 std::string g_preview_notes_top_level = "notes";
 Json g_preview_state_json;
 bool g_preview_state_loaded = false;
@@ -676,17 +677,16 @@ void render_link_hover_preview_popup()
 std::string portable_document_key(std::string_view document_path)
 {
   if(document_path.empty()) return "__active_note__";
-  if(g_preview_project_root.empty()) return std::string(document_path);
+  if(!g_preview_project_paths) return std::string(document_path);
 
-  notepp::project_paths::ProjectPaths paths(g_preview_project_root);
   const std::filesystem::path path{std::string(document_path)};
   if(path.is_absolute())
   {
-    if(auto key = paths.stable_key(path)) return *key;
+    if(auto key = g_preview_project_paths->stable_key(path)) return *key;
   }
-  else if(auto decoded = paths.decode(document_path))
+  else if(auto decoded = g_preview_project_paths->decode(document_path))
   {
-    if(auto key = paths.stable_key(*decoded)) return *key;
+    if(auto key = g_preview_project_paths->stable_key(*decoded)) return *key;
   }
   return std::string(document_path);
 }
@@ -1841,6 +1841,8 @@ bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_v
 
 void set_preview_document_path(std::string_view path)
 {
+  if(path == g_preview_document_path) return;
+
   g_preview_document_path.assign(path.data(), path.size());
   g_preview_document_key = portable_document_key(path);
   MarkdownView::set_document_path(path);
@@ -1851,6 +1853,7 @@ void set_preview_state_path(const std::filesystem::path &path)
 {
   g_preview_state_file = path.string();
   g_preview_project_root = path.parent_path().parent_path();
+  g_preview_project_paths.emplace(g_preview_project_root);
   std::error_code path_error;
   if(std::filesystem::is_directory(g_preview_project_root / "notes", path_error) && !path_error)
     g_preview_notes_top_level = "notes";
