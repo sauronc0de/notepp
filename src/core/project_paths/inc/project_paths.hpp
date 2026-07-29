@@ -15,7 +15,8 @@ enum class PathError
   outside_project,
   invalid_top_level,
   ambiguous_legacy,
-  missing_legacy_target
+  missing_legacy_target,
+  nonportable
 };
 
 struct LegacyPathResult
@@ -36,6 +37,10 @@ public:
       std::string_view stored_path) const;
   [[nodiscard]] std::expected<LegacyPathResult, PathError> migrate_legacy(
       std::string_view stored_path,
+      std::string_view expected_top_level) const;
+  [[nodiscard]] std::expected<LegacyPathResult, PathError> migrate_legacy_child(
+      std::string_view stored_path,
+      std::string_view parent_stored_path,
       std::string_view expected_top_level) const;
   [[nodiscard]] std::expected<std::string, PathError> stable_key(
       const std::filesystem::path &absolute_path) const;

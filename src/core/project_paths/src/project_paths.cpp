@@ -60,6 +60,18 @@ bool valid_top_level(std::string_view value)
          value.find('\\') == std::string_view::npos &&
          fs::path(std::string(value)).is_relative();
 }
+
+bool existing_regular_target(const fs::path &path)
+{
+  std::error_code error;
+  return fs::exists(path, error) && !error;
+}
+
+bool has_windows_drive_prefix(std::string_view value)
+{
+  return value.size() >= 2 && std::isalpha(static_cast<unsigned char>(value[0])) != 0 &&
+         value[1] == ':';
+}
 } // namespace
 
 ProjectPaths::ProjectPaths(fs::path project_root)
@@ -83,6 +95,7 @@ std::expected<std::string, PathError> ProjectPaths::encode(
 
   const std::string result = relative.generic_string();
   if(result.empty()) return std::unexpected(PathError::empty);
+  if(result.contains('\\')) return std::unexpected(PathError::nonportable);
   return result;
 }
 
@@ -119,7 +132,8 @@ std::expected<LegacyPathResult, PathError> ProjectPaths::migrate_legacy(
     if(auto encoded = encode(native_path))
     {
       const auto encoded_parts = components(*encoded);
-      if(!encoded_parts.empty() && encoded_parts.front() == expected_top_level)
+      if(!encoded_parts.empty() && encoded_parts.front() == expected_top_level &&
+         existing_regular_target(native_path))
         return LegacyPathResult{native_path.lexically_normal(), *encoded};
     }
   }
@@ -128,7 +142,8 @@ std::expected<LegacyPathResult, PathError> ProjectPaths::migrate_legacy(
     if(auto decoded = decode(stored_path))
     {
       auto encoded = encode(*decoded);
-      if(encoded && components(*encoded).front() == expected_top_level)
+      if(encoded && components(*encoded).front() == expected_top_level &&
+         existing_regular_target(*decoded))
         return LegacyPathResult{*decoded, *encoded};
     }
   }
@@ -149,11 +164,47 @@ std::expected<LegacyPathResult, PathError> ProjectPaths::migrate_legacy(
 
   auto decoded = decode(relative.generic_string());
   if(!decoded) return std::unexpected(decoded.error());
-  std::error_code error;
-  if(!fs::exists(*decoded, error) || error)
+  if(!existing_regular_target(*decoded))
     return std::unexpected(PathError::missing_legacy_target);
 
   return LegacyPathResult{*decoded, relative.generic_string()};
+}
+
+std::expected<LegacyPathResult, PathError> ProjectPaths::migrate_legacy_child(
+    std::string_view stored_path,
+    std::string_view parent_stored_path,
+    std::string_view expected_top_level) const
+{
+  if(stored_path.empty()) return std::unexpected(PathError::empty);
+  if(!valid_top_level(expected_top_level))
+    return std::unexpected(PathError::invalid_top_level);
+  if(stored_path.starts_with('/') || stored_path.starts_with('\\') ||
+     has_windows_drive_prefix(stored_path))
+    return std::unexpected(PathError::absolute);
+
+  const std::vector<std::string> child_parts = components(stored_path);
+  if(child_parts.empty()) return std::unexpected(PathError::empty);
+  if(std::ranges::any_of(child_parts, [](const std::string &part) { return part == ".."; }))
+    return std::unexpected(PathError::traversal);
+
+  auto parent = decode(parent_stored_path);
+  if(!parent) return std::unexpected(parent.error());
+  auto parent_key = encode(*parent);
+  if(!parent_key) return std::unexpected(parent_key.error());
+  const auto parent_parts = components(*parent_key);
+  if(parent_parts.empty() || parent_parts.front() != expected_top_level)
+    return std::unexpected(PathError::invalid_top_level);
+
+  fs::path relative(*parent_key);
+  for(const auto &part : child_parts)
+    relative /= part;
+  auto decoded = decode(relative.generic_string());
+  if(!decoded) return std::unexpected(decoded.error());
+  if(!existing_regular_target(*decoded))
+    return std::unexpected(PathError::missing_legacy_target);
+  auto encoded = encode(*decoded);
+  if(!encoded) return std::unexpected(encoded.error());
+  return LegacyPathResult{*decoded, *encoded};
 }
 
 std::expected<std::string, PathError> ProjectPaths::stable_key(
@@ -180,6 +231,8 @@ std::string_view describe(PathError error) noexcept
     return "legacy path contains an ambiguous project suffix";
   case PathError::missing_legacy_target:
     return "legacy path target does not exist in this project";
+  case PathError::nonportable:
+    return "path contains a non-portable component";
   }
   return "unknown project path error";
 }

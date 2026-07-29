@@ -721,45 +721,59 @@ void ensure_preview_state_loaded()
 
   if(!g_preview_project_root.empty())
   {
-    Json portable_documents = Json::object();
-    Json legacy_documents = g_preview_state_json.value("legacyDocuments", Json::object());
-    if(!legacy_documents.is_object()) legacy_documents = Json::object();
-    bool migrated = false;
-    notepp::project_paths::ProjectPaths paths(g_preview_project_root);
-    for(auto &[key, value] : g_preview_state_json["documents"].items())
-    {
-      if(key == "__active_note__")
-      {
-        portable_documents[key] = value;
-        continue;
-      }
+    const Json original_documents = g_preview_state_json["documents"];
+    Json original_legacy_documents = g_preview_state_json.value("legacyDocuments", Json::object());
+    if(!original_legacy_documents.is_object()) original_legacy_documents = Json::object();
 
-      std::optional<std::string> portable_key;
+    Json portable_documents = Json::object();
+    Json remaining_legacy_documents = Json::object();
+    notepp::project_paths::ProjectPaths paths(g_preview_project_root);
+    auto portable_key_for = [&](const std::string &key) -> std::optional<std::string> {
+      if(key == "__active_note__") return key;
       if(auto decoded = paths.decode(key))
       {
-        if(auto stable = paths.stable_key(*decoded)) portable_key = *stable;
+        if(auto stable = paths.stable_key(*decoded)) return *stable;
       }
+      if(auto legacy = paths.migrate_legacy(key, g_preview_notes_top_level))
+        return legacy->stored_path;
+      return std::nullopt;
+    };
+    auto preserve_legacy = [&](const std::string &key, const Json &value) {
+      std::string preserved_key = key;
+      std::size_t collision = 2;
+      while(remaining_legacy_documents.contains(preserved_key) &&
+            remaining_legacy_documents[preserved_key] != value)
+        preserved_key = key + "#collision-" + std::to_string(collision++);
+      remaining_legacy_documents[preserved_key] = value;
+    };
+    auto migrate_entry = [&](const std::string &key, const Json &value) {
+      const auto portable_key = portable_key_for(key);
       if(!portable_key)
       {
-        if(auto legacy = paths.migrate_legacy(key, g_preview_notes_top_level))
-          portable_key = legacy->stored_path;
+        preserve_legacy(key, value);
+        return;
       }
-
-      if(portable_key)
+      if(!portable_documents.contains(*portable_key))
       {
         portable_documents[*portable_key] = value;
-        migrated = migrated || *portable_key != key;
+        return;
       }
-      else
-      {
-        legacy_documents[key] = value;
-        migrated = true;
-      }
-    }
-    if(migrated)
+      if(portable_documents[*portable_key] != value)
+        preserve_legacy(key, value);
+    };
+
+    for(const auto &[key, value] : original_documents.items())
+      migrate_entry(key, value);
+    // Retry previously quarantined keys on every load. Restoring a missing note
+    // can make a legacy absolute key portable on a later launch.
+    for(const auto &[key, value] : original_legacy_documents.items())
+      migrate_entry(key, value);
+
+    if(portable_documents != original_documents ||
+       remaining_legacy_documents != original_legacy_documents)
     {
       g_preview_state_json["documents"] = std::move(portable_documents);
-      g_preview_state_json["legacyDocuments"] = std::move(legacy_documents);
+      g_preview_state_json["legacyDocuments"] = std::move(remaining_legacy_documents);
       g_preview_state_dirty = true;
     }
   }

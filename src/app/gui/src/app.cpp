@@ -14,6 +14,7 @@
 #include "markdown_view.hpp"
 #include "markdown_widgets.hpp"
 #include "note_ui.hpp"
+#include "note_index.hpp"
 #include "string_utils.hpp"
 #include "tiny_json.hpp"
 
@@ -146,12 +147,11 @@ std::string project_notes_top_level(const AppConfig &config)
 }
 
 std::optional<std::filesystem::path> resolve_project_owned_path(
-    const AppConfig &config,
+    const notepp::project_paths::ProjectPaths &paths,
     std::string_view stored_path,
     int schema_version,
     std::string_view expected_top_level)
 {
-  notepp::project_paths::ProjectPaths paths(config.projectRoot);
   if(schema_version >= 2)
   {
     auto decoded = paths.decode(stored_path);
@@ -169,11 +169,10 @@ std::optional<std::filesystem::path> resolve_project_owned_path(
 }
 
 std::optional<std::string> portable_project_path(
-    const AppConfig &config,
+    const notepp::project_paths::ProjectPaths &paths,
     const std::filesystem::path &runtime_path,
     std::string_view expected_top_level)
 {
-  notepp::project_paths::ProjectPaths paths(config.projectRoot);
   auto encoded = paths.encode(runtime_path);
   if(!encoded) return std::nullopt;
   const std::string prefix = std::string(expected_top_level) + "/";
@@ -1231,15 +1230,18 @@ void App::load_state()
   dockers_enabled_ = false;
 
   const std::string notes_top_level = project_notes_top_level(config_);
+  const notepp::project_paths::ProjectPaths project_paths(config_.projectRoot);
   bool uuid_migrated = false;
   bool paths_migrated = false;
   bool path_migration_failed = false;
   index_schema_version_ = 2;
   index_paths_portable_ = true;
+  index_source_document_.clear();
   std::ifstream in_index(index_file_);
   if(in_index)
   {
     const std::string doc((std::istreambuf_iterator<char>(in_index)), std::istreambuf_iterator<char>());
+    index_source_document_ = doc;
     index_schema_version_ = json_find_int(doc, "schemaVersion", 1);
     index_paths_portable_ = index_schema_version_ >= 2;
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
@@ -1297,7 +1299,7 @@ void App::load_state()
                     if(n.title.empty()) n.title = "Note";
                     const std::string stored_note_path = json_find_string(nobj, "path");
                     if(auto resolved = resolve_project_owned_path(
-                           config_, stored_note_path, index_schema_version_, notes_top_level))
+                           project_paths, stored_note_path, index_schema_version_, notes_top_level))
                     {
                       n.path = resolved->string();
                       paths_migrated = paths_migrated || index_schema_version_ < 2;
@@ -1336,19 +1338,26 @@ void App::load_state()
                     if(!stored_font_path.empty())
                     {
                       if(auto resolved_font = resolve_project_owned_path(
-                             config_, stored_font_path, index_schema_version_, notes_top_level))
+                             project_paths, stored_font_path, index_schema_version_, notes_top_level))
                       {
                         n.font_path = resolved_font->string();
                         paths_migrated = paths_migrated || index_schema_version_ < 2;
                       }
                       else
                       {
-                        const std::filesystem::path folder_font =
-                            config_.dataPath / f.name / std::filesystem::path(stored_font_path);
-                        std::error_code font_error;
-                        if(index_schema_version_ < 2 && std::filesystem::exists(folder_font, font_error) && !font_error)
+                        std::optional<notepp::project_paths::LegacyPathResult> migrated_font;
+                        if(index_schema_version_ < 2)
                         {
-                          n.font_path = folder_font.lexically_normal().string();
+                          if(auto encoded_parent = project_paths.encode(config_.dataPath / f.name))
+                          {
+                            if(auto result = project_paths.migrate_legacy_child(
+                                   stored_font_path, *encoded_parent, notes_top_level))
+                              migrated_font = *result;
+                          }
+                        }
+                        if(migrated_font)
+                        {
+                          n.font_path = migrated_font->absolute_path.string();
                           paths_migrated = true;
                         }
                         else
@@ -1357,7 +1366,7 @@ void App::load_state()
                           n.unresolved_stored_font_path = stored_font_path;
                           path_migration_failed = true;
                           LOG_ERROR("Cannot migrate font path '", stored_font_path,
-                                    "'; preserving legacy index schema");
+                                    "'; preserving it as non-I/O metadata");
                         }
                       }
                     }
@@ -1398,7 +1407,7 @@ void App::load_state()
                       if(!img_path.empty())
                       {
                         if(auto resolved_image = resolve_project_owned_path(
-                               config_, img_path, index_schema_version_, notes_top_level))
+                               project_paths, img_path, index_schema_version_, notes_top_level))
                         {
                           f.images.push_back(resolved_image->string());
                           paths_migrated = paths_migrated || index_schema_version_ < 2;
@@ -1448,17 +1457,11 @@ void App::load_state()
     }
   }
 
-  if(path_migration_failed)
-  {
-    index_schema_version_ = 1;
-    index_paths_portable_ = false;
-  }
-  else if(index_schema_version_ < 2)
-  {
-    index_schema_version_ = 2;
-    index_paths_portable_ = true;
-    paths_migrated = true;
-  }
+  const int loaded_index_schema = index_schema_version_;
+  index_schema_version_ = notepp::note_index::schema_after_path_migration(
+      loaded_index_schema, path_migration_failed);
+  index_paths_portable_ = index_schema_version_ >= 2;
+  paths_migrated = paths_migrated || index_schema_version_ != loaded_index_schema;
 
   sync_project_files();
   ensure_default_index();
@@ -1550,6 +1553,8 @@ void App::save_index()
   sync_active_folder_settings();
 
   const std::string notes_top_level = project_notes_top_level(config_);
+  const notepp::project_paths::ProjectPaths project_paths(config_.projectRoot);
+  std::unordered_map<std::string, std::optional<std::string>> path_cache;
   auto stored_path = [&](const std::string &runtime_path,
                          std::string_view expected_top_level,
                          const std::string &folder_name = {}) -> std::optional<std::string> {
@@ -1559,7 +1564,13 @@ void App::save_index()
     std::filesystem::path candidate(runtime_path);
     if(candidate.is_relative() && !folder_name.empty())
       candidate = config_.dataPath / folder_name / candidate;
-    return portable_project_path(config_, candidate, expected_top_level);
+    const std::string cache_key = candidate.lexically_normal().string() + "\n" +
+                                  std::string(expected_top_level);
+    if(const auto found = path_cache.find(cache_key); found != path_cache.end())
+      return found->second;
+    auto encoded = portable_project_path(project_paths, candidate, expected_top_level);
+    path_cache.emplace(cache_key, encoded);
+    return encoded;
   };
 
   for(const auto &folder : folders_)
@@ -1588,88 +1599,91 @@ void App::save_index()
     }
   }
 
+  Json source_root = Json::parse(index_source_document_, nullptr, false);
+  if(!source_root.is_object()) source_root = Json::object();
+  Json root = Json::object();
+
+  root["schemaVersion"] = index_schema_version_;
+  root["active_folder"] = active_folder_idx_;
+  root["active_note"] = active_note_idx_;
+  root["folder_view"] = folder_overview_mode_;
+  root["layout_locked"] = layout_locked_;
+  root["detached_note_windows"] = detached_note_windows_enabled_;
+  root["dockers_enabled"] = dockers_enabled_;
+  root["language"] = Lang::current_language_code();
+
+  Json persisted_folders = Json::array();
+  for(std::size_t fi = 0; fi < folders_.size(); ++fi)
+  {
+    const auto &folder = folders_[fi];
+    Json persisted_folder = Json::object();
+    persisted_folder["name"] = folder.name;
+    persisted_folder["layout_locked"] = folder.layout_locked;
+    persisted_folder["detached_note_windows"] = folder.detached_note_windows;
+    persisted_folder["dockers_enabled"] = folder.dockers_enabled;
+    persisted_folder["drawings_visible"] = folder.drawings_visible;
+    persisted_folder["grid_visible"] = folder.grid_visible;
+
+    Json persisted_notes = Json::array();
+    for(std::size_t ni = 0; ni < folder.notes.size(); ++ni)
+    {
+      const auto &note = folder.notes[ni];
+      Json persisted_note = Json::object();
+      persisted_note["id"] = note.id;
+      persisted_note["title"] = note.title;
+      persisted_note["path"] = note.unresolved_stored_path.empty()
+                                   ? *stored_path(note.path, notes_top_level)
+                                   : note.unresolved_stored_path;
+      persisted_note["x"] = (int)std::lround(note.pos_x);
+      persisted_note["y"] = (int)std::lround(note.pos_y);
+      persisted_note["w"] = (int)std::lround(note.width);
+      persisted_note["h"] = (int)std::lround(note.height);
+      persisted_note["has_layout"] = note.has_layout;
+      persisted_note["hidden"] = note.hidden;
+      persisted_note["always_on_top"] = note.always_on_top;
+      persisted_note["dock_id"] = note.dock_id;
+      persisted_note["use_custom_color"] = note.use_custom_color;
+      persisted_note["color_r"] =
+          (int)std::lround(std::clamp(note.color_r, 0.0f, 1.0f) * 255.0f);
+      persisted_note["color_g"] =
+          (int)std::lround(std::clamp(note.color_g, 0.0f, 1.0f) * 255.0f);
+      persisted_note["color_b"] =
+          (int)std::lround(std::clamp(note.color_b, 0.0f, 1.0f) * 255.0f);
+      if(!note.unresolved_stored_font_path.empty())
+        persisted_note["font_path"] = note.unresolved_stored_font_path;
+      else if(!note.font_path.empty())
+        persisted_note["font_path"] = *stored_path(note.font_path, notes_top_level, folder.name);
+      else
+        persisted_note.erase("font_path");
+      if(note.font_size > 0.0f)
+        persisted_note["font_size"] = note.font_size;
+      else
+        persisted_note.erase("font_size");
+      persisted_notes.push_back(std::move(persisted_note));
+    }
+    persisted_folder["notes"] = std::move(persisted_notes);
+
+    Json persisted_images = Json::array();
+    for(const auto &image : folder.images)
+      persisted_images.push_back(*stored_path(image, notes_top_level));
+    for(const auto &unresolved_image : folder.unresolved_stored_images)
+      persisted_images.push_back(unresolved_image);
+    persisted_folder["images"] = std::move(persisted_images);
+    persisted_folders.push_back(std::move(persisted_folder));
+  }
+  root["folders"] = std::move(persisted_folders);
+  root = notepp::note_index::merge_unknown_fields(source_root, root);
+
+  std::string serialized = root.dump(2);
+  serialized.push_back('\n');
   std::filesystem::path tmp = index_file_;
   tmp += ".tmp";
   std::ofstream out(tmp, std::ios::trunc);
   if(!out) return;
-
-  out << "{\n";
-  out << "  \"schemaVersion\": " << index_schema_version_ << ",\n";
-  out << "  \"active_folder\": " << active_folder_idx_ << ",\n";
-  out << "  \"active_note\": " << active_note_idx_ << ",\n";
-  out << "  \"folder_view\": " << (folder_overview_mode_ ? "true" : "false") << ",\n";
-  out << "  \"layout_locked\": " << (layout_locked_ ? "true" : "false") << ",\n";
-  out << "  \"detached_note_windows\": " << (detached_note_windows_enabled_ ? "true" : "false") << ",\n";
-  out << "  \"dockers_enabled\": " << (dockers_enabled_ ? "true" : "false") << ",\n";
-  out << "  \"language\": \"" << json_escape(Lang::current_language_code()) << "\",\n";
-  out << "  \"folders\": [\n";
-  for(size_t fi = 0; fi < folders_.size(); ++fi)
-  {
-    const auto &f = folders_[fi];
-    out << "    {\n";
-    out << "      \"name\": \"" << json_escape(f.name) << "\",\n";
-    out << "      \"layout_locked\": " << (f.layout_locked ? "true" : "false") << ",\n";
-    out << "      \"detached_note_windows\": " << (f.detached_note_windows ? "true" : "false") << ",\n";
-    out << "      \"dockers_enabled\": " << (f.dockers_enabled ? "true" : "false") << ",\n";
-    out << "      \"drawings_visible\": " << (f.drawings_visible ? "true" : "false") << ",\n";
-    out << "      \"grid_visible\": " << (f.grid_visible ? "true" : "false") << ",\n";
-    out << "      \"notes\": [\n";
-    for(size_t ni = 0; ni < f.notes.size(); ++ni)
-    {
-      const auto &n = f.notes[ni];
-      const std::string persisted_note_path = n.unresolved_stored_path.empty()
-                                                  ? *stored_path(n.path, notes_top_level)
-                                                  : n.unresolved_stored_path;
-      out << "        {\"id\": \"" << json_escape(n.id)
-          << "\", \"title\": \"" << json_escape(n.title)
-          << "\", \"path\": \"" << json_escape(persisted_note_path)
-          << "\", \"x\": " << (int)std::lround(n.pos_x)
-          << ", \"y\": " << (int)std::lround(n.pos_y)
-          << ", \"w\": " << (int)std::lround(n.width)
-          << ", \"h\": " << (int)std::lround(n.height)
-          << ", \"has_layout\": " << (n.has_layout ? "true" : "false")
-          << ", \"hidden\": " << (n.hidden ? "true" : "false")
-          << ", \"always_on_top\": " << (n.always_on_top ? "true" : "false")
-          << ", \"dock_id\": " << n.dock_id
-          << ", \"use_custom_color\": " << (n.use_custom_color ? "true" : "false")
-          << ", \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_r)) * 255.0f)
-          << ", \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_g)) * 255.0f)
-          << ", \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, n.color_b)) * 255.0f);
-      if(!n.unresolved_stored_font_path.empty())
-        out << ", \"font_path\": \"" << json_escape(n.unresolved_stored_font_path) << "\"";
-      else if(!n.font_path.empty())
-        out << ", \"font_path\": \""
-            << json_escape(*stored_path(n.font_path, notes_top_level, f.name)) << "\"";
-      if(n.font_size > 0.0f)
-        out << ", \"font_size\": " << n.font_size;
-      out << "}";
-      if(ni + 1 < f.notes.size()) out << ",";
-      out << "\n";
-    }
-    out << "      ],\n";
-    out << "      \"images\": [";
-    bool first_image = true;
-    for(const auto &image : f.images)
-    {
-      if(!first_image) out << ", ";
-      out << "\"" << json_escape(*stored_path(image, notes_top_level)) << "\"";
-      first_image = false;
-    }
-    for(const auto &unresolved_image : f.unresolved_stored_images)
-    {
-      if(!first_image) out << ", ";
-      out << "\"" << json_escape(unresolved_image) << "\"";
-      first_image = false;
-    }
-    out << "]\n";
-    out << "    }";
-    if(fi + 1 < folders_.size()) out << ",";
-    out << "\n";
-  }
-  out << "  ]\n";
-  out << "}\n";
+  out << serialized;
   out.close();
   std::filesystem::rename(tmp, index_file_);
+  index_source_document_ = std::move(serialized);
 }
 
 void App::load_profiles()

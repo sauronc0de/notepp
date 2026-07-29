@@ -136,6 +136,7 @@ private:
   std::filesystem::path drawings_file_;
   std::filesystem::path g_clipboard_file;
   std::filesystem::path profiles_file_;
+  std::string index_source_document_;
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;

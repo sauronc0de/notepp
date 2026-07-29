@@ -90,10 +90,19 @@ void test_rejects_unsafe_paths()
   expect(!paths.decode("/tmp/outside.md") && paths.decode("/tmp/outside.md").error() == PathError::absolute,
          "decode rejects absolute v2 path");
   expect(!paths.encode(project.root().parent_path() / "outside.md"), "encode rejects out-of-root path");
+#ifndef _WIN32
+  expect(!paths.encode(project.root() / "notes" / "a\\b.md") &&
+             paths.encode(project.root() / "notes" / "a\\b.md").error() == PathError::nonportable,
+         "encode rejects Linux names that cannot round-trip through portable storage");
+#endif
   expect(!paths.migrate_legacy("/old/notes/x/notes/work/plan.md", "notes"),
          "legacy migration rejects ambiguous suffix");
   expect(!paths.migrate_legacy("/old/notes/work/missing.md", "notes"),
          "legacy migration requires a target at the moved root");
+  expect(!paths.migrate_legacy((project.root() / "notes" / "work" / "missing.md").string(), "notes"),
+         "legacy migration preserves metadata for a missing current-root absolute target");
+  expect(!paths.migrate_legacy("notes/work/missing.md", "notes"),
+         "legacy migration preserves metadata for a missing current-root relative target");
   expect(!paths.migrate_legacy("/old/notes/../assets/icon.png", "notes"),
          "legacy migration rejects traversal components");
 
@@ -102,6 +111,24 @@ void test_rejects_unsafe_paths()
   if(!symlink_error)
     expect(!paths.decode("notes/external/escaped.md"), "decode rejects an existing symlink escape");
 }
+
+void test_legacy_child_migration_is_contained()
+{
+  TempProject project;
+  const fs::path font = project.root() / "notes" / "work" / "font.ttf";
+  std::ofstream(font) << "font";
+  ProjectPaths paths(project.root());
+
+  const auto migrated = paths.migrate_legacy_child("font.ttf", "notes/work", "notes");
+  expect(migrated && migrated->absolute_path == font,
+         "legacy folder-relative font resolves inside its note folder");
+  expect(!paths.migrate_legacy_child("../../../outside/font.ttf", "notes/work", "notes"),
+         "legacy child migration rejects parent traversal");
+  expect(!paths.migrate_legacy_child(project.outside().string(), "notes/work", "notes"),
+         "legacy child migration rejects absolute paths");
+  expect(!paths.migrate_legacy_child("C:\\outside\\font.ttf", "notes/work", "notes"),
+         "legacy child migration rejects Windows absolute paths on every platform");
+}
 } // namespace
 
 int main()
@@ -109,6 +136,7 @@ int main()
   test_round_trip();
   test_moved_root_legacy_migration();
   test_rejects_unsafe_paths();
+  test_legacy_child_migration_is_contained();
 
   if(failures != 0)
   {

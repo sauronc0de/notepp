@@ -61,6 +61,7 @@ target_link_libraries(${PROJECT_NAME}
     imgui_md
     string_utils
     note_history
+    note_index
     lang
     emoji_picker
     note_model
