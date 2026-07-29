@@ -299,11 +299,7 @@ private:
   {
     if(running_.load(std::memory_order_acquire))
       return;
-    std::lock_guard<std::mutex> lk(state_m_);
-    if(!running_.load(std::memory_order_relaxed))
-    {
-      const_cast<Logger *>(this)->start(); // lazy start
-    }
+    const_cast<Logger *>(this)->start(); // start() serializes concurrent lazy starts
   }
 
   // ---- state ----

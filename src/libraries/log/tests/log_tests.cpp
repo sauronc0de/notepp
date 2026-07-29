@@ -16,6 +16,14 @@ void expect_true(bool cond, std::string_view msg)
   std::cerr << "FAIL: " << msg << '\n';
 }
 
+void test_logger_lazy_start()
+{
+  Logger logger;
+  logger.log(INFO, __FILE__, __LINE__, "lazy start does not deadlock");
+  logger.stop();
+  expect_true(true, "logger lazy start completes");
+}
+
 void test_logger_lifecycle()
 {
   // Fresh logger: ensure it is not running and can be started/stopped cleanly.
@@ -48,6 +56,7 @@ void test_logger_macros_noop_when_disabled()
 
 int main()
 {
+  test_logger_lazy_start();
   test_logger_lifecycle();
   test_log_calls_dont_throw();
   test_logger_macros_noop_when_disabled();
