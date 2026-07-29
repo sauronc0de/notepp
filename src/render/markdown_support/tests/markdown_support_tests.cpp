@@ -108,6 +108,32 @@ void test_preview_state_stale_save_preserves_both_versions()
   expect(found_conflict, "stale preview save preserves local bytes in a conflict file");
 }
 
+void test_failed_preview_load_does_not_apply_placeholder_mutation()
+{
+  TempProject project;
+  fs::create_directory(project.state_file());
+
+  MarkdownSupport::set_preview_state_path(project.state_file());
+  const bool changed = MarkdownSupport::set_all_preview_headers_open(
+      "notes/failed.md", "# Heading\n", true);
+  expect(!changed, "preview mutation is rejected when canonical state cannot load");
+  expect(!MarkdownSupport::last_persistence_error().empty(),
+         "failed preview load exposes an actionable error");
+  expect(MarkdownSupport::flush_preview_state(),
+         "rejected preview mutation does not leave blank placeholder state dirty");
+
+  fs::remove_all(project.state_file());
+  const Json canonical = {
+      {"documents", Json{{"notes/external.md", {{"headers", {{"0", false}}}}}}}};
+  std::ofstream(project.state_file()) << canonical.dump(2);
+
+  const Json loaded = captured_preview();
+  expect(loaded["documents"].contains("notes/external.md"),
+         "successful retry loads canonical preview state");
+  expect(!loaded["documents"].contains("notes/failed.md"),
+         "failed-load mutation was never applied to a placeholder");
+}
+
 void test_quarantined_preview_key_is_retried()
 {
   TempProject project;
@@ -136,6 +162,7 @@ int main()
 {
   test_preview_key_collision_preserves_both_values();
   test_preview_state_stale_save_preserves_both_versions();
+  test_failed_preview_load_does_not_apply_placeholder_mutation();
   test_quarantined_preview_key_is_retried();
   if(failures != 0)
   {

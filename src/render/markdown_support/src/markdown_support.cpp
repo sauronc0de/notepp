@@ -402,7 +402,7 @@ static std::unordered_map<std::string, std::string> g_preview_persistence_errors
 void record_preview_read(const std::filesystem::path &path,
                          const atomic_file::ReadResult &result)
 {
-  g_preview_persistence_guard.record_read(path, result);
+  g_preview_persistence_guard.record_reload(path, result);
   const std::string key = path.lexically_normal().generic_string();
   if(result && !g_preview_persistence_guard.has_preserved_stale(path))
     g_preview_persistence_errors.erase(key);
@@ -741,9 +741,9 @@ std::string current_document_key()
   return g_preview_document_key.empty() ? std::string("__active_note__") : g_preview_document_key;
 }
 
-void ensure_preview_state_loaded()
+bool ensure_preview_state_loaded()
 {
-  if(g_preview_state_loaded) return;
+  if(g_preview_state_loaded) return true;
   g_preview_state_loaded = true;
 
   g_preview_state_json = Json::object();
@@ -753,8 +753,10 @@ void ensure_preview_state_loaded()
   if(!loaded)
   {
     g_preview_state_loaded = false;
-    return;
+    return false;
   }
+  // A failed-load placeholder must never survive a later successful retry.
+  g_table_state_cache.clear();
   if(loaded.snapshot.existed)
   {
     g_preview_state_json = Json::parse(loaded.snapshot.content, nullptr, false);
@@ -824,6 +826,7 @@ void ensure_preview_state_loaded()
       g_preview_state_dirty = true;
     }
   }
+  return true;
 }
 
 std::string first_non_empty_filter(const Json &arr)
@@ -863,7 +866,7 @@ TableViewState parse_table_state_from_json(const Json &obj)
 
 bool try_get_header_open_state(const std::string &doc_key, int header_id, bool &open_out)
 {
-  ensure_preview_state_loaded();
+  if(!ensure_preview_state_loaded()) return false;
 
   const Json &docs = g_preview_state_json["documents"];
   auto doc_it = docs.find(doc_key);
@@ -877,7 +880,7 @@ bool try_get_header_open_state(const std::string &doc_key, int header_id, bool &
 
 void sync_header_open_state_to_json(const std::string &doc_key, int header_id, bool open)
 {
-  ensure_preview_state_loaded();
+  if(!ensure_preview_state_loaded()) return;
 
   Json &doc = g_preview_state_json["documents"][doc_key];
   if(!doc.is_object()) doc = Json::object();
@@ -891,7 +894,7 @@ void sync_header_open_state_to_json(const std::string &doc_key, int header_id, b
 
 void sync_table_state_to_json(const std::string &doc_key, int table_id, const TableViewState &st)
 {
-  ensure_preview_state_loaded();
+  if(!ensure_preview_state_loaded()) return;
 
   Json &doc = g_preview_state_json["documents"][doc_key];
   if(!doc.is_object()) doc = Json::object();
@@ -926,13 +929,19 @@ void reset_table_view_state(TableViewState &state)
 
 TableViewState &table_state_for(const std::string &doc_key, int table_id)
 {
-  ensure_preview_state_loaded();
+  const bool loaded = ensure_preview_state_loaded();
 
   auto &doc_map = g_table_state_cache[doc_key];
   auto it = doc_map.find(table_id);
   if(it != doc_map.end()) return it->second;
 
   TableViewState st;
+  if(!loaded)
+  {
+    auto [inserted, _] = doc_map.emplace(table_id, std::move(st));
+    return inserted->second;
+  }
+
   const Json &docs = g_preview_state_json["documents"];
   auto doc_it = docs.find(doc_key);
   if(doc_it != docs.end() && doc_it->is_object())
@@ -949,7 +958,7 @@ TableViewState &table_state_for(const std::string &doc_key, int table_id)
 bool save_preview_state_if_dirty()
 {
   if(!g_preview_state_dirty) return true;
-  ensure_preview_state_loaded();
+  if(!ensure_preview_state_loaded()) return false;
 
   if(!save_preview_file(g_preview_state_file, g_preview_state_json.dump(2))) return false;
   g_preview_state_dirty = false;
@@ -958,6 +967,7 @@ bool save_preview_state_if_dirty()
 
 bool set_all_preview_headers_open_impl(std::string_view document_path, std::string_view markdown, bool open)
 {
+  if(!ensure_preview_state_loaded()) return false;
   const std::string doc_key = portable_document_key(document_path);
   if(doc_key.empty()) return false;
 
@@ -1027,7 +1037,7 @@ PreviewHeaderStateSummary summarize_preview_header_states_impl(std::string_view 
 
 std::string capture_preview_state_snapshot_impl()
 {
-  ensure_preview_state_loaded();
+  if(!ensure_preview_state_loaded()) return Json::object().dump();
 
   Json root = Json::object();
   root["preview"] = g_preview_state_json;
@@ -1040,6 +1050,7 @@ std::string capture_preview_state_snapshot_impl()
 
 void apply_preview_state_snapshot_impl(std::string_view snapshot)
 {
+  if(!ensure_preview_state_loaded()) return;
   g_preview_state_loaded = true;
   g_preview_state_dirty = false;
   g_table_state_cache.clear();

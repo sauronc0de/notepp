@@ -5745,7 +5745,7 @@ static std::string read_globals_file(const std::filesystem::path &path)
   }
 
   const auto loaded = g_widget_files.load(path);
-  g_widget_persistence_guard.record_read(path, loaded);
+  g_widget_persistence_guard.record_reload(path, loaded);
   if(!loaded || !loaded.snapshot.existed)
   {
     if(!loaded) g_widget_persistence_errors[key] = loaded.message;

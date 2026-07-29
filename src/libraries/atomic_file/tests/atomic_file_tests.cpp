@@ -478,8 +478,29 @@ void test_persistence_guard_retries_io_failures()
   af::ReadResult reloaded;
   reloaded.success = true;
   reloaded.snapshot = {true, "external"};
-  guard.record_read(path, reloaded);
-  expect(guard.has_preserved_stale(path), "ordinary reload does not forget preserved local bytes");
+  guard.record_reload(path, reloaded);
+  expect(!guard.has_preserved_stale(path), "successful reload clears preserved stale suppression");
+  expect(!guard.suppresses(path, "local"), "same desired bytes are retryable after reload");
+}
+
+void test_failed_read_content_can_be_preserved_without_canonical_write()
+{
+  TempDirectory temp;
+  const fs::path canonical = temp.path() / "unreadable.md";
+  fs::create_directory(canonical);
+
+  const af::ReadResult failed_read = af::read_text(canonical);
+  expect(!failed_read, "non-regular canonical path produces a read failure");
+
+  const af::SaveResult preserved = af::preserve_recovery(canonical, "edited after failed load");
+  expect(preserved.disposition == af::SaveDisposition::stale_preserved,
+         "failed-read desired bytes are preserved as recovery content");
+  expect(!preserved.recovery_path.empty(), "failed-read recovery reports its path");
+  expect(fs::is_directory(canonical), "failed-read recovery leaves canonical path untouched");
+  expect_equal(read_direct(preserved.recovery_path), "edited after failed load",
+               "failed-read recovery retains exact desired bytes");
+  expect(preserved.recovery_path.extension() == ".md",
+         "failed-read Markdown recovery remains discoverable as Markdown");
 }
 
 void test_persistence_guard_blocks_after_read_failure_until_reload()
@@ -568,6 +589,7 @@ int main()
   test_move_no_replace_preserves_collision();
   test_save_batch_aggregates_failures();
   test_persistence_guard_retries_io_failures();
+  test_failed_read_content_can_be_preserved_without_canonical_write();
   test_persistence_guard_blocks_after_read_failure_until_reload();
   test_persistence_guard_moves_path_state();
   test_io_errors_are_structured_and_clean();

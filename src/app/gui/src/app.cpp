@@ -491,9 +491,13 @@ bool record_project_save_error(const std::filesystem::path &path,
 }
 
 void record_project_read(const std::filesystem::path &path,
-                         const atomic_file::ReadResult &result)
+                         const atomic_file::ReadResult &result,
+                         bool explicit_reload = false)
 {
-  g_project_persistence_guard.record_read(path, result);
+  if(explicit_reload)
+    g_project_persistence_guard.record_reload(path, result);
+  else
+    g_project_persistence_guard.record_read(path, result);
   const std::string key = path.lexically_normal().generic_string();
   if(result && !g_project_persistence_guard.has_preserved_stale(path))
     g_unresolved_persistence_errors.erase(key);
@@ -543,11 +547,17 @@ std::string read_text_file(const std::string &path)
 bool save_project_text(const std::filesystem::path &path, std::string_view content)
 {
   if(path.empty()) return false;
-  if(!g_project_persistence_guard.may_write(path))
-    return record_project_save_error(
-        path, "canonical file was not read successfully: " +
-                  g_project_persistence_guard.read_error(path));
   if(g_project_persistence_guard.suppresses(path, content)) return false;
+
+  if(!g_project_persistence_guard.may_write(path))
+  {
+    auto result = atomic_file::preserve_recovery(path, content);
+    if(!g_project_persistence_guard.read_error(path).empty())
+      result.message += "; canonical read failed: " +
+                        g_project_persistence_guard.read_error(path);
+    g_project_persistence_guard.record_save(path, content, result);
+    return record_project_save(path, result);
+  }
 
   const auto result = g_project_files.save(path, content);
   g_project_persistence_guard.record_save(path, content, result);
@@ -980,7 +990,7 @@ void load_drawings_state()
   g_drawings_legacy_checked.clear();
 
   const auto loaded = g_project_files.load(g_drawings_file);
-  record_project_read(g_drawings_file, loaded);
+  record_project_read(g_drawings_file, loaded, true);
   if(!loaded)
   {
     LOG_ERROR(loaded.message);
@@ -1089,7 +1099,7 @@ void load_note_clipboard()
   g_copied_notes_batch.clear();
 
   const auto loaded = g_project_files.load(g_clipboard_file);
-  record_project_read(g_clipboard_file, loaded);
+  record_project_read(g_clipboard_file, loaded, true);
   if(!loaded)
   {
     LOG_ERROR(loaded.message);
@@ -1282,7 +1292,7 @@ int App::run()
     init_imgui();
     load_state();
     const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
-    record_project_read(imgui_ini_file_, ini_snapshot);
+    record_project_read(imgui_ini_file_, ini_snapshot, true);
     if(!ini_snapshot)
     {
       LOG_ERROR(ini_snapshot.message);
@@ -1477,7 +1487,7 @@ void App::load_state()
   index_paths_portable_ = true;
   index_source_document_.clear();
   const auto loaded_index = g_project_files.load(index_file_);
-  record_project_read(index_file_, loaded_index);
+  record_project_read(index_file_, loaded_index, true);
   if(!loaded_index)
   {
     LOG_ERROR(loaded_index.message);
@@ -1745,7 +1755,13 @@ bool App::save_state()
 
   if(!state_file_path_.empty())
   {
-    if(save_project_text(state_file_path_, markdown_text_))
+    if(!g_project_persistence_guard.may_write(state_file_path_) && !state_dirty_)
+    {
+      // Keep the read error visible, but do not create an empty recovery note
+      // until the failed-load placeholder was actually edited.
+      all_saved = false;
+    }
+    else if(save_project_text(state_file_path_, markdown_text_))
     {
       MarkdownSupport::notify_document_saved(state_file_path_);
       update_note_cache(state_file_path_, markdown_text_);
@@ -1953,7 +1969,7 @@ void App::load_profiles()
   reduced_profile_id_.clear();
 
   const auto loaded_profiles = g_project_files.load(profiles_file_);
-  record_project_read(profiles_file_, loaded_profiles);
+  record_project_read(profiles_file_, loaded_profiles, true);
   if(!loaded_profiles)
   {
     LOG_ERROR(loaded_profiles.message);
@@ -2626,7 +2642,7 @@ bool App::sync_project_files()
         {
           note_content_cache_.invalidate(n.path);
           const auto refreshed = g_project_files.load(n.path);
-          record_project_read(n.path, refreshed);
+          record_project_read(n.path, refreshed, true);
           if(!refreshed)
           {
             LOG_ERROR(refreshed.message);
@@ -2709,12 +2725,15 @@ void App::load_note_content_for_active()
   }
 
   const auto loaded_note = g_project_files.load(state_file_path_);
-  record_project_read(state_file_path_, loaded_note);
+  record_project_read(state_file_path_, loaded_note, true);
   if(!loaded_note)
   {
     LOG_ERROR(loaded_note.message);
     markdown_text_.clear();
-    state_dirty_ = true;
+    // Do not immediately persist the empty placeholder. If the user edits it,
+    // normal editor change tracking marks it dirty and save_project_text()
+    // preserves those bytes in a recovery note without touching unseen data.
+    state_dirty_ = false;
   }
   else if(loaded_note.snapshot.existed)
   {

@@ -65,6 +65,12 @@ ReadResult read_text(const std::filesystem::path &path) noexcept;
 SaveResult save_text(const std::filesystem::path &path, std::string_view desired,
                      const Snapshot *expected_previous = nullptr) noexcept;
 
+// Preserves desired bytes in a unique sibling recovery file without reading or
+// modifying the canonical path. Use this only when a prior canonical read
+// failed and overwriting unseen data must remain blocked.
+SaveResult preserve_recovery(const std::filesystem::path &path,
+                             std::string_view desired) noexcept;
+
 struct MoveResult
 {
   bool success = false;
@@ -110,6 +116,10 @@ class PersistenceGuard
 {
 public:
   void record_read(const std::filesystem::path &path, const ReadResult &result);
+  // A successful explicit reload also resolves stale suppression so unchanged
+  // desired bytes can be retried against the new snapshot. Callers must not
+  // report cached data as an explicit reload.
+  void record_reload(const std::filesystem::path &path, const ReadResult &result);
   bool may_write(const std::filesystem::path &path) const;
   std::string read_error(const std::filesystem::path &path) const;
 

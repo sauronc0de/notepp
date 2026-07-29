@@ -555,6 +555,36 @@ ReadResult read_text(const std::filesystem::path &path) noexcept
   }
 }
 
+SaveResult preserve_recovery(const std::filesystem::path &path,
+                             std::string_view desired) noexcept
+{
+  try
+  {
+    if(path.empty())
+      return io_error("cannot preserve recovery content for an empty path");
+
+    const IoResult parent = ensure_parent(path);
+    if(!parent.success)
+      return io_error(parent.message);
+
+    SaveResult result = preserve_stale(path, desired);
+    if(result.disposition == SaveDisposition::stale_preserved)
+      result.message = "canonical file was unavailable; local content preserved in '" +
+                       result.recovery_path.generic_string() + "'";
+    return result;
+  }
+  catch(const std::exception &error)
+  {
+    return io_error("cannot preserve recovery content beside '" +
+                    path.generic_string() + "': " + error.what());
+  }
+  catch(...)
+  {
+    return io_error("cannot preserve recovery content beside '" +
+                    path.generic_string() + "': unknown error");
+  }
+}
+
 SaveResult save_text(const std::filesystem::path &path, std::string_view desired,
                      const Snapshot *expected_previous) noexcept
 {
@@ -810,6 +840,14 @@ void PersistenceGuard::record_read(const std::filesystem::path &path,
   {
     read_errors_[key] = result.message;
   }
+}
+
+void PersistenceGuard::record_reload(const std::filesystem::path &path,
+                                     const ReadResult &result)
+{
+  record_read(path, result);
+  if(result)
+    preserved_stale_content_.erase(persistence_key(path));
 }
 
 bool PersistenceGuard::may_write(const std::filesystem::path &path) const
