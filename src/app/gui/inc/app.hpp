@@ -126,7 +126,7 @@ private:
   void limit_frame_rate();
   bool save_note_clipboard();
 #if USE_PORTABLE_PATHS
-  void switch_project(const std::filesystem::path &new_root);
+  bool switch_project(const std::filesystem::path &new_root);
 #endif
 
   std::filesystem::path default_state_file_;

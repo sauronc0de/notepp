@@ -629,6 +629,55 @@ SaveResult save_text(const std::filesystem::path &path, std::string_view desired
   }
 }
 
+MoveResult move_no_replace(const std::filesystem::path &from,
+                           const std::filesystem::path &to) noexcept
+{
+  try
+  {
+    std::error_code status_error;
+    const auto source_status = std::filesystem::symlink_status(from, status_error);
+    if(status_error)
+      return {false, false, error_message("cannot inspect source", from, status_error)};
+    if(!std::filesystem::is_regular_file(source_status))
+      return {false, false, "source is not a regular file: '" + from.generic_string() + "'"};
+
+#ifdef _WIN32
+    if(MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH) != 0)
+      return {true, false, {}};
+    const DWORD error = GetLastError();
+    const bool collision = error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS;
+    return {false, collision,
+            error_message("cannot move file", to,
+                          std::error_code(static_cast<int>(error), std::system_category()))};
+#else
+    if(::link(from.c_str(), to.c_str()) != 0)
+    {
+      const int error = errno;
+      return {false, error == EEXIST, posix_error("cannot move file", to, error)};
+    }
+    if(::unlink(from.c_str()) == 0)
+      return {true, false, {}};
+
+    const int unlink_error = errno;
+    if(::unlink(to.c_str()) != 0)
+    {
+      return {false, false,
+              posix_error("source unlink failed and destination rollback failed", from,
+                          unlink_error)};
+    }
+    return {false, false, posix_error("cannot unlink moved source", from, unlink_error)};
+#endif
+  }
+  catch(const std::exception &error)
+  {
+    return {false, false, "cannot move '" + from.generic_string() + "': " + error.what()};
+  }
+  catch(...)
+  {
+    return {false, false, "cannot move '" + from.generic_string() + "': unknown error"};
+  }
+}
+
 ReadResult SnapshotStore::load(const std::filesystem::path &path) noexcept
 {
   ReadResult result = read_text(path);
@@ -695,6 +744,12 @@ void SnapshotStore::forget(const std::filesystem::path &path)
 void SnapshotStore::clear() noexcept
 {
   snapshots_.clear();
+}
+
+SnapshotStore &shared_snapshot_store() noexcept
+{
+  static SnapshotStore store;
+  return store;
 }
 
 void SaveBatch::record(const std::filesystem::path &path,

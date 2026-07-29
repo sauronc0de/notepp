@@ -364,6 +364,44 @@ void test_snapshot_store_retains_expected_state_after_io_failure()
   expect_equal(read_direct(target), "local", "retry publishes retained dirty content");
 }
 
+void test_shared_snapshot_store_coordinates_writers()
+{
+  TempDirectory temp;
+  const fs::path file = temp.path() / "shared.md";
+  write_direct(file, "initial");
+
+  af::SnapshotStore &writer_one = af::shared_snapshot_store();
+  af::SnapshotStore &writer_two = af::shared_snapshot_store();
+  writer_one.clear();
+  expect(static_cast<bool>(writer_one.load(file)), "shared store loads initial bytes");
+  expect(static_cast<bool>(writer_one.save(file, "first")), "first writer saves shared bytes");
+  expect(static_cast<bool>(writer_two.save(file, "second")),
+         "second writer sees the advanced shared baseline");
+  expect_equal(read_direct(file), "second", "shared writers publish in sequence");
+  writer_one.clear();
+}
+
+void test_move_no_replace_preserves_collision()
+{
+  TempDirectory temp;
+  const fs::path source = temp.path() / "source.md";
+  const fs::path destination = temp.path() / "destination.md";
+  write_direct(source, "source");
+  write_direct(destination, "destination");
+
+  const af::MoveResult collision = af::move_no_replace(source, destination);
+  expect(!collision, "move refuses an existing destination");
+  expect(collision.destination_exists, "move reports a destination collision");
+  expect_equal(read_direct(source), "source", "collision preserves source bytes");
+  expect_equal(read_direct(destination), "destination", "collision preserves destination bytes");
+
+  fs::remove(destination);
+  const af::MoveResult moved = af::move_no_replace(source, destination);
+  expect(static_cast<bool>(moved), "move succeeds when destination is absent");
+  expect(!fs::exists(source), "successful move removes source");
+  expect_equal(read_direct(destination), "source", "successful move preserves source bytes");
+}
+
 void test_save_batch_aggregates_failures()
 {
   af::SaveBatch batch;
@@ -420,6 +458,8 @@ int main()
   test_snapshot_store_advances_only_after_success();
   test_snapshot_store_follows_renamed_file();
   test_snapshot_store_retains_expected_state_after_io_failure();
+  test_shared_snapshot_store_coordinates_writers();
+  test_move_no_replace_preserves_collision();
   test_save_batch_aggregates_failures();
   test_io_errors_are_structured_and_clean();
 

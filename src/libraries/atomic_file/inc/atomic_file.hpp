@@ -65,6 +65,19 @@ ReadResult read_text(const std::filesystem::path &path) noexcept;
 SaveResult save_text(const std::filesystem::path &path, std::string_view desired,
                      const Snapshot *expected_previous = nullptr) noexcept;
 
+struct MoveResult
+{
+  bool success = false;
+  bool destination_exists = false;
+  std::string message;
+
+  explicit operator bool() const noexcept { return success; }
+};
+
+// Moves a regular file without replacing an existing destination.
+MoveResult move_no_replace(const std::filesystem::path &from,
+                           const std::filesystem::path &to) noexcept;
+
 // Tracks exact loaded/successfully-saved bytes per file. Failed and stale saves
 // deliberately do not advance the expected snapshot, so callers retain dirty
 // state and retries cannot silently overwrite the canonical file.
@@ -82,6 +95,10 @@ public:
 private:
   std::unordered_map<std::string, Snapshot> snapshots_;
 };
+
+// One registry is shared by all project-content writers in the process so a
+// successful write through one UI surface updates every other writer's baseline.
+SnapshotStore &shared_snapshot_store() noexcept;
 
 struct SaveIssue
 {

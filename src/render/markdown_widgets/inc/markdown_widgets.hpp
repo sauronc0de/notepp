@@ -23,6 +23,7 @@ void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void set_terminal_command_handler(TerminalCommandHandler handler);
 std::string last_persistence_error();
+void reset_persistence_state();
 
 std::string capture_ui_state_snapshot();
 void apply_ui_state_snapshot(std::string_view snapshot);

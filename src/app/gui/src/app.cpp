@@ -443,9 +443,10 @@ std::string g_copied_folder_root_name;
 std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
 
-atomic_file::SnapshotStore g_project_files;
+atomic_file::SnapshotStore &g_project_files = atomic_file::shared_snapshot_store();
 atomic_file::SaveBatch g_project_save_batch;
 std::unordered_map<std::string, std::string> g_unresolved_persistence_errors;
+std::unordered_map<std::string, std::string> g_suppressed_save_content;
 std::string g_last_persistence_error;
 
 bool record_project_save(const std::filesystem::path &path,
@@ -456,6 +457,7 @@ bool record_project_save(const std::filesystem::path &path,
   if(result)
   {
     g_unresolved_persistence_errors.erase(key);
+    g_suppressed_save_content.erase(key);
     if(!result.message.empty())
     {
       LOG_WARNING("Saved '", path.generic_string(), "' with warning: ", result.message);
@@ -475,6 +477,18 @@ void track_project_file_move(const std::filesystem::path &from,
                              const std::filesystem::path &to)
 {
   g_project_files.moved(from, to);
+  const std::string from_key = from.lexically_normal().generic_string();
+  const std::string to_key = to.lexically_normal().generic_string();
+  if(auto error = g_unresolved_persistence_errors.extract(from_key); !error.empty())
+  {
+    error.key() = to_key;
+    g_unresolved_persistence_errors.insert(std::move(error));
+  }
+  if(auto blocked = g_suppressed_save_content.extract(from_key); !blocked.empty())
+  {
+    blocked.key() = to_key;
+    g_suppressed_save_content.insert(std::move(blocked));
+  }
   MarkdownSupport::notify_document_moved(from, to);
 }
 
@@ -525,13 +539,113 @@ std::string read_text_file(const std::string &path)
   return result.snapshot.content;
 }
 
-bool write_text_file(const std::string &path, std::string_view content)
+bool save_project_text(const std::filesystem::path &path, std::string_view content)
 {
   if(path.empty()) return false;
+  const std::string key = path.lexically_normal().generic_string();
+  if(const auto blocked = g_suppressed_save_content.find(key);
+     blocked != g_suppressed_save_content.end() && blocked->second == content)
+    return false;
+
   const auto result = g_project_files.save(path, content);
   const bool saved = record_project_save(path, result);
+  if(!saved)
+    g_suppressed_save_content[key] = std::string(content);
+  return saved;
+}
+
+bool write_text_file(const std::string &path, std::string_view content)
+{
+  const bool saved = save_project_text(path, content);
   if(saved) MarkdownSupport::notify_document_saved(path);
   return saved;
+}
+
+bool record_project_operation_error(const std::filesystem::path &path,
+                                    std::string message)
+{
+  g_last_persistence_error = "Project file operation failed for '" +
+                             path.generic_string() + "': " + std::move(message);
+  LOG_ERROR(g_last_persistence_error);
+  return false;
+}
+
+bool move_project_file(const std::filesystem::path &from,
+                       const std::filesystem::path &to)
+{
+  if(from == to) return true;
+  const auto loaded = g_project_files.ensure_loaded(from);
+  if(!loaded)
+    return record_project_operation_error(from, loaded.message);
+  const auto moved = atomic_file::move_no_replace(from, to);
+  if(!moved)
+    return record_project_operation_error(to, moved.message);
+  track_project_file_move(from, to);
+  g_suppressed_save_content.erase(from.lexically_normal().generic_string());
+  g_suppressed_save_content.erase(to.lexically_normal().generic_string());
+  return true;
+}
+
+bool move_project_files(
+    const std::vector<std::pair<std::filesystem::path, std::filesystem::path>> &moves)
+{
+  for(const auto &[from, to] : moves)
+  {
+    std::error_code exists_error;
+    if(std::filesystem::exists(to, exists_error) || exists_error)
+    {
+      record_project_operation_error(to, exists_error ? exists_error.message()
+                                                      : "destination already exists");
+      return false;
+    }
+    if(!std::filesystem::exists(from, exists_error) || exists_error)
+    {
+      record_project_operation_error(from, exists_error ? exists_error.message()
+                                                        : "source does not exist");
+      return false;
+    }
+  }
+
+  std::size_t completed = 0;
+  for(; completed < moves.size(); ++completed)
+  {
+    if(move_project_file(moves[completed].first, moves[completed].second)) continue;
+    while(completed > 0)
+    {
+      --completed;
+      if(!move_project_file(moves[completed].second, moves[completed].first))
+      {
+        LOG_ERROR("Cannot roll back partial project move");
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+bool soft_delete_project_file(const std::filesystem::path &path)
+{
+  if(path.empty()) return true;
+  std::error_code exists_error;
+  if(!std::filesystem::exists(path, exists_error)) return !exists_error;
+  const std::filesystem::path backup(path.string() + ".bak");
+  return move_project_file(path, backup);
+}
+
+bool restore_project_backup(const std::filesystem::path &path)
+{
+  const std::filesystem::path backup(path.string() + ".bak");
+  std::error_code exists_error;
+  if(std::filesystem::exists(path, exists_error))
+    return record_project_operation_error(path, "restore destination already exists");
+  if(exists_error)
+    return record_project_operation_error(path, exists_error.message());
+  if(!std::filesystem::exists(backup, exists_error))
+  {
+    if(exists_error) return record_project_operation_error(backup, exists_error.message());
+    return false;
+  }
+  return move_project_file(backup, path);
 }
 
 static bool is_image_file_ext(const std::filesystem::path &p)
@@ -674,18 +788,47 @@ static void flush_pending_note_fonts()
 #endif
 }
 
+static std::string read_binary_file(const std::filesystem::path &path)
+{
+  std::ifstream input(path, std::ios::binary);
+  if(!input) return {};
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+static std::string publish_binary_to_folder(const std::string &src_path,
+                                            const std::filesystem::path &folder_dir,
+                                            bool always_unique)
+{
+  const std::filesystem::path source(src_path);
+  std::error_code error;
+  if(!std::filesystem::is_regular_file(source, error) || error) return {};
+  std::filesystem::create_directories(folder_dir, error);
+  if(error) return {};
+
+  const std::string content = read_binary_file(source);
+  if(content.empty() && std::filesystem::file_size(source, error) != 0) return {};
+  const std::string base_name = source.stem().string();
+  const std::string extension = source.extension().string();
+  std::filesystem::path destination = folder_dir / source.filename();
+  int suffix = 2;
+  while(std::filesystem::exists(destination, error))
+  {
+    if(error) return {};
+    if(!always_unique && read_binary_file(destination) == content)
+      return destination.string();
+    destination = folder_dir / (base_name + "_" + std::to_string(suffix++) + extension);
+  }
+  if(error) return {};
+
+  g_project_files.expect_missing(destination);
+  if(!save_project_text(destination, content)) return {};
+  return destination.string();
+}
+
 static std::string copy_font_to_folder(const std::string &src_path,
                                        const std::filesystem::path &folder_dir)
 {
-  std::filesystem::path src(src_path);
-  std::error_code ec;
-  if(!std::filesystem::exists(src, ec)) return {};
-  std::filesystem::create_directories(folder_dir, ec);
-  std::filesystem::path dest = folder_dir / src.filename();
-  if(!std::filesystem::exists(dest, ec))
-    std::filesystem::copy_file(src, dest, ec);
-  if(ec) return {};
-  return dest.string();
+  return publish_binary_to_folder(src_path, folder_dir, false);
 }
 
 static void reveal_in_file_explorer(const std::string &file_path)
@@ -736,19 +879,7 @@ static void open_directory(const std::filesystem::path &dir)
 static std::string copy_image_to_folder(const std::string &src_path,
                                         const std::filesystem::path &folder_dir)
 {
-  std::filesystem::path src(src_path);
-  std::error_code ec;
-  if(!std::filesystem::exists(src, ec)) return {};
-  std::filesystem::create_directories(folder_dir, ec);
-  const std::string base_name = src.stem().string();
-  const std::string ext = src.extension().string();
-  std::filesystem::path dest = folder_dir / src.filename();
-  int suffix = 2;
-  while(std::filesystem::exists(dest, ec))
-    dest = folder_dir / (base_name + "_" + std::to_string(suffix++) + ext);
-  std::filesystem::copy_file(src, dest, ec);
-  if(ec) return {};
-  return dest.string();
+  return publish_binary_to_folder(src_path, folder_dir, true);
 }
 
 float dist2(ImVec2 a, ImVec2 b)
@@ -945,8 +1076,7 @@ bool save_drawings_state()
     }
   }
 
-  const auto result = g_project_files.save(g_drawings_file, out.str());
-  const bool saved = record_project_save(g_drawings_file, result);
+  const bool saved = save_project_text(g_drawings_file, out.str());
   if(saved) g_drawings_dirty = false;
   return saved;
 }
@@ -990,6 +1120,24 @@ void load_note_clipboard()
 }
 } // namespace
 
+void write_persistence_failure_report(const AppConfig &config)
+{
+  std::ostringstream report;
+  report << "Notepp could not save every canonical project file.\n";
+  for(const auto &[path, error] : g_unresolved_persistence_errors)
+    report << path << ": " << error << '\n';
+  const std::string preview_error = MarkdownSupport::last_persistence_error();
+  if(!preview_error.empty()) report << preview_error << '\n';
+  const std::string widget_error = MarkdownWidgets::last_persistence_error();
+  if(!widget_error.empty()) report << widget_error << '\n';
+  const auto saved = atomic_file::save_text(
+      config.configPath / "last_persistence_error.txt", report.str());
+  if(!saved)
+  {
+    LOG_ERROR("Cannot write persistence failure report: ", saved.message);
+  }
+}
+
 bool App::save_note_clipboard()
 {
   std::ostringstream out;
@@ -1014,8 +1162,7 @@ bool App::save_note_clipboard()
       out << ",\n  \"font_size\": " << ci.font_size;
   }
   out << "\n}\n";
-  const auto result = g_project_files.save(g_clipboard_file, out.str());
-  const bool saved = record_project_save(g_clipboard_file, result);
+  const bool saved = save_project_text(g_clipboard_file, out.str());
   if(saved) g_clipboard_dirty = false;
   return saved;
 }
@@ -1026,7 +1173,9 @@ App::App(AppConfig config)
   g_project_files.clear();
   g_project_save_batch.clear();
   g_unresolved_persistence_errors.clear();
+  g_suppressed_save_content.clear();
   g_last_persistence_error.clear();
+  MarkdownWidgets::reset_persistence_state();
   std::filesystem::create_directories(config_.dataPath);
   std::filesystem::create_directories(config_.configPath);
 
@@ -1074,13 +1223,19 @@ App::App(AppConfig config)
 }
 
 #if USE_PORTABLE_PATHS
-void App::switch_project(const std::filesystem::path &new_root)
+bool App::switch_project(const std::filesystem::path &new_root)
 {
-  save_state();
+  if(!save_state())
+  {
+    LOG_ERROR("Project switch cancelled because project files could not be saved");
+    return false;
+  }
   g_project_files.clear();
   g_project_save_batch.clear();
   g_unresolved_persistence_errors.clear();
+  g_suppressed_save_content.clear();
   g_last_persistence_error.clear();
+  MarkdownWidgets::reset_persistence_state();
 
   auto project = notepp::project::create_or_open_project(new_root);
   config_.projectRoot = project.root;
@@ -1114,6 +1269,7 @@ void App::switch_project(const std::filesystem::path &new_root)
 
   reset_sidebar_state_ = true;
   load_state();
+  return true;
 }
 #endif
 
@@ -1199,7 +1355,7 @@ int App::run()
       }
     }
 
-    save_state();
+    last_save_succeeded_ = save_state();
     shutdown();
     return 0;
   }
@@ -1229,25 +1385,6 @@ void App::shutdown()
     if(!save_profiles()) last_save_succeeded_ = false;
   }
 
-  std::unordered_set<std::string> alive_paths;
-  for(const FolderMeta &f : folders_)
-  {
-    for(const NoteMeta &n : f.notes)
-    {
-      if(!n.path.empty()) alive_paths.insert(n.path);
-    }
-  }
-
-  for(const std::string &p : pending_fs_delete_paths_)
-  {
-    if(p.empty()) continue;
-    if(alive_paths.find(p) != alive_paths.end()) continue;
-    std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(p), ec);
-    std::filesystem::remove(std::filesystem::path(p + ".bak"), ec);
-  }
-  pending_fs_delete_paths_.clear();
-
   if(file_watch_timer_ != 0)
   {
     SDL_RemoveTimer(file_watch_timer_);
@@ -1259,10 +1396,40 @@ void App::shutdown()
   {
     std::size_t ini_size = 0;
     const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
-    const auto ini_result = g_project_files.save(
-        imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
-    if(!record_project_save(imgui_ini_file_, ini_result))
+    if(!save_project_text(
+           imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size)))
       last_save_succeeded_ = false;
+  }
+
+  if(last_save_succeeded_ && g_unresolved_persistence_errors.empty() &&
+     MarkdownSupport::last_persistence_error().empty() &&
+     MarkdownWidgets::last_persistence_error().empty())
+  {
+    std::unordered_set<std::string> alive_paths;
+    for(const FolderMeta &folder : folders_)
+      for(const NoteMeta &note : folder.notes)
+        if(!note.path.empty()) alive_paths.insert(note.path);
+
+    for(const std::string &path : pending_fs_delete_paths_)
+    {
+      if(path.empty() || alive_paths.contains(path)) continue;
+      std::error_code remove_error;
+      std::filesystem::remove(std::filesystem::path(path + ".bak"), remove_error);
+      if(remove_error)
+      {
+        LOG_WARNING("Cannot remove backup '", path, ".bak': ", remove_error.message());
+      }
+    }
+    pending_fs_delete_paths_.clear();
+  }
+  else
+  {
+    LOG_ERROR("Project close retained recovery files because persistence was incomplete");
+    write_persistence_failure_report(config_);
+  }
+
+  if(ImGui::GetCurrentContext())
+  {
     NoteUi::destroy_icon_shader();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
@@ -1574,8 +1741,7 @@ bool App::save_state()
 
   if(!state_file_path_.empty())
   {
-    const auto result = g_project_files.save(state_file_path_, markdown_text_);
-    if(record_project_save(state_file_path_, result))
+    if(save_project_text(state_file_path_, markdown_text_))
     {
       MarkdownSupport::notify_document_saved(state_file_path_);
       update_note_cache(state_file_path_, markdown_text_);
@@ -1770,8 +1936,7 @@ bool App::save_index()
 
   std::string serialized = root.dump(2);
   serialized.push_back('\n');
-  const auto result = g_project_files.save(index_file_, serialized);
-  if(!record_project_save(index_file_, result)) return false;
+  if(!save_project_text(index_file_, serialized)) return false;
   index_source_document_ = std::move(serialized);
   return true;
 }
@@ -1925,8 +2090,7 @@ bool App::save_profiles()
   }
   out << "  ]\n";
   out << "}\n";
-  const auto result = g_project_files.save(profiles_file_, out.str());
-  return record_project_save(profiles_file_, result);
+  return save_project_text(profiles_file_, out.str());
 }
 
 void App::capture_to_active_profile()
@@ -2538,6 +2702,12 @@ void App::load_note_content_for_active()
   }
 
   const auto loaded_note = g_project_files.load(state_file_path_);
+  const std::string loaded_key = std::filesystem::path(state_file_path_).lexically_normal().generic_string();
+  if(loaded_note)
+  {
+    g_unresolved_persistence_errors.erase(loaded_key);
+    g_suppressed_save_content.erase(loaded_key);
+  }
   if(!loaded_note)
   {
     LOG_ERROR(loaded_note.message);
@@ -2606,14 +2776,15 @@ void App::rename_note_storage_for_title(const std::string &new_title)
     return;
   }
 
-  std::error_code ec;
+  std::error_code exists_error;
   std::filesystem::path current_path(state_file_path_);
-  if(std::filesystem::exists(current_path, ec))
+  if(std::filesystem::exists(current_path, exists_error) &&
+     !move_project_file(current_path, new_path))
+    return;
+  if(exists_error)
   {
-    if(std::filesystem::exists(new_path, ec))
-      std::filesystem::remove(new_path, ec);
-    std::filesystem::rename(current_path, new_path, ec);
-    if(!ec) track_project_file_move(current_path, new_path);
+    record_project_save_error(current_path, exists_error.message());
+    return;
   }
 
   state_file_path_ = new_path.string();
@@ -2637,14 +2808,15 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
 
   if(new_path.string() != n.path)
   {
-    std::error_code ec;
+    std::error_code exists_error;
     std::filesystem::path old_path(n.path);
-    if(std::filesystem::exists(old_path, ec))
+    if(std::filesystem::exists(old_path, exists_error) &&
+       !move_project_file(old_path, new_path))
+      return;
+    if(exists_error)
     {
-      if(std::filesystem::exists(new_path, ec))
-        std::filesystem::remove(new_path, ec);
-      std::filesystem::rename(old_path, new_path, ec);
-      if(!ec) track_project_file_move(old_path, new_path);
+      record_project_save_error(old_path, exists_error.message());
+      return;
     }
     n.path = new_path.string();
   }
@@ -2928,15 +3100,20 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
 
   for(const auto &[path, content] : restored_contents)
   {
-    write_text_file(path, content);
-    std::error_code bak_ec;
-    std::filesystem::remove(std::filesystem::path(path + ".bak"), bak_ec);
+    if(write_text_file(path, content))
+    {
+      std::error_code backup_error;
+      std::filesystem::remove(std::filesystem::path(path + ".bak"), backup_error);
+      if(!backup_error) g_project_files.forget(std::filesystem::path(path + ".bak"));
+    }
   }
   for(const std::string &path : current_paths)
   {
     if(path.empty() || target_paths.count(path) != 0) continue;
-    std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(path), ec);
+    if(soft_delete_project_file(path) &&
+       std::find(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path) ==
+           pending_fs_delete_paths_.end())
+      pending_fs_delete_paths_.push_back(path);
   }
 
   folders_ = std::move(restored_folders);
@@ -3964,14 +4141,13 @@ void App::frame_ui()
 
   auto remove_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
+    const std::filesystem::path backup(path + ".bak");
+    std::error_code exists_error;
+    const bool has_backup = std::filesystem::exists(backup, exists_error);
+    if(exists_error || (has_backup && !restore_project_backup(path))) return;
     pending_fs_delete_paths_.erase(
         std::remove(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path),
         pending_fs_delete_paths_.end());
-    // If the file was renamed to .bak on deletion, restore it now
-    std::error_code rp_ec;
-    const std::string bak = path + ".bak";
-    if(!std::filesystem::exists(path, rp_ec) && std::filesystem::exists(bak, rp_ec))
-      std::filesystem::rename(bak, path, rp_ec);
   };
   auto flash_key_folder = [](const std::string &folder_name) { return std::string("F:") + folder_name; };
   auto flash_key_note = [](const std::string &note_path) { return std::string("N:") + note_path; };
@@ -4552,9 +4728,7 @@ void App::frame_ui()
           const std::string &bak_path = bak_candidates[(size_t)bi];
           // Original path is bak_path without the ".bak" suffix
           const std::string orig = bak_path.substr(0, bak_path.size() - 4);
-          std::error_code ren_ec;
-          fs::rename(fs::path(bak_path), fs::path(orig), ren_ec);
-          if(!ren_ec)
+          if(restore_project_backup(orig))
           {
             // Remove from pending-delete list so the app won't clean it up
             pending_fs_delete_paths_.erase(
@@ -4742,22 +4916,21 @@ void App::frame_ui()
 
             if(target_name != old_name)
             {
-              for(NoteMeta &n : rf.notes)
+              std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;
+              moves.reserve(rf.notes.size());
+              for(const NoteMeta &note : rf.notes)
               {
-                const std::string new_path = make_note_path(target_name, n.title);
-                std::filesystem::create_directories(std::filesystem::path(new_path).parent_path());
-                std::error_code ec;
-                if(std::filesystem::exists(std::filesystem::path(n.path), ec))
-                {
-                  if(std::filesystem::exists(std::filesystem::path(new_path), ec))
-                    std::filesystem::remove(std::filesystem::path(new_path), ec);
-                  const std::filesystem::path old_note_path(n.path);
-                  const std::filesystem::path new_note_path(new_path);
-                  std::filesystem::rename(old_note_path, new_note_path, ec);
-                  if(!ec) track_project_file_move(old_note_path, new_note_path);
-                }
-                n.path = new_path;
+                const std::filesystem::path new_path = make_note_path(target_name, note.title);
+                std::filesystem::create_directories(new_path.parent_path());
+                moves.emplace_back(note.path, new_path);
               }
+              if(!move_project_files(moves))
+              {
+                ImGui::CloseCurrentPopup();
+                return;
+              }
+              for(std::size_t index = 0; index < rf.notes.size(); ++index)
+                rf.notes[index].path = moves[index].second.string();
               rf.name = target_name;
 
               auto it = g_folder_drawings.find(old_name);
@@ -4793,11 +4966,8 @@ void App::frame_ui()
         const std::filesystem::path new_path = old_path.parent_path() / rename_image_buf;
         if(new_path != old_path)
         {
-          std::error_code ren_ec;
-          std::filesystem::rename(old_path, new_path, ren_ec);
-          if(!ren_ec)
+          if(move_project_file(old_path, new_path))
           {
-            track_project_file_move(old_path, new_path);
             for(auto &img_path : rf.images)
             {
               if(img_path == rename_image_current_path)
@@ -5600,14 +5770,15 @@ void App::frame_ui()
             if(ImGui::MenuItem(Lang::t("Delete image")))
             {
               const std::string img_path = img.path;
-              std::error_code img_ec;
-              std::filesystem::rename(img_path, img_path + ".bak", img_ec);
-              f.images.erase(
-                  std::remove(f.images.begin(), f.images.end(), img_path),
-                  f.images.end());
-              invalidate_folder_image_cache(f.name);
-              queue_pending_delete_path(img_path);
-              save_index();
+              if(soft_delete_project_file(img_path))
+              {
+                f.images.erase(
+                    std::remove(f.images.begin(), f.images.end(), img_path),
+                    f.images.end());
+                invalidate_folder_image_cache(f.name);
+                queue_pending_delete_path(img_path);
+                save_index();
+              }
             }
             ImGui::EndPopup();
           }
@@ -5983,11 +6154,7 @@ void App::frame_ui()
       {
         if(ni < 0 || ni >= (int)df.notes.size()) continue;
         const std::string del_path = df.notes[(size_t)ni].path;
-        if(!del_path.empty())
-        {
-          std::error_code ren_ec;
-          std::filesystem::rename(del_path, del_path + ".bak", ren_ec);
-        }
+        if(!del_path.empty() && !soft_delete_project_file(del_path)) continue;
         queue_pending_delete_path(del_path);
         df.notes.erase(df.notes.begin() + ni);
       }
@@ -6031,15 +6198,11 @@ void App::frame_ui()
       for(int idx : to_remove)
       {
         FolderMeta &df = folders_[(size_t)idx];
-        for(const NoteMeta &n : df.notes)
-        {
-          if(!n.path.empty())
-          {
-            std::error_code ren_ec;
-            std::filesystem::rename(n.path, n.path + ".bak", ren_ec);
-          }
-          queue_pending_delete_path(n.path);
-        }
+        std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;
+        for(const NoteMeta &note : df.notes)
+          if(!note.path.empty()) moves.emplace_back(note.path, note.path + ".bak");
+        if(!move_project_files(moves)) continue;
+        for(const NoteMeta &note : df.notes) queue_pending_delete_path(note.path);
         folders_.erase(folders_.begin() + idx);
       }
       if(!parent_folder_to_mark.empty()) flash_mark_folder(parent_folder_to_mark, ImVec4(0.90f, 0.32f, 0.32f, 1.0f));
@@ -6189,15 +6352,10 @@ void App::frame_ui()
         nm.title = make_unique_note_title(dst_fi, nm.title);
         const std::string new_path = make_note_path(dst.name, nm.title);
         std::filesystem::create_directories(std::filesystem::path(new_path).parent_path());
-        std::error_code ec;
-        if(std::filesystem::exists(std::filesystem::path(nm.path), ec))
+        if(!move_project_file(nm.path, new_path))
         {
-          if(std::filesystem::exists(std::filesystem::path(new_path), ec))
-            std::filesystem::remove(std::filesystem::path(new_path), ec);
-          const std::filesystem::path old_note_path(nm.path);
-          const std::filesystem::path new_note_path(new_path);
-          std::filesystem::rename(old_note_path, new_note_path, ec);
-          if(!ec) track_project_file_move(old_note_path, new_note_path);
+          src.notes.push_back(std::move(nm));
+          continue;
         }
         nm.path = new_path;
         remove_pending_delete_path(new_path);
@@ -6278,22 +6436,19 @@ void App::frame_ui()
           FolderMeta &mf = folders_[(size_t)idx];
           const std::string old_name = mf.name;
           const std::string new_name = name_map[old_name];
-          for(NoteMeta &n : mf.notes)
+          std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;
+          moves.reserve(mf.notes.size());
+          for(const NoteMeta &note : mf.notes)
           {
-            const std::string new_path = make_note_path(new_name, n.title);
-            std::filesystem::create_directories(std::filesystem::path(new_path).parent_path());
-            std::error_code ec;
-            if(std::filesystem::exists(std::filesystem::path(n.path), ec))
-            {
-              if(std::filesystem::exists(std::filesystem::path(new_path), ec))
-                std::filesystem::remove(std::filesystem::path(new_path), ec);
-              const std::filesystem::path old_note_path(n.path);
-              const std::filesystem::path new_note_path(new_path);
-              std::filesystem::rename(old_note_path, new_note_path, ec);
-              if(!ec) track_project_file_move(old_note_path, new_note_path);
-            }
-            n.path = new_path;
-            remove_pending_delete_path(new_path);
+            const std::filesystem::path new_path = make_note_path(new_name, note.title);
+            std::filesystem::create_directories(new_path.parent_path());
+            moves.emplace_back(note.path, new_path);
+          }
+          if(!move_project_files(moves)) continue;
+          for(std::size_t note_index = 0; note_index < mf.notes.size(); ++note_index)
+          {
+            mf.notes[note_index].path = moves[note_index].second.string();
+            remove_pending_delete_path(mf.notes[note_index].path);
           }
           mf.name = new_name;
         }
@@ -6345,11 +6500,10 @@ void App::frame_ui()
       const std::filesystem::path dst_dir = (dst_f.name == ".")
                                                 ? config_.dataPath
                                                 : (config_.dataPath / dst_f.name);
-      std::error_code mv_ec;
-      std::filesystem::create_directories(dst_dir, mv_ec);
+      std::error_code create_error;
+      std::filesystem::create_directories(dst_dir, create_error);
       const std::filesystem::path dst_path = dst_dir / src_path.filename();
-      std::filesystem::rename(src_path, dst_path, mv_ec);
-      if(!mv_ec)
+      if(!create_error && move_project_file(src_path, dst_path))
       {
         src_f.images.erase(
             std::remove(src_f.images.begin(), src_f.images.end(), pending_move_image_path),
@@ -8867,11 +9021,7 @@ __CURSOR__)MD",
           {
             if(idx < 0 || idx >= (int)f.notes.size()) continue;
             const std::string del_path = f.notes[(size_t)idx].path;
-            if(!del_path.empty())
-            {
-              std::error_code ren_ec;
-              std::filesystem::rename(del_path, del_path + ".bak", ren_ec);
-            }
+            if(!del_path.empty() && !soft_delete_project_file(del_path)) continue;
             queue_pending_delete_path(del_path);
             f.notes.erase(f.notes.begin() + idx);
           }

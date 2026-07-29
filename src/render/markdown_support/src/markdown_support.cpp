@@ -395,20 +395,29 @@ void render_mermaid_block(std::string_view mermaid_type, std::string_view body, 
 using Json = nlohmann::json;
 
 static std::string g_preview_state_file = DATA_PATH "/markdown_preview_state.json";
-static atomic_file::SnapshotStore g_preview_files;
-static std::string g_preview_persistence_error;
+static atomic_file::SnapshotStore &g_preview_files = atomic_file::shared_snapshot_store();
+static std::unordered_map<std::string, std::string> g_preview_persistence_errors;
+static std::unordered_map<std::string, std::string> g_preview_suppressed_content;
 
-bool record_preview_save(const std::filesystem::path &path,
-                         const atomic_file::SaveResult &result)
+bool save_preview_file(const std::filesystem::path &path, std::string_view content)
 {
+  const std::string key = path.lexically_normal().generic_string();
+  if(const auto blocked = g_preview_suppressed_content.find(key);
+     blocked != g_preview_suppressed_content.end() && blocked->second == content)
+    return false;
+
+  const auto result = g_preview_files.save(path, content);
   if(result)
   {
-    g_preview_persistence_error.clear();
+    g_preview_persistence_errors.erase(key);
+    g_preview_suppressed_content.erase(key);
     return true;
   }
-  g_preview_persistence_error = "cannot save '" + path.generic_string() + "': " + result.message;
+  std::string error = "cannot save '" + path.generic_string() + "': " + result.message;
   if(!result.recovery_path.empty())
-    g_preview_persistence_error += " Recovery: " + result.recovery_path.generic_string();
+    error += " Recovery: " + result.recovery_path.generic_string();
+  g_preview_persistence_errors[key] = std::move(error);
+  g_preview_suppressed_content[key] = std::string(content);
   return false;
 }
 
@@ -541,11 +550,14 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
   if(preview.section_start > preview.section_end) return false;
 
   const auto loaded = g_preview_files.load(preview.path);
+  const std::string preview_key = std::filesystem::path(preview.path).lexically_normal().generic_string();
   if(!loaded || !loaded.snapshot.existed)
   {
-    if(!loaded) g_preview_persistence_error = loaded.message;
+    if(!loaded) g_preview_persistence_errors[preview_key] = loaded.message;
     return false;
   }
+  g_preview_persistence_errors.erase(preview_key);
+  g_preview_suppressed_content.erase(preview_key);
   const std::string &file_content = loaded.snapshot.content;
   if(preview.section_end > file_content.size()) return false;
 
@@ -555,8 +567,7 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
                                              modified_body);
   if(updated == file_content) return false; // nothing actually changed
 
-  const auto result = g_preview_files.save(preview.path, updated);
-  if(!record_preview_save(preview.path, result)) return false;
+  if(!save_preview_file(preview.path, updated)) return false;
 
   // Refresh the cached body so the next frame renders the edited content.
   MarkdownView::update_hover_preview_body(modified_body);
@@ -723,7 +734,7 @@ void ensure_preview_state_loaded()
   g_preview_state_json = Json::object();
   const auto loaded = g_preview_files.load(g_preview_state_file);
   if(!loaded)
-    g_preview_persistence_error = loaded.message;
+    g_preview_persistence_errors[g_preview_state_file] = loaded.message;
   else if(loaded.snapshot.existed)
   {
     g_preview_state_json = Json::parse(loaded.snapshot.content, nullptr, false);
@@ -920,9 +931,7 @@ bool save_preview_state_if_dirty()
   if(!g_preview_state_dirty) return true;
   ensure_preview_state_loaded();
 
-  const auto result = g_preview_files.save(g_preview_state_file,
-                                           g_preview_state_json.dump(2));
-  if(!record_preview_save(g_preview_state_file, result)) return false;
+  if(!save_preview_file(g_preview_state_file, g_preview_state_json.dump(2))) return false;
   g_preview_state_dirty = false;
   return true;
 }
@@ -1861,9 +1870,11 @@ void set_preview_document_path(std::string_view path)
 
   if(!path.empty())
   {
-    const auto loaded = g_preview_files.ensure_loaded(
-        std::filesystem::path(std::string(path)));
-    if(!loaded) g_preview_persistence_error = loaded.message;
+    const std::filesystem::path document_path{std::string(path)};
+    const auto loaded = g_preview_files.ensure_loaded(document_path);
+    const std::string key = document_path.lexically_normal().generic_string();
+    if(!loaded)
+      g_preview_persistence_errors[key] = loaded.message;
   }
   g_preview_document_path.assign(path.data(), path.size());
   g_preview_document_key = portable_document_key(path);
@@ -1874,20 +1885,39 @@ void set_preview_document_path(std::string_view path)
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to)
 {
-  g_preview_files.moved(from, to);
   MarkdownWidgets::notify_document_moved(from, to);
+  const std::string from_key = from.lexically_normal().generic_string();
+  const std::string to_key = to.lexically_normal().generic_string();
+  if(auto error = g_preview_persistence_errors.extract(from_key); !error.empty())
+  {
+    error.key() = to_key;
+    g_preview_persistence_errors.insert(std::move(error));
+  }
+  if(auto blocked = g_preview_suppressed_content.extract(from_key); !blocked.empty())
+  {
+    blocked.key() = to_key;
+    g_preview_suppressed_content.insert(std::move(blocked));
+  }
 }
 
 void notify_document_saved(const std::filesystem::path &path)
 {
   const auto loaded = g_preview_files.load(path);
-  if(!loaded) g_preview_persistence_error = loaded.message;
+  const std::string key = path.lexically_normal().generic_string();
+  if(!loaded)
+    g_preview_persistence_errors[key] = loaded.message;
+  else
+  {
+    g_preview_persistence_errors.erase(key);
+    g_preview_suppressed_content.erase(key);
+  }
 }
 
 void set_preview_state_path(const std::filesystem::path &path)
 {
   g_preview_files.clear();
-  g_preview_persistence_error.clear();
+  g_preview_persistence_errors.clear();
+  g_preview_suppressed_content.clear();
   g_preview_state_file = path.string();
   g_preview_project_root = path.parent_path().parent_path();
   g_preview_project_paths.emplace(g_preview_project_root);
@@ -1910,7 +1940,13 @@ bool flush_preview_state()
 
 std::string last_persistence_error()
 {
-  return g_preview_persistence_error;
+  std::string combined;
+  for(const auto &[path, error] : g_preview_persistence_errors)
+  {
+    if(!combined.empty()) combined += "\n";
+    combined += path + ": " + error;
+  }
+  return combined;
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)

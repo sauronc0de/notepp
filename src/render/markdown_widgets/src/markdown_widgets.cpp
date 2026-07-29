@@ -34,18 +34,23 @@ namespace MarkdownWidgets
 
 static std::filesystem::path g_widget_document_path;
 static TerminalCommandHandler g_terminal_command_handler;
-static atomic_file::SnapshotStore g_widget_files;
-static std::string g_widget_persistence_error;
+static atomic_file::SnapshotStore &g_widget_files = atomic_file::shared_snapshot_store();
+static std::unordered_map<std::string, std::string> g_widget_persistence_errors;
+static std::unordered_map<std::string, std::string> g_widget_suppressed_content;
+namespace
+{
+void reset_widget_caches();
+}
 
 void set_widget_document_path(std::filesystem::path path)
 {
   g_widget_document_path = std::move(path);
 }
 
-void notify_document_moved(const std::filesystem::path &from,
-                           const std::filesystem::path &to)
+void notify_document_moved(const std::filesystem::path &,
+                           const std::filesystem::path &)
 {
-  g_widget_files.moved(from, to);
+  reset_widget_caches();
 }
 
 void set_terminal_command_handler(TerminalCommandHandler handler)
@@ -55,7 +60,20 @@ void set_terminal_command_handler(TerminalCommandHandler handler)
 
 std::string last_persistence_error()
 {
-  return g_widget_persistence_error;
+  std::string combined;
+  for(const auto &[path, error] : g_widget_persistence_errors)
+  {
+    if(!combined.empty()) combined += "\n";
+    combined += path + ": " + error;
+  }
+  return combined;
+}
+
+void reset_persistence_state()
+{
+  g_widget_persistence_errors.clear();
+  g_widget_suppressed_content.clear();
+  reset_widget_caches();
 }
 
 namespace
@@ -5720,9 +5738,11 @@ static std::string read_globals_file(const std::filesystem::path &path)
   const auto loaded = g_widget_files.load(path);
   if(!loaded || !loaded.snapshot.existed)
   {
-    if(!loaded) g_widget_persistence_error = loaded.message;
+    if(!loaded) g_widget_persistence_errors[key] = loaded.message;
     return {};
   }
+  g_widget_persistence_errors.erase(key);
+  g_widget_suppressed_content.erase(key);
   g_globals_file_cache[key] = {mtime, loaded.snapshot.content};
   return loaded.snapshot.content;
 }
@@ -5730,6 +5750,15 @@ static std::string read_globals_file(const std::filesystem::path &path)
 static std::map<std::string, VariableDecl> g_globals_decl_cache;
 static int g_globals_decl_cache_frame = -1;
 static std::filesystem::path g_globals_decl_cache_doc;
+
+void reset_widget_caches()
+{
+  g_globals_file_cache.clear();
+  g_globals_decl_cache.clear();
+  g_globals_decl_cache_frame = -1;
+  g_globals_decl_cache_doc.clear();
+  g_block_parse_cache.clear();
+}
 
 static void invalidate_globals_decl_cache() { g_globals_decl_cache_frame = -1; }
 
@@ -5770,15 +5799,22 @@ static void apply_global_replacements_to_disk(
     }
 
     // Write back without overwriting an externally changed globals file.
+    const std::string key = std::filesystem::path(file_path).lexically_normal().generic_string();
+    if(const auto blocked = g_widget_suppressed_content.find(key);
+       blocked != g_widget_suppressed_content.end() && blocked->second == content)
+      continue;
     const auto result = g_widget_files.save(file_path, content);
     if(!result)
     {
-      g_widget_persistence_error = result.message;
+      std::string error = result.message;
       if(!result.recovery_path.empty())
-        g_widget_persistence_error += " Recovery: " + result.recovery_path.generic_string();
+        error += " Recovery: " + result.recovery_path.generic_string();
+      g_widget_persistence_errors[key] = std::move(error);
+      g_widget_suppressed_content[key] = content;
       continue;
     }
-    g_widget_persistence_error.clear();
+    g_widget_persistence_errors.erase(key);
+    g_widget_suppressed_content.erase(key);
 
     // Update the in-memory file cache with the new content so subsequent
     // reads in the same frame see the updated values without a false mtime miss

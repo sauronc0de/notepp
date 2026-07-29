@@ -203,13 +203,17 @@ void save_last_project_path(const fs::path &path)
   const auto recentFile = get_recent_projects_file();
   const std::string pathStr = path.generic_string();
   std::vector<std::string> lines;
+  const auto recent_loaded = g_settings_files.load(recentFile);
+  if(!recent_loaded)
   {
-    std::ifstream rf(recentFile);
-    std::string line;
-    while(std::getline(rf, line))
-      if(!line.empty() && line != pathStr)
-        lines.push_back(line);
+    LOG_ERROR("Cannot read recent projects before update: ", recent_loaded.message);
+    return;
   }
+  std::istringstream recent_input(recent_loaded.snapshot.content);
+  std::string line;
+  while(std::getline(recent_input, line))
+    if(!line.empty() && line != pathStr)
+      lines.push_back(line);
   lines.insert(lines.begin(), pathStr);
   if(lines.size() > 10) lines.resize(10);
 
