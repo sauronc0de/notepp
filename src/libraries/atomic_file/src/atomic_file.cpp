@@ -1,13 +1,11 @@
 #include "atomic_file.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <exception>
-#include <fstream>
-#include <iterator>
 #include <limits>
 #include <sstream>
 #include <system_error>
@@ -29,6 +27,7 @@ namespace atomic_file
 namespace
 {
 constexpr unsigned int kUniqueAttempts = 64;
+constexpr std::size_t kMaxSiblingComponent = 240;
 std::atomic<std::uint64_t> g_unique_counter{0};
 
 enum class PublishDisposition
@@ -59,7 +58,6 @@ struct PublishResult
 
 std::string unique_token()
 {
-  const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
   const auto counter = g_unique_counter.fetch_add(1, std::memory_order_relaxed);
 #ifdef _WIN32
   const auto process_id = static_cast<unsigned long long>(GetCurrentProcessId());
@@ -67,7 +65,7 @@ std::string unique_token()
   const auto process_id = static_cast<unsigned long long>(getpid());
 #endif
   std::ostringstream out;
-  out << process_id << '-' << static_cast<unsigned long long>(now) << '-' << counter;
+  out << std::hex << process_id << '-' << counter;
   return out.str();
 }
 
@@ -75,21 +73,27 @@ std::filesystem::path sibling_with_suffix(const std::filesystem::path &path,
                                           std::string_view suffix, bool preserve_extension)
 {
   using NativeString = std::filesystem::path::string_type;
-  const std::filesystem::path suffix_path{std::string(suffix)};
-  const NativeString native_suffix = suffix_path.native();
+  const NativeString native_suffix = std::filesystem::path(std::string(suffix)).native();
   const std::filesystem::path filename = path.filename();
-  NativeString name;
-  if(preserve_extension)
+  NativeString extension = preserve_extension ? filename.extension().native() : NativeString{};
+  NativeString base = preserve_extension ? filename.stem().native() : filename.native();
+
+  if(native_suffix.size() + extension.size() >= kMaxSiblingComponent)
   {
-    name = filename.stem().native();
-    name += native_suffix;
-    name += filename.extension().native();
+    constexpr std::size_t kMaxPreservedExtension = 16;
+    if(extension.size() > kMaxPreservedExtension)
+      extension.erase(0, extension.size() - kMaxPreservedExtension);
   }
-  else
-  {
-    name = filename.native();
-    name += native_suffix;
-  }
+  const std::size_t fixed_size = native_suffix.size() + extension.size();
+  const std::size_t base_limit = fixed_size < kMaxSiblingComponent
+                                     ? kMaxSiblingComponent - fixed_size
+                                     : 1;
+  if(base.size() > base_limit)
+    base.resize(base_limit);
+
+  NativeString name = std::move(base);
+  name += native_suffix;
+  name += extension;
   return path.parent_path() / std::filesystem::path(std::move(name));
 }
 
@@ -146,8 +150,8 @@ TempResult write_unique_temp(const std::filesystem::path &destination, std::stri
 {
   for(unsigned int attempt = 0; attempt < kUniqueAttempts; ++attempt)
   {
-    const auto temp = sibling_with_suffix(destination, ".notepp-tmp-" + unique_token(), false);
-    const int raw_fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    const auto temp = sibling_with_suffix(destination, ".~npp-t-" + unique_token(), false);
+    const int raw_fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if(raw_fd < 0)
     {
       if(errno == EEXIST)
@@ -156,20 +160,6 @@ TempResult write_unique_temp(const std::filesystem::path &destination, std::stri
     }
 
     FileDescriptor fd(raw_fd);
-    struct stat destination_status
-    {
-    };
-    if(::stat(destination.c_str(), &destination_status) == 0)
-    {
-      if(::fchmod(fd.get(), destination_status.st_mode & 07777) != 0)
-      {
-        const int saved_errno = errno;
-        fd.reset();
-        (void)::unlink(temp.c_str());
-        return {false, {}, posix_error("cannot set temporary file permissions", temp, saved_errno)};
-      }
-    }
-
     std::size_t written = 0;
     while(written < content.size())
     {
@@ -190,6 +180,19 @@ TempResult write_unique_temp(const std::filesystem::path &destination, std::stri
         return {false, {}, "cannot write temporary file '" + temp.generic_string() + "': zero-byte write"};
       }
       written += static_cast<std::size_t>(count);
+    }
+
+    struct stat destination_status
+    {
+    };
+    if(::lstat(destination.c_str(), &destination_status) == 0 &&
+       !S_ISLNK(destination_status.st_mode) &&
+       ::fchmod(fd.get(), destination_status.st_mode & 07777) != 0)
+    {
+      const int saved_errno = errno;
+      fd.reset();
+      (void)::unlink(temp.c_str());
+      return {false, {}, posix_error("cannot set temporary file permissions", temp, saved_errno)};
     }
 
     if(::fsync(fd.get()) != 0)
@@ -229,18 +232,60 @@ PublishResult publish_missing(const std::filesystem::path &temp,
     return {PublishDisposition::error, posix_error("cannot publish destination", destination, errno)};
   }
   if(::unlink(temp.c_str()) != 0)
-    return {PublishDisposition::error, posix_error("cannot remove published temporary file", temp, errno)};
+    return {PublishDisposition::published,
+            posix_error("published destination but cannot remove temporary file", temp, errno)};
   return {PublishDisposition::published, {}};
 }
 
-void flush_parent_directory(const std::filesystem::path &destination) noexcept
+IoResult flush_parent_directory(const std::filesystem::path &destination) noexcept
 {
   const std::filesystem::path parent = destination.parent_path().empty()
                                            ? std::filesystem::path(".")
                                            : destination.parent_path();
   FileDescriptor fd(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-  if(fd.get() >= 0)
-    (void)::fsync(fd.get());
+  if(fd.get() < 0)
+    return {false, posix_error("published bytes but cannot open parent directory for flush", parent, errno)};
+  if(::fsync(fd.get()) != 0)
+    return {false, posix_error("published bytes but cannot flush parent directory", parent, errno)};
+  return {true, {}};
+}
+
+ReadResult platform_read_text(const std::filesystem::path &path)
+{
+  FileDescriptor fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+  if(fd.get() < 0)
+  {
+    if(errno == ENOENT)
+      return {true, {false, {}}, {}};
+    if(errno == ELOOP)
+      return {false, {}, "cannot read '" + path.generic_string() + "': final-component symlink rejected"};
+    return {false, {}, posix_error("cannot open file for reading", path, errno)};
+  }
+
+  struct stat status
+  {
+  };
+  if(::fstat(fd.get(), &status) != 0)
+    return {false, {}, posix_error("cannot inspect open file", path, errno)};
+  if(!S_ISREG(status.st_mode))
+    return {false, {}, "cannot read '" + path.generic_string() + "': not a regular file"};
+
+  std::string content;
+  if(status.st_size > 0)
+    content.reserve(static_cast<std::size_t>(status.st_size));
+  std::array<char, 64U * 1024U> buffer{};
+  for(;;)
+  {
+    const ssize_t count = ::read(fd.get(), buffer.data(), buffer.size());
+    if(count < 0)
+    {
+      if(errno == EINTR) continue;
+      return {false, {}, posix_error("cannot read file", path, errno)};
+    }
+    if(count == 0) break;
+    content.append(buffer.data(), static_cast<std::size_t>(count));
+  }
+  return {true, {true, std::move(content)}, {}};
 }
 #else
 class WinHandle
@@ -290,8 +335,8 @@ TempResult write_unique_temp(const std::filesystem::path &destination, std::stri
 {
   for(unsigned int attempt = 0; attempt < kUniqueAttempts; ++attempt)
   {
-    const auto temp = sibling_with_suffix(destination, ".notepp-tmp-" + unique_token(), false);
-    WinHandle handle(CreateFileW(temp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW,
+    const auto temp = sibling_with_suffix(destination, ".~npp-t-" + unique_token(), false);
+    WinHandle handle(CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                  FILE_ATTRIBUTE_NORMAL, nullptr));
     if(handle.get() == INVALID_HANDLE_VALUE)
     {
@@ -340,7 +385,8 @@ TempResult write_unique_temp(const std::filesystem::path &destination, std::stri
 PublishResult publish_existing(const std::filesystem::path &temp,
                                const std::filesystem::path &destination)
 {
-  if(!ReplaceFileW(destination.c_str(), temp.c_str(), nullptr, 0, nullptr, nullptr))
+  if(!ReplaceFileW(destination.c_str(), temp.c_str(), nullptr,
+                   REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
     return {PublishDisposition::error,
             windows_error("cannot replace destination", destination, GetLastError())};
   return {PublishDisposition::published, {}};
@@ -357,7 +403,68 @@ PublishResult publish_missing(const std::filesystem::path &temp,
   return {PublishDisposition::error, windows_error("cannot publish destination", destination, error)};
 }
 
-void flush_parent_directory(const std::filesystem::path &) noexcept {}
+IoResult flush_parent_directory(const std::filesystem::path &destination) noexcept
+{
+  const std::filesystem::path parent = destination.parent_path().empty()
+                                           ? std::filesystem::path(".")
+                                           : destination.parent_path();
+  WinHandle handle(CreateFileW(parent.c_str(), GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+  if(handle.get() == INVALID_HANDLE_VALUE)
+    return {false, windows_error("published bytes but cannot open parent directory for flush",
+                                 parent, GetLastError())};
+  if(!FlushFileBuffers(handle.get()))
+    return {false, windows_error("published bytes but cannot flush parent directory",
+                                 parent, GetLastError())};
+  return {true, {}};
+}
+
+ReadResult platform_read_text(const std::filesystem::path &path)
+{
+  WinHandle handle(CreateFileW(path.c_str(), GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                               FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+  if(handle.get() == INVALID_HANDLE_VALUE)
+  {
+    const DWORD error = GetLastError();
+    if(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+      return {true, {false, {}}, {}};
+    return {false, {}, windows_error("cannot open file for reading", path, error)};
+  }
+
+  FILE_ATTRIBUTE_TAG_INFO attributes{};
+  if(!GetFileInformationByHandleEx(handle.get(), FileAttributeTagInfo,
+                                   &attributes, sizeof(attributes)))
+    return {false, {}, windows_error("cannot inspect open file", path, GetLastError())};
+  if((attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    return {false, {}, "cannot read '" + path.generic_string() + "': final-component symlink rejected"};
+  if((attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+    return {false, {}, "cannot read '" + path.generic_string() + "': not a regular file"};
+
+  LARGE_INTEGER size{};
+  if(!GetFileSizeEx(handle.get(), &size))
+    return {false, {}, windows_error("cannot determine file size", path, GetLastError())};
+  if(size.QuadPart < 0 || static_cast<unsigned long long>(size.QuadPart) >
+                              static_cast<unsigned long long>((std::numeric_limits<std::size_t>::max)()))
+    return {false, {}, "cannot read '" + path.generic_string() + "': file is too large"};
+
+  std::string content(static_cast<std::size_t>(size.QuadPart), '\0');
+  std::size_t read_total = 0;
+  while(read_total < content.size())
+  {
+    const std::size_t remaining = content.size() - read_total;
+    const DWORD chunk = static_cast<DWORD>(
+        (std::min)(remaining, static_cast<std::size_t>((std::numeric_limits<DWORD>::max)())));
+    DWORD count = 0;
+    if(!ReadFile(handle.get(), content.data() + read_total, chunk, &count, nullptr))
+      return {false, {}, windows_error("cannot read file", path, GetLastError())};
+    if(count == 0)
+      return {false, {}, "cannot read '" + path.generic_string() + "': file changed while reading"};
+    read_total += static_cast<std::size_t>(count);
+  }
+  return {true, {true, std::move(content)}, {}};
+}
 #endif
 
 void remove_temp(const std::filesystem::path &path) noexcept
@@ -378,6 +485,13 @@ IoResult ensure_parent(const std::filesystem::path &path)
   return {true, {}};
 }
 
+void append_warning(std::string &message, std::string_view warning)
+{
+  if(warning.empty()) return;
+  if(!message.empty()) message += "; ";
+  message += warning;
+}
+
 SaveResult io_error(std::string message)
 {
   SaveResult result;
@@ -386,31 +500,42 @@ SaveResult io_error(std::string message)
   return result;
 }
 
-SaveResult preserve_stale(const std::filesystem::path &canonical, std::string_view desired)
+SaveResult preserve_temp_as_stale(const std::filesystem::path &canonical,
+                                  const std::filesystem::path &temp)
 {
   for(unsigned int attempt = 0; attempt < kUniqueAttempts; ++attempt)
   {
     const auto recovery = sibling_with_suffix(
-        canonical, ".notepp-local-conflict-" + unique_token(), true);
-    const TempResult temp = write_unique_temp(recovery, desired);
-    if(!temp.success)
-      return io_error(temp.message);
-
-    const PublishResult publish = publish_missing(temp.path, recovery);
+        canonical, ".~notepp-conflict-" + unique_token(), true);
+    const PublishResult publish = publish_missing(temp, recovery);
     if(publish.disposition == PublishDisposition::published)
     {
-      flush_parent_directory(recovery);
+      const IoResult durability = flush_parent_directory(recovery);
       SaveResult result;
       result.disposition = SaveDisposition::stale_preserved;
       result.recovery_path = recovery;
+      result.durability_confirmed = durability.success;
       result.message = "canonical file changed; local content preserved in '" + recovery.generic_string() + "'";
+      append_warning(result.message, publish.message);
+      if(!durability.success) append_warning(result.message, durability.message);
       return result;
     }
-    remove_temp(temp.path);
     if(publish.disposition == PublishDisposition::error)
+    {
+      remove_temp(temp);
       return io_error(publish.message);
+    }
   }
+  remove_temp(temp);
   return io_error("cannot allocate a unique conflict file beside '" + canonical.generic_string() + "'");
+}
+
+SaveResult preserve_stale(const std::filesystem::path &canonical, std::string_view desired)
+{
+  const TempResult temp = write_unique_temp(canonical, desired);
+  if(!temp.success)
+    return io_error(temp.message);
+  return preserve_temp_as_stale(canonical, temp.path);
 }
 } // namespace
 
@@ -418,26 +543,7 @@ ReadResult read_text(const std::filesystem::path &path) noexcept
 {
   try
   {
-    std::error_code error;
-    const auto status = std::filesystem::status(path, error);
-    if(error)
-    {
-      if(error == std::errc::no_such_file_or_directory)
-        return {true, {false, {}}, {}};
-      return {false, {}, error_message("cannot inspect file", path, error)};
-    }
-    if(!std::filesystem::exists(status))
-      return {true, {false, {}}, {}};
-    if(!std::filesystem::is_regular_file(status))
-      return {false, {}, "cannot read '" + path.generic_string() + "': not a regular file"};
-
-    std::ifstream input(path, std::ios::binary);
-    if(!input)
-      return {false, {}, "cannot open file for reading '" + path.generic_string() + "'"};
-    std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    if(input.bad())
-      return {false, {}, "cannot read file '" + path.generic_string() + "'"};
-    return {true, {true, std::move(content)}, {}};
+    return platform_read_text(path);
   }
   catch(const std::exception &error)
   {
@@ -473,6 +579,7 @@ SaveResult save_text(const std::filesystem::path &path, std::string_view desired
       SaveResult result;
       result.disposition = SaveDisposition::unchanged;
       result.new_snapshot = current.snapshot;
+      result.durability_confirmed = true;
       return result;
     }
 
@@ -480,21 +587,36 @@ SaveResult save_text(const std::filesystem::path &path, std::string_view desired
     if(!temp.success)
       return io_error(temp.message);
 
-    const PublishResult publish = current.snapshot.existed
+    // Preparing and flushing the temporary file may take long enough for an
+    // external writer to update the canonical path. Recheck immediately before
+    // publication and preserve the prepared bytes if the snapshot moved.
+    const ReadResult before_publish = read_text(path);
+    if(!before_publish)
+    {
+      remove_temp(temp.path);
+      return io_error(before_publish.message);
+    }
+    if(before_publish.snapshot != current.snapshot)
+      return preserve_temp_as_stale(path, temp.path);
+
+    const PublishResult publish = before_publish.snapshot.existed
                                       ? publish_existing(temp.path, path)
                                       : publish_missing(temp.path, path);
     if(publish.disposition != PublishDisposition::published)
     {
-      remove_temp(temp.path);
       if(publish.disposition == PublishDisposition::collision)
-        return preserve_stale(path, desired);
+        return preserve_temp_as_stale(path, temp.path);
+      remove_temp(temp.path);
       return io_error(publish.message);
     }
 
-    flush_parent_directory(path);
+    const IoResult durability = flush_parent_directory(path);
     SaveResult result;
     result.disposition = SaveDisposition::saved;
     result.new_snapshot = {true, std::string(desired)};
+    result.durability_confirmed = durability.success;
+    result.message = publish.message;
+    if(!durability.success) append_warning(result.message, durability.message);
     return result;
   }
   catch(const std::exception &error)

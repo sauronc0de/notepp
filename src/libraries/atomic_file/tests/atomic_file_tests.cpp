@@ -1,11 +1,23 @@
 #include "atomic_file.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 namespace fs = std::filesystem;
 namespace af = atomic_file;
@@ -69,7 +81,7 @@ std::string read_direct(const fs::path &path)
 bool has_temp_sibling(const fs::path &directory)
 {
   for(const auto &entry : fs::directory_iterator(directory))
-    if(entry.path().filename().string().find(".notepp-tmp-") != std::string::npos)
+    if(entry.path().filename().string().find(".~npp-t-") != std::string::npos)
       return true;
   return false;
 }
@@ -81,6 +93,9 @@ void test_create_replace_and_unchanged()
 
   const af::SaveResult created = af::save_text(file, "first");
   expect(created.disposition == af::SaveDisposition::saved, "missing file is created");
+#ifndef _WIN32
+  expect(created.durability_confirmed, "POSIX create confirms directory durability");
+#endif
   expect_equal(read_direct(file), "first", "created bytes match");
   expect(created.new_snapshot == af::Snapshot{true, "first"}, "created snapshot returned");
 
@@ -155,6 +170,134 @@ void test_unique_conflict_names()
   expect_equal(read_direct(second.recovery_path), "local two", "second conflict bytes retained");
 }
 
+void test_second_check_catches_synchronized_writer()
+{
+  TempDirectory temp;
+  const fs::path file = temp.path() / "race.md";
+  write_direct(file, "loaded");
+  const af::ReadResult loaded = af::read_text(file);
+  expect(static_cast<bool>(loaded), "race snapshot reads");
+
+  const std::string local(64U * 1024U * 1024U, 'L');
+  std::atomic<bool> saw_temp{false};
+  std::atomic<bool> temp_was_private{false};
+  std::thread external_writer([&] {
+    for(unsigned int attempt = 0; attempt < 200000U; ++attempt)
+    {
+      std::error_code error;
+      for(const auto &entry : fs::directory_iterator(temp.path(), error))
+      {
+        if(error) break;
+        if(entry.path().filename().string().find(".~npp-t-") == std::string::npos)
+          continue;
+        saw_temp.store(true, std::memory_order_release);
+#ifdef _WIN32
+        HANDLE reader = CreateFileW(entry.path().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if(reader == INVALID_HANDLE_VALUE && GetLastError() == ERROR_SHARING_VIOLATION)
+          temp_was_private.store(true, std::memory_order_release);
+        else if(reader != INVALID_HANDLE_VALUE)
+          CloseHandle(reader);
+#else
+        struct stat status
+        {
+        };
+        if(::stat(entry.path().c_str(), &status) == 0 && (status.st_mode & 0077) == 0)
+          temp_was_private.store(true, std::memory_order_release);
+#endif
+        write_direct(file, "external-during-save");
+        return;
+      }
+      std::this_thread::yield();
+    }
+  });
+
+  const af::SaveResult result = af::save_text(file, local, &loaded.snapshot);
+  external_writer.join();
+  expect(saw_temp.load(std::memory_order_acquire), "synchronized writer observed prepared temp");
+  expect(temp_was_private.load(std::memory_order_acquire), "temporary file is private while incomplete");
+  expect(result.disposition == af::SaveDisposition::stale_preserved,
+         "second comparison detects writer during preparation");
+  expect_equal(read_direct(file), "external-during-save", "racing canonical bytes survive");
+  expect(fs::exists(result.recovery_path), "racing local bytes receive recovery path");
+  expect(read_direct(result.recovery_path) == local, "racing local bytes survive exactly");
+}
+
+void test_final_component_symlink_is_rejected()
+{
+  TempDirectory temp;
+  const fs::path target = temp.path() / "target.md";
+  const fs::path link = temp.path() / "link.md";
+  write_direct(target, "target");
+  std::error_code error;
+  fs::create_symlink(target.filename(), link, error);
+  if(error)
+    return;
+
+  const af::ReadResult read = af::read_text(link);
+  expect(!read, "reading a final-component symlink is rejected");
+  const af::SaveResult save = af::save_text(link, "replacement");
+  expect(save.disposition == af::SaveDisposition::io_error,
+         "saving a final-component symlink is rejected");
+  expect(fs::is_symlink(fs::symlink_status(link)), "rejected save preserves symlink");
+  expect_equal(read_direct(target), "target", "rejected save preserves symlink target");
+}
+
+void test_long_canonical_name_allows_temp_and_conflict_names()
+{
+  TempDirectory temp;
+  const fs::path file = temp.path() / (std::string(220, 'a') + ".md");
+  const af::SaveResult created = af::save_text(file, "loaded");
+  expect(static_cast<bool>(created), "long canonical name saves");
+  write_direct(file, "external");
+
+  const af::SaveResult stale = af::save_text(file, "local", &created.new_snapshot);
+  expect(stale.disposition == af::SaveDisposition::stale_preserved,
+         "long canonical name permits conflict preservation");
+  expect(stale.recovery_path.extension() == ".md", "long-name conflict keeps extension");
+  expect(stale.recovery_path.filename().native().size() <= 240U,
+         "generated sibling component stays bounded");
+  expect_equal(read_direct(stale.recovery_path), "local", "long-name conflict bytes survive");
+}
+
+void test_existing_permissions_are_retained()
+{
+#ifndef _WIN32
+  TempDirectory temp;
+  const fs::path file = temp.path() / "permissions.md";
+  write_direct(file, "before");
+  expect(::chmod(file.c_str(), 0640) == 0, "test sets canonical permissions");
+  const af::ReadResult loaded = af::read_text(file);
+  const af::SaveResult saved = af::save_text(file, "after", &loaded.snapshot);
+  struct stat status
+  {
+  };
+  expect(static_cast<bool>(saved), "permission-preserving replacement saves");
+  expect(::stat(file.c_str(), &status) == 0, "replacement permissions can be inspected");
+  expect((status.st_mode & 0777) == 0640, "replacement retains canonical permissions");
+#endif
+}
+
+void test_directory_durability_warning_is_nonfatal()
+{
+#ifndef _WIN32
+  TempDirectory temp;
+  const fs::path restricted = temp.path() / "write-only-directory";
+  fs::create_directory(restricted);
+  expect(::chmod(restricted.c_str(), 0300) == 0, "test restricts directory reads");
+
+  const fs::path file = restricted / "note.md";
+  const af::SaveResult saved = af::save_text(file, "content");
+  expect(saved.disposition == af::SaveDisposition::saved,
+         "directory flush failure does not misreport publication failure");
+  expect(!saved.durability_confirmed, "directory flush failure is reported");
+  expect(!saved.message.empty(), "durability warning includes details");
+
+  expect(::chmod(restricted.c_str(), 0700) == 0, "test restores directory permissions");
+  expect_equal(read_direct(file), "content", "published bytes survive durability warning");
+#endif
+}
+
 void test_io_errors_are_structured_and_clean()
 {
   TempDirectory temp;
@@ -180,6 +323,11 @@ int main()
   test_expected_missing_race_preserves_both_versions();
   test_unicode_and_spaces();
   test_unique_conflict_names();
+  test_second_check_catches_synchronized_writer();
+  test_final_component_symlink_is_rejected();
+  test_long_canonical_name_allows_temp_and_conflict_names();
+  test_existing_permissions_are_retained();
+  test_directory_durability_warning_is_nonfatal();
   test_io_errors_are_structured_and_clean();
 
   if(failures != 0)
