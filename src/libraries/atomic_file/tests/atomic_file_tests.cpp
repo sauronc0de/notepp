@@ -298,6 +298,95 @@ void test_directory_durability_warning_is_nonfatal()
 #endif
 }
 
+void test_snapshot_store_advances_only_after_success()
+{
+  TempDirectory temp;
+  const fs::path file = temp.path() / "tracked.md";
+  write_direct(file, "loaded");
+
+  af::SnapshotStore store;
+  const af::ReadResult loaded = store.load(file);
+  expect(static_cast<bool>(loaded), "snapshot store loads canonical bytes");
+
+  const af::SaveResult saved = store.save(file, "local-one");
+  expect(static_cast<bool>(saved), "snapshot store saves against loaded snapshot");
+  expect_equal(read_direct(file), "local-one", "successful store save publishes bytes");
+
+  write_direct(file, "external");
+  const af::SaveResult stale = store.save(file, "local-two");
+  expect(stale.disposition == af::SaveDisposition::stale_preserved,
+         "snapshot store detects external changes");
+  expect_equal(read_direct(file), "external", "stale store save preserves canonical bytes");
+  expect_equal(read_direct(stale.recovery_path), "local-two",
+               "stale store save preserves desired bytes");
+
+  const af::SaveResult still_stale = store.save(file, "local-three");
+  expect(still_stale.disposition == af::SaveDisposition::stale_preserved,
+         "failed save does not advance expected snapshot");
+}
+
+void test_snapshot_store_follows_renamed_file()
+{
+  TempDirectory temp;
+  const fs::path old_path = temp.path() / "old.md";
+  const fs::path new_path = temp.path() / "new.md";
+  write_direct(old_path, "loaded");
+
+  af::SnapshotStore store;
+  expect(static_cast<bool>(store.load(old_path)), "rename test tracks original file");
+  fs::rename(old_path, new_path);
+  store.moved(old_path, new_path);
+  write_direct(new_path, "external");
+
+  const af::SaveResult stale = store.save(new_path, "local");
+  expect(stale.disposition == af::SaveDisposition::stale_preserved,
+         "renamed tracking still detects external changes");
+  expect_equal(read_direct(new_path), "external", "renamed stale canonical survives");
+}
+
+void test_snapshot_store_retains_expected_state_after_io_failure()
+{
+  TempDirectory temp;
+  const fs::path blocker = temp.path() / "blocked";
+  write_direct(blocker, "not a directory");
+  const fs::path target = blocker / "note.md";
+
+  af::SnapshotStore store;
+  store.expect_missing(target);
+  const af::SaveResult failed = store.save(target, "local");
+  expect(failed.disposition == af::SaveDisposition::io_error,
+         "snapshot store reports failed write");
+
+  fs::remove(blocker);
+  fs::create_directory(blocker);
+  const af::SaveResult retry = store.save(target, "local");
+  expect(static_cast<bool>(retry), "failed write retains expected state for retry");
+  expect_equal(read_direct(target), "local", "retry publishes retained dirty content");
+}
+
+void test_save_batch_aggregates_failures()
+{
+  af::SaveBatch batch;
+  af::SaveResult success;
+  success.disposition = af::SaveDisposition::unchanged;
+  success.new_snapshot = {true, "ok"};
+  batch.record("ok.md", success);
+  expect(batch.canonical_saves_succeeded(), "successful save keeps batch successful");
+
+  af::SaveResult stale;
+  stale.disposition = af::SaveDisposition::stale_preserved;
+  stale.recovery_path = "conflict.md";
+  stale.message = "stale";
+  batch.record("note.md", stale);
+  expect(!batch.canonical_saves_succeeded(), "stale save fails canonical batch");
+  expect(batch.issues().size() == 1, "batch retains one issue");
+  expect(batch.issues().front().path == fs::path("note.md"), "batch retains issue path");
+  expect(batch.issues().front().recovery_path == fs::path("conflict.md"),
+         "batch retains recovery path");
+  batch.clear();
+  expect(batch.canonical_saves_succeeded(), "cleared batch starts successful");
+}
+
 void test_io_errors_are_structured_and_clean()
 {
   TempDirectory temp;
@@ -328,6 +417,10 @@ int main()
   test_long_canonical_name_allows_temp_and_conflict_names();
   test_existing_permissions_are_retained();
   test_directory_durability_warning_is_nonfatal();
+  test_snapshot_store_advances_only_after_success();
+  test_snapshot_store_follows_renamed_file();
+  test_snapshot_store_retains_expected_state_after_io_failure();
+  test_save_batch_aggregates_failures();
   test_io_errors_are_structured_and_clean();
 
   if(failures != 0)

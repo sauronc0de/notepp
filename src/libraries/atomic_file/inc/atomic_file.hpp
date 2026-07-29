@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace atomic_file
 {
@@ -62,4 +64,42 @@ ReadResult read_text(const std::filesystem::path &path) noexcept;
 // the containing directory entry. The canonical bytes were still published.
 SaveResult save_text(const std::filesystem::path &path, std::string_view desired,
                      const Snapshot *expected_previous = nullptr) noexcept;
+
+// Tracks exact loaded/successfully-saved bytes per file. Failed and stale saves
+// deliberately do not advance the expected snapshot, so callers retain dirty
+// state and retries cannot silently overwrite the canonical file.
+class SnapshotStore
+{
+public:
+  ReadResult load(const std::filesystem::path &path) noexcept;
+  ReadResult ensure_loaded(const std::filesystem::path &path) noexcept;
+  SaveResult save(const std::filesystem::path &path, std::string_view desired) noexcept;
+  void expect_missing(const std::filesystem::path &path);
+  void moved(const std::filesystem::path &from, const std::filesystem::path &to);
+  void forget(const std::filesystem::path &path);
+  void clear() noexcept;
+
+private:
+  std::unordered_map<std::string, Snapshot> snapshots_;
+};
+
+struct SaveIssue
+{
+  std::filesystem::path path;
+  SaveDisposition disposition = SaveDisposition::io_error;
+  std::filesystem::path recovery_path;
+  std::string message;
+};
+
+class SaveBatch
+{
+public:
+  void record(const std::filesystem::path &path, const SaveResult &result);
+  bool canonical_saves_succeeded() const noexcept { return issues_.empty(); }
+  const std::vector<SaveIssue> &issues() const noexcept { return issues_; }
+  void clear() noexcept { issues_.clear(); }
+
+private:
+  std::vector<SaveIssue> issues_;
+};
 } // namespace atomic_file

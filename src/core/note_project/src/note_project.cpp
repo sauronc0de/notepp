@@ -1,5 +1,7 @@
 #include "note_project.hpp"
 
+#include "atomic_file.hpp"
+
 #include <array>
 #include <cstdio>
 #include <fstream>
@@ -27,6 +29,7 @@ namespace notepp::project
 namespace
 {
 constexpr int kProjectSchemaVersion = 2;
+atomic_file::SnapshotStore g_settings_files;
 
 std::string generate_project_id()
 {
@@ -52,14 +55,19 @@ void load_or_create_manifest(ProjectInfo &project, bool layout_ok)
   if(!layout_ok) return;
   using Json = nlohmann::json;
   Json manifest = Json::object();
-  bool should_write = !fs::exists(project.projectFile);
+  const auto loaded_manifest = atomic_file::read_text(project.projectFile);
+  if(!loaded_manifest)
+  {
+    LOG_ERROR(loaded_manifest.message);
+    return;
+  }
+  bool should_write = !loaded_manifest.snapshot.existed;
 
   if(!should_write)
   {
-    std::ifstream input(project.projectFile);
     try
     {
-      input >> manifest;
+      manifest = Json::parse(loaded_manifest.snapshot.content);
     }
     catch(const std::exception &error)
     {
@@ -118,18 +126,14 @@ void load_or_create_manifest(ProjectInfo &project, bool layout_ok)
 
   if(!should_write) return;
 
-  std::ofstream output(project.projectFile, std::ios::trunc);
-  if(!output)
+  std::string serialized = manifest.dump(2);
+  serialized.push_back('\n');
+  const auto saved = atomic_file::save_text(
+      project.projectFile, serialized, &loaded_manifest.snapshot);
+  if(!saved)
   {
-    LOG_ERROR("Cannot open project file for writing: ", project.projectFile.generic_string());
-    project.projectId.clear();
-    project.schemaVersion = 0;
-    return;
-  }
-  output << manifest.dump(2) << '\n';
-  if(!output)
-  {
-    LOG_ERROR("Cannot write project file: ", project.projectFile.generic_string());
+    LOG_ERROR("Cannot write project file: ", project.projectFile.generic_string(),
+              ": ", saved.message);
     project.projectId.clear();
     project.schemaVersion = 0;
   }
@@ -184,17 +188,16 @@ void save_last_project_path(const fs::path &path)
     return;
   }
 
-  std::ofstream file(get_config_file(), std::ios::trunc);
-
-  if(!file)
+  std::ostringstream config_content;
+  config_content << "{\n";
+  config_content << "  \"lastProjectPath\": \"" << json_escape(path.generic_string()) << "\"\n";
+  config_content << "}\n";
+  const auto config_saved = g_settings_files.save(get_config_file(), config_content.str());
+  if(!config_saved)
   {
-    LOG_ERROR("Cannot open notepp config file for writing");
+    LOG_ERROR("Cannot write notepp config file: ", config_saved.message);
     return;
   }
-
-  file << "{\n";
-  file << "  \"lastProjectPath\": \"" << json_escape(path.generic_string()) << "\"\n";
-  file << "}\n";
 
   // Maintain the recent projects list (most recent first, max 10)
   const auto recentFile = get_recent_projects_file();
@@ -210,17 +213,27 @@ void save_last_project_path(const fs::path &path)
   lines.insert(lines.begin(), pathStr);
   if(lines.size() > 10) lines.resize(10);
 
-  std::ofstream wf(recentFile, std::ios::trunc);
+  std::ostringstream recent_content;
   for(const auto &l : lines)
-    wf << l << "\n";
+    recent_content << l << "\n";
+  const auto recent_saved = g_settings_files.save(recentFile, recent_content.str());
+  if(!recent_saved)
+  {
+    LOG_ERROR("Cannot write recent projects: ", recent_saved.message);
+  }
 }
 
 std::vector<fs::path> load_recent_projects()
 {
-  std::ifstream file(get_recent_projects_file());
-  if(!file) return {};
+  const auto loaded = g_settings_files.load(get_recent_projects_file());
+  if(!loaded)
+  {
+    LOG_ERROR(loaded.message);
+    return {};
+  }
 
   std::vector<fs::path> result;
+  std::istringstream file(loaded.snapshot.content);
   std::string line;
   while(std::getline(file, line))
   {
@@ -239,15 +252,11 @@ std::optional<fs::path> load_last_project_path()
   if(!fs::exists(configFile))
     return std::nullopt;
 
-  std::ifstream file(configFile);
-
-  if(!file)
+  const auto loaded = g_settings_files.load(configFile);
+  if(!loaded || !loaded.snapshot.existed)
     return std::nullopt;
 
-  std::stringstream buffer;
-  buffer << file.rdbuf();
-
-  const std::string content = buffer.str();
+  const std::string &content = loaded.snapshot.content;
   const std::string key = "\"lastProjectPath\": \"";
 
   auto start = content.find(key);

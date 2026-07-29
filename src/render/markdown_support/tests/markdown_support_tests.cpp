@@ -77,6 +77,37 @@ void test_preview_key_collision_preserves_both_values()
          "both colliding preview values survive migration");
 }
 
+void test_preview_state_stale_save_preserves_both_versions()
+{
+  TempProject project;
+  const Json initial = {{"documents", Json::object()}};
+  std::ofstream(project.state_file()) << initial.dump(2);
+
+  MarkdownSupport::set_preview_state_path(project.state_file());
+  Json snapshot = Json::parse(MarkdownSupport::capture_preview_state_snapshot());
+  snapshot["preview"]["documents"]["notes/local.md"] = {{"open", true}};
+
+  const std::string external = Json{{"documents", Json{{"notes/external.md", {{"open", false}}}}}}.dump(2);
+  std::ofstream(project.state_file(), std::ios::trunc) << external;
+  MarkdownSupport::apply_preview_state_snapshot(snapshot.dump());
+
+  std::ifstream canonical_file(project.state_file());
+  const std::string canonical((std::istreambuf_iterator<char>(canonical_file)),
+                              std::istreambuf_iterator<char>());
+  expect(canonical == external, "stale preview save preserves external canonical bytes");
+  expect(!MarkdownSupport::last_persistence_error().empty(),
+         "stale preview save exposes an actionable error");
+  expect(!MarkdownSupport::flush_preview_state(),
+         "stale preview state remains dirty after failed save");
+
+  bool found_conflict = false;
+  for(const auto &entry : fs::directory_iterator(project.state_file().parent_path()))
+    if(entry.path() != project.state_file() &&
+       entry.path().filename().string().find("notepp-conflict") != std::string::npos)
+      found_conflict = true;
+  expect(found_conflict, "stale preview save preserves local bytes in a conflict file");
+}
+
 void test_quarantined_preview_key_is_retried()
 {
   TempProject project;
@@ -104,6 +135,7 @@ void test_quarantined_preview_key_is_retried()
 int main()
 {
   test_preview_key_collision_preserves_both_values();
+  test_preview_state_stale_save_preserves_both_versions();
   test_quarantined_preview_key_is_retried();
   if(failures != 0)
   {

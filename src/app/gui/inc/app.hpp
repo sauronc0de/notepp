@@ -36,8 +36,8 @@ private:
   void init_sdl_gl();
   void init_imgui();
   void load_state();
-  void save_state();
-  void save_index();
+  bool save_state();
+  bool save_index();
   void sync_active_folder_settings();
   void apply_folder_settings(int folder_idx);
   void load_note_content_for_active();
@@ -107,7 +107,7 @@ private:
   };
 
   void load_profiles();
-  void save_profiles();
+  bool save_profiles();
   void capture_to_active_profile();
   void apply_profile(const LayoutProfile &profile, bool apply_window_state = true);
   std::string create_profile(const std::string &name, bool maximized, int x, int y, int w, int h);
@@ -124,7 +124,7 @@ private:
   void frame_end();
   void configure_frame_limiter(bool software_gl);
   void limit_frame_rate();
-  void save_note_clipboard();
+  bool save_note_clipboard();
 #if USE_PORTABLE_PATHS
   void switch_project(const std::filesystem::path &new_root);
 #endif
@@ -226,6 +226,7 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
+  bool last_save_succeeded_ = true;
   int index_schema_version_ = 2;
   bool index_paths_portable_ = true;
   NoteHistory::HistoryManager history_;

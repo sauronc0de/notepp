@@ -1,5 +1,6 @@
 #include "markdown_support.hpp"
 
+#include "atomic_file.hpp"
 #include "markdown_sections.hpp"
 #include "markdown_view.hpp"
 #include "markdown_widgets.hpp"
@@ -394,6 +395,22 @@ void render_mermaid_block(std::string_view mermaid_type, std::string_view body, 
 using Json = nlohmann::json;
 
 static std::string g_preview_state_file = DATA_PATH "/markdown_preview_state.json";
+static atomic_file::SnapshotStore g_preview_files;
+static std::string g_preview_persistence_error;
+
+bool record_preview_save(const std::filesystem::path &path,
+                         const atomic_file::SaveResult &result)
+{
+  if(result)
+  {
+    g_preview_persistence_error.clear();
+    return true;
+  }
+  g_preview_persistence_error = "cannot save '" + path.generic_string() + "': " + result.message;
+  if(!result.recovery_path.empty())
+    g_preview_persistence_error += " Recovery: " + result.recovery_path.generic_string();
+  return false;
+}
 
 struct TableViewState
 {
@@ -523,9 +540,13 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
   if(preview.path.empty()) return false;
   if(preview.section_start > preview.section_end) return false;
 
-  std::ifstream in(preview.path, std::ios::binary);
-  if(!in) return false;
-  const std::string file_content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto loaded = g_preview_files.load(preview.path);
+  if(!loaded || !loaded.snapshot.existed)
+  {
+    if(!loaded) g_preview_persistence_error = loaded.message;
+    return false;
+  }
+  const std::string &file_content = loaded.snapshot.content;
   if(preview.section_end > file_content.size()) return false;
 
   const std::string updated = splice_section(file_content,
@@ -534,10 +555,8 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
                                              modified_body);
   if(updated == file_content) return false; // nothing actually changed
 
-  std::ofstream out(preview.path, std::ios::binary | std::ios::trunc);
-  if(!out) return false;
-  out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
-  if(!out.good()) return false;
+  const auto result = g_preview_files.save(preview.path, updated);
+  if(!record_preview_save(preview.path, result)) return false;
 
   // Refresh the cached body so the next frame renders the edited content.
   MarkdownView::update_hover_preview_body(modified_body);
@@ -702,17 +721,14 @@ void ensure_preview_state_loaded()
   g_preview_state_loaded = true;
 
   g_preview_state_json = Json::object();
-  std::ifstream in(g_preview_state_file, std::ios::binary);
-  if(in)
+  const auto loaded = g_preview_files.load(g_preview_state_file);
+  if(!loaded)
+    g_preview_persistence_error = loaded.message;
+  else if(loaded.snapshot.existed)
   {
-    try
-    {
-      in >> g_preview_state_json;
-    }
-    catch(...)
-    {
+    g_preview_state_json = Json::parse(loaded.snapshot.content, nullptr, false);
+    if(g_preview_state_json.is_discarded())
       g_preview_state_json = Json::object();
-    }
   }
 
   if(!g_preview_state_json.is_object()) g_preview_state_json = Json::object();
@@ -899,15 +915,16 @@ TableViewState &table_state_for(const std::string &doc_key, int table_id)
   return inserted->second;
 }
 
-void save_preview_state_if_dirty()
+bool save_preview_state_if_dirty()
 {
-  if(!g_preview_state_dirty) return;
+  if(!g_preview_state_dirty) return true;
   ensure_preview_state_loaded();
 
-  std::ofstream out(g_preview_state_file, std::ios::binary | std::ios::trunc);
-  if(!out) return;
-  out << g_preview_state_json.dump(2);
+  const auto result = g_preview_files.save(g_preview_state_file,
+                                           g_preview_state_json.dump(2));
+  if(!record_preview_save(g_preview_state_file, result)) return false;
   g_preview_state_dirty = false;
+  return true;
 }
 
 bool set_all_preview_headers_open_impl(std::string_view document_path, std::string_view markdown, bool open)
@@ -1024,9 +1041,8 @@ void apply_preview_state_snapshot_impl(std::string_view snapshot)
     preview_state["documents"] = Json::object();
   g_preview_state_json = std::move(preview_state);
   MarkdownWidgets::apply_ui_state_snapshot(ui_state.dump());
-
-  std::ofstream out(g_preview_state_file, std::ios::binary | std::ios::trunc);
-  if(out) out << g_preview_state_json.dump(2);
+  g_preview_state_dirty = true;
+  save_preview_state_if_dirty();
 }
 
 std::string to_lower_ascii_copy(std::string_view s)
@@ -1843,14 +1859,35 @@ void set_preview_document_path(std::string_view path)
 {
   if(path == g_preview_document_path) return;
 
+  if(!path.empty())
+  {
+    const auto loaded = g_preview_files.ensure_loaded(
+        std::filesystem::path(std::string(path)));
+    if(!loaded) g_preview_persistence_error = loaded.message;
+  }
   g_preview_document_path.assign(path.data(), path.size());
   g_preview_document_key = portable_document_key(path);
   MarkdownView::set_document_path(path);
   MarkdownWidgets::set_widget_document_path(std::filesystem::path(path));
 }
 
+void notify_document_moved(const std::filesystem::path &from,
+                           const std::filesystem::path &to)
+{
+  g_preview_files.moved(from, to);
+  MarkdownWidgets::notify_document_moved(from, to);
+}
+
+void notify_document_saved(const std::filesystem::path &path)
+{
+  const auto loaded = g_preview_files.load(path);
+  if(!loaded) g_preview_persistence_error = loaded.message;
+}
+
 void set_preview_state_path(const std::filesystem::path &path)
 {
+  g_preview_files.clear();
+  g_preview_persistence_error.clear();
   g_preview_state_file = path.string();
   g_preview_project_root = path.parent_path().parent_path();
   g_preview_project_paths.emplace(g_preview_project_root);
@@ -1864,6 +1901,16 @@ void set_preview_state_path(const std::filesystem::path &path)
   g_preview_state_dirty = false;
   g_table_state_cache.clear();
   g_preview_document_key = portable_document_key(g_preview_document_path);
+}
+
+bool flush_preview_state()
+{
+  return save_preview_state_if_dirty();
+}
+
+std::string last_persistence_error()
+{
+  return g_preview_persistence_error;
 }
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)

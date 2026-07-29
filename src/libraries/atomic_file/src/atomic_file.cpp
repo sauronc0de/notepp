@@ -628,4 +628,79 @@ SaveResult save_text(const std::filesystem::path &path, std::string_view desired
     return io_error("cannot save '" + path.generic_string() + "': unknown error");
   }
 }
+
+ReadResult SnapshotStore::load(const std::filesystem::path &path) noexcept
+{
+  ReadResult result = read_text(path);
+  if(result)
+    snapshots_[path.lexically_normal().generic_string()] = result.snapshot;
+  return result;
+}
+
+ReadResult SnapshotStore::ensure_loaded(const std::filesystem::path &path) noexcept
+{
+  const std::string key = path.lexically_normal().generic_string();
+  if(const auto found = snapshots_.find(key); found != snapshots_.end())
+    return {true, found->second, {}};
+  return load(path);
+}
+
+SaveResult SnapshotStore::save(const std::filesystem::path &path,
+                               std::string_view desired) noexcept
+{
+  const std::string key = path.lexically_normal().generic_string();
+  auto found = snapshots_.find(key);
+  if(found == snapshots_.end())
+  {
+    ReadResult loaded = load(path);
+    if(!loaded)
+    {
+      SaveResult failed;
+      failed.disposition = SaveDisposition::io_error;
+      failed.message = std::move(loaded.message);
+      return failed;
+    }
+    found = snapshots_.find(key);
+  }
+
+  SaveResult result = save_text(path, desired, &found->second);
+  if(result)
+    found->second = result.new_snapshot;
+  return result;
+}
+
+void SnapshotStore::expect_missing(const std::filesystem::path &path)
+{
+  snapshots_[path.lexically_normal().generic_string()] = Snapshot{};
+}
+
+void SnapshotStore::moved(const std::filesystem::path &from,
+                          const std::filesystem::path &to)
+{
+  const std::string from_key = from.lexically_normal().generic_string();
+  const std::string to_key = to.lexically_normal().generic_string();
+  snapshots_.erase(to_key);
+  if(auto node = snapshots_.extract(from_key); !node.empty())
+  {
+    node.key() = to_key;
+    snapshots_.insert(std::move(node));
+  }
+}
+
+void SnapshotStore::forget(const std::filesystem::path &path)
+{
+  snapshots_.erase(path.lexically_normal().generic_string());
+}
+
+void SnapshotStore::clear() noexcept
+{
+  snapshots_.clear();
+}
+
+void SaveBatch::record(const std::filesystem::path &path,
+                       const SaveResult &result)
+{
+  if(result) return;
+  issues_.push_back({path, result.disposition, result.recovery_path, result.message});
+}
 } // namespace atomic_file

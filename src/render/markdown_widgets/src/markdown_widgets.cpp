@@ -1,5 +1,6 @@
 #include "markdown_widgets.hpp"
 
+#include "atomic_file.hpp"
 #include "button_action.hpp"
 #include "markdown_view.hpp"
 #include "string_utils.hpp"
@@ -33,15 +34,28 @@ namespace MarkdownWidgets
 
 static std::filesystem::path g_widget_document_path;
 static TerminalCommandHandler g_terminal_command_handler;
+static atomic_file::SnapshotStore g_widget_files;
+static std::string g_widget_persistence_error;
 
 void set_widget_document_path(std::filesystem::path path)
 {
   g_widget_document_path = std::move(path);
 }
 
+void notify_document_moved(const std::filesystem::path &from,
+                           const std::filesystem::path &to)
+{
+  g_widget_files.moved(from, to);
+}
+
 void set_terminal_command_handler(TerminalCommandHandler handler)
 {
   g_terminal_command_handler = std::move(handler);
+}
+
+std::string last_persistence_error()
+{
+  return g_widget_persistence_error;
 }
 
 namespace
@@ -5703,11 +5717,14 @@ static std::string read_globals_file(const std::filesystem::path &path)
     if(it->second.mtime == mtime) return it->second.content;
   }
 
-  std::ifstream in(path, std::ios::binary);
-  if(!in) return {};
-  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  g_globals_file_cache[key] = {mtime, content};
-  return content;
+  const auto loaded = g_widget_files.load(path);
+  if(!loaded || !loaded.snapshot.existed)
+  {
+    if(!loaded) g_widget_persistence_error = loaded.message;
+    return {};
+  }
+  g_globals_file_cache[key] = {mtime, loaded.snapshot.content};
+  return loaded.snapshot.content;
 }
 
 static std::map<std::string, VariableDecl> g_globals_decl_cache;
@@ -5752,11 +5769,16 @@ static void apply_global_replacements_to_disk(
       content.replace(abs_start, abs_end - abs_start, value);
     }
 
-    // Write back to disk
-    std::ofstream out(file_path, std::ios::binary | std::ios::trunc);
-    if(!out) continue;
-    out.write(content.data(), static_cast<std::streamsize>(content.size()));
-    out.close();
+    // Write back without overwriting an externally changed globals file.
+    const auto result = g_widget_files.save(file_path, content);
+    if(!result)
+    {
+      g_widget_persistence_error = result.message;
+      if(!result.recovery_path.empty())
+        g_widget_persistence_error += " Recovery: " + result.recovery_path.generic_string();
+      continue;
+    }
+    g_widget_persistence_error.clear();
 
     // Update the in-memory file cache with the new content so subsequent
     // reads in the same frame see the updated values without a false mtime miss

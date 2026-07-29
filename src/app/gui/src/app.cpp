@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "atomic_file.hpp"
 #ifdef IMGUI_ENABLE_FREETYPE
 #include "imgui_freetype.h"
 #endif
@@ -442,6 +443,50 @@ std::string g_copied_folder_root_name;
 std::vector<CopiedFolderEntry> g_copied_folder_entries;
 bool g_clipboard_dirty = false;
 
+atomic_file::SnapshotStore g_project_files;
+atomic_file::SaveBatch g_project_save_batch;
+std::unordered_map<std::string, std::string> g_unresolved_persistence_errors;
+std::string g_last_persistence_error;
+
+bool record_project_save(const std::filesystem::path &path,
+                         const atomic_file::SaveResult &result)
+{
+  g_project_save_batch.record(path, result);
+  const std::string key = path.lexically_normal().generic_string();
+  if(result)
+  {
+    g_unresolved_persistence_errors.erase(key);
+    if(!result.message.empty())
+    {
+      LOG_WARNING("Saved '", path.generic_string(), "' with warning: ", result.message);
+    }
+    return true;
+  }
+
+  g_last_persistence_error = result.message;
+  if(!result.recovery_path.empty())
+    g_last_persistence_error += " Recovery: " + result.recovery_path.generic_string();
+  g_unresolved_persistence_errors[key] = g_last_persistence_error;
+  LOG_ERROR("Cannot save '", path.generic_string(), "': ", g_last_persistence_error);
+  return false;
+}
+
+void track_project_file_move(const std::filesystem::path &from,
+                             const std::filesystem::path &to)
+{
+  g_project_files.moved(from, to);
+  MarkdownSupport::notify_document_moved(from, to);
+}
+
+bool record_project_save_error(const std::filesystem::path &path,
+                               std::string message)
+{
+  atomic_file::SaveResult result;
+  result.disposition = atomic_file::SaveDisposition::io_error;
+  result.message = std::move(message);
+  return record_project_save(path, result);
+}
+
 #ifdef NOTEPP_DEBUG_UI
 static float g_dbg_swap_ms = 0.f;
 static float g_dbg_begin_ms = 0.f;
@@ -471,17 +516,22 @@ std::string read_text_file(const std::string &path)
 #ifdef NOTEPP_DEBUG_UI
   ++g_dbg_disk_reads;
 #endif
-  std::ifstream in(path, std::ios::binary);
-  if(!in) return {};
-  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto result = g_project_files.ensure_loaded(path);
+  if(!result)
+  {
+    LOG_ERROR(result.message);
+    return {};
+  }
+  return result.snapshot.content;
 }
 
-void write_text_file(const std::string &path, std::string_view content)
+bool write_text_file(const std::string &path, std::string_view content)
 {
-  if(path.empty()) return;
-  std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if(out) out.write(content.data(), static_cast<std::streamsize>(content.size()));
+  if(path.empty()) return false;
+  const auto result = g_project_files.save(path, content);
+  const bool saved = record_project_save(path, result);
+  if(saved) MarkdownSupport::notify_document_saved(path);
+  return saved;
 }
 
 static bool is_image_file_ext(const std::filesystem::path &p)
@@ -799,9 +849,13 @@ void load_drawings_state()
   g_draw_redo.clear();
   g_drawings_legacy_checked.clear();
 
-  std::ifstream in(g_drawings_file, std::ios::binary);
-  if(!in) return;
-
+  const auto loaded = g_project_files.load(g_drawings_file);
+  if(!loaded)
+  {
+    LOG_ERROR(loaded.message);
+    return;
+  }
+  std::istringstream in(loaded.snapshot.content);
   std::string line;
   std::string current_folder;
   while(std::getline(in, line))
@@ -867,13 +921,9 @@ void load_drawings_state()
   g_drawings_dirty = false;
 }
 
-void save_drawings_state()
+bool save_drawings_state()
 {
-  std::filesystem::path tmp = g_drawings_file;
-  tmp += ".tmp";
-  std::ofstream out(tmp, std::ios::trunc);
-  if(!out) return;
-
+  std::ostringstream out;
   for(const auto &[folder, strokes] : g_folder_drawings)
   {
     if(strokes.empty()) continue;
@@ -895,9 +945,10 @@ void save_drawings_state()
     }
   }
 
-  out.close();
-  std::filesystem::rename(tmp, g_drawings_file);
-  g_drawings_dirty = false;
+  const auto result = g_project_files.save(g_drawings_file, out.str());
+  const bool saved = record_project_save(g_drawings_file, result);
+  if(saved) g_drawings_dirty = false;
+  return saved;
 }
 
 void load_note_clipboard()
@@ -907,10 +958,13 @@ void load_note_clipboard()
   g_copied_note_content.clear();
   g_copied_notes_batch.clear();
 
-  std::ifstream in(g_clipboard_file, std::ios::binary);
-  if(!in) return;
-
-  const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto loaded = g_project_files.load(g_clipboard_file);
+  if(!loaded)
+  {
+    LOG_ERROR(loaded.message);
+    return;
+  }
+  const std::string &doc = loaded.snapshot.content;
   g_has_copied_note = json_find_bool(doc, "has_note", false);
   g_copied_note_title = json_find_string(doc, "title");
   g_copied_note_content = json_find_string(doc, "content");
@@ -936,13 +990,9 @@ void load_note_clipboard()
 }
 } // namespace
 
-void App::save_note_clipboard()
+bool App::save_note_clipboard()
 {
-  std::filesystem::path tmp = g_clipboard_file;
-  tmp += ".tmp";
-  std::ofstream out(tmp, std::ios::trunc);
-  if(!out) return;
-
+  std::ostringstream out;
   out << "{\n";
   out << "  \"has_note\": " << (g_has_copied_note ? "true" : "false") << ",\n";
   out << "  \"title\": \"" << json_escape(g_copied_note_title) << "\",\n";
@@ -964,14 +1014,19 @@ void App::save_note_clipboard()
       out << ",\n  \"font_size\": " << ci.font_size;
   }
   out << "\n}\n";
-  out.close();
-  std::filesystem::rename(tmp, g_clipboard_file);
-  g_clipboard_dirty = false;
+  const auto result = g_project_files.save(g_clipboard_file, out.str());
+  const bool saved = record_project_save(g_clipboard_file, result);
+  if(saved) g_clipboard_dirty = false;
+  return saved;
 }
 
 App::App(AppConfig config)
     : config_(std::move(config))
 {
+  g_project_files.clear();
+  g_project_save_batch.clear();
+  g_unresolved_persistence_errors.clear();
+  g_last_persistence_error.clear();
   std::filesystem::create_directories(config_.dataPath);
   std::filesystem::create_directories(config_.configPath);
 
@@ -1022,6 +1077,10 @@ App::App(AppConfig config)
 void App::switch_project(const std::filesystem::path &new_root)
 {
   save_state();
+  g_project_files.clear();
+  g_project_save_batch.clear();
+  g_unresolved_persistence_errors.clear();
+  g_last_persistence_error.clear();
 
   auto project = notepp::project::create_or_open_project(new_root);
   config_.projectRoot = project.root;
@@ -1065,8 +1124,14 @@ int App::run()
     init_sdl_gl();
     init_imgui();
     load_state();
-    if(std::filesystem::exists(imgui_ini_file_))
-      ImGui::LoadIniSettingsFromDisk(imgui_ini_file_.string().c_str());
+    const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
+    if(!ini_snapshot)
+    {
+      LOG_ERROR(ini_snapshot.message);
+    }
+    else if(ini_snapshot.snapshot.existed)
+      ImGui::LoadIniSettingsFromMemory(ini_snapshot.snapshot.content.data(),
+                                       ini_snapshot.snapshot.content.size());
 
     // Low-frequency filesystem invalidation: wakes the event loop to scan for
     // external note/image changes, but only renders when the scan finds changes.
@@ -1161,7 +1226,7 @@ void App::shutdown()
   if(!layout_profiles_.empty())
   {
     capture_to_active_profile();
-    save_profiles();
+    if(!save_profiles()) last_save_succeeded_ = false;
   }
 
   std::unordered_set<std::string> alive_paths;
@@ -1192,8 +1257,12 @@ void App::shutdown()
   // Safe to call multiple times.
   if(ImGui::GetCurrentContext())
   {
-    auto iniPath = imgui_ini_file_.string();
-    ImGui::SaveIniSettingsToDisk(iniPath.c_str());
+    std::size_t ini_size = 0;
+    const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
+    const auto ini_result = g_project_files.save(
+        imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
+    if(!record_project_save(imgui_ini_file_, ini_result))
+      last_save_succeeded_ = false;
     NoteUi::destroy_icon_shader();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
@@ -1237,10 +1306,14 @@ void App::load_state()
   index_schema_version_ = 2;
   index_paths_portable_ = true;
   index_source_document_.clear();
-  std::ifstream in_index(index_file_);
-  if(in_index)
+  const auto loaded_index = g_project_files.load(index_file_);
+  if(!loaded_index)
   {
-    const std::string doc((std::istreambuf_iterator<char>(in_index)), std::istreambuf_iterator<char>());
+    LOG_ERROR(loaded_index.message);
+  }
+  if(loaded_index && loaded_index.snapshot.existed)
+  {
+    const std::string &doc = loaded_index.snapshot.content;
     index_source_document_ = doc;
     index_schema_version_ = json_find_int(doc, "schemaVersion", 1);
     index_paths_portable_ = index_schema_version_ >= 2;
@@ -1487,8 +1560,10 @@ void App::load_state()
   load_profiles();
 }
 
-void App::save_state()
+bool App::save_state()
 {
+  g_project_save_batch.clear();
+  bool all_saved = true;
   const bool record_text_change =
       !history_replay_in_progress_ &&
       !state_file_path_.empty() &&
@@ -1499,24 +1574,43 @@ void App::save_state()
 
   if(!state_file_path_.empty())
   {
-    std::ofstream out(state_file_path_, std::ios::binary | std::ios::trunc);
-    if(out)
+    const auto result = g_project_files.save(state_file_path_, markdown_text_);
+    if(record_project_save(state_file_path_, result))
     {
-      out << markdown_text_;
-      out.close();
+      MarkdownSupport::notify_document_saved(state_file_path_);
       update_note_cache(state_file_path_, markdown_text_);
     }
+    else
+      all_saved = false;
   }
-  save_index();
-  if(g_drawings_dirty) save_drawings_state();
-  if(g_clipboard_dirty) save_note_clipboard();
+  if(!save_index()) all_saved = false;
+  if(g_drawings_dirty && !save_drawings_state()) all_saved = false;
+  if(g_clipboard_dirty && !save_note_clipboard()) all_saved = false;
   capture_to_active_profile();
-  save_profiles();
-
-  if(record_text_change)
+  if(!save_profiles()) all_saved = false;
+  if(!MarkdownSupport::flush_preview_state())
   {
-    record_text_history_action("Edit text", before_text, markdown_text_);
+    all_saved = false;
+    g_last_persistence_error = MarkdownSupport::last_persistence_error();
+    LOG_ERROR("Cannot save markdown preview state: ", g_last_persistence_error);
   }
+  if(const std::string widget_error = MarkdownWidgets::last_persistence_error();
+     !widget_error.empty())
+  {
+    all_saved = false;
+    g_last_persistence_error = widget_error;
+    LOG_ERROR("Cannot save widget globals: ", widget_error);
+  }
+
+  if(record_text_change && all_saved)
+    record_text_history_action("Edit text", before_text, markdown_text_);
+  else if(record_text_change)
+    deferred_text_snapshot_before_ = before_text;
+
+  last_save_succeeded_ = all_saved &&
+                         g_project_save_batch.canonical_saves_succeeded() &&
+                         g_unresolved_persistence_errors.empty();
+  return last_save_succeeded_;
 }
 
 void App::sync_active_folder_settings()
@@ -1548,7 +1642,7 @@ void App::apply_folder_settings(int folder_idx)
     request_cancel_draw_tools_ = true;
 }
 
-void App::save_index()
+bool App::save_index()
 {
   sync_active_folder_settings();
 
@@ -1579,22 +1673,22 @@ void App::save_index()
     {
       if(note.unresolved_stored_path.empty() && !stored_path(note.path, notes_top_level))
       {
-        LOG_ERROR("Refusing to save non-portable note path: ", note.path);
-        return;
+        return record_project_save_error(
+            index_file_, "refusing to save non-portable note path: " + note.path);
       }
       if(note.unresolved_stored_font_path.empty() && !note.font_path.empty() &&
          !stored_path(note.font_path, notes_top_level, folder.name))
       {
-        LOG_ERROR("Refusing to save non-portable font path: ", note.font_path);
-        return;
+        return record_project_save_error(
+            index_file_, "refusing to save non-portable font path: " + note.font_path);
       }
     }
     for(const auto &image : folder.images)
     {
       if(!stored_path(image, notes_top_level))
       {
-        LOG_ERROR("Refusing to save non-portable image path: ", image);
-        return;
+        return record_project_save_error(
+            index_file_, "refusing to save non-portable image path: " + image);
       }
     }
   }
@@ -1676,14 +1770,10 @@ void App::save_index()
 
   std::string serialized = root.dump(2);
   serialized.push_back('\n');
-  std::filesystem::path tmp = index_file_;
-  tmp += ".tmp";
-  std::ofstream out(tmp, std::ios::trunc);
-  if(!out) return;
-  out << serialized;
-  out.close();
-  std::filesystem::rename(tmp, index_file_);
+  const auto result = g_project_files.save(index_file_, serialized);
+  if(!record_project_save(index_file_, result)) return false;
   index_source_document_ = std::move(serialized);
+  return true;
 }
 
 void App::load_profiles()
@@ -1693,8 +1783,12 @@ void App::load_profiles()
   maximized_profile_id_.clear();
   reduced_profile_id_.clear();
 
-  std::ifstream in(profiles_file_);
-  if(!in)
+  const auto loaded_profiles = g_project_files.load(profiles_file_);
+  if(!loaded_profiles)
+  {
+    LOG_ERROR(loaded_profiles.message);
+  }
+  if(!loaded_profiles || !loaded_profiles.snapshot.existed)
   {
     // First run: create the single default "Default" profile (maximized)
     LayoutProfile p;
@@ -1714,7 +1808,7 @@ void App::load_profiles()
     return;
   }
 
-  const std::string doc((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string &doc = loaded_profiles.snapshot.content;
   active_profile_id_ = json_find_string(doc, "active_profile_id");
   maximized_profile_id_ = json_find_string(doc, "maximized_profile_id");
   reduced_profile_id_ = json_find_string(doc, "reduced_profile_id");
@@ -1789,13 +1883,9 @@ void App::load_profiles()
   }
 }
 
-void App::save_profiles()
+bool App::save_profiles()
 {
-  std::filesystem::path tmp = profiles_file_;
-  tmp += ".tmp";
-  std::ofstream out(tmp, std::ios::trunc);
-  if(!out) return;
-
+  std::ostringstream out;
   out << "{\n";
   out << "  \"active_profile_id\": \"" << json_escape(active_profile_id_) << "\",\n";
   out << "  \"maximized_profile_id\": \"" << json_escape(maximized_profile_id_) << "\",\n";
@@ -1835,8 +1925,8 @@ void App::save_profiles()
   }
   out << "  ]\n";
   out << "}\n";
-  out.close();
-  std::filesystem::rename(tmp, profiles_file_);
+  const auto result = g_project_files.save(profiles_file_, out.str());
+  return record_project_save(profiles_file_, result);
 }
 
 void App::capture_to_active_profile()
@@ -2366,9 +2456,17 @@ bool App::sync_project_files()
         if(cached.second != write_time)
         {
           note_content_cache_.invalidate(n.path);
+          const auto refreshed = g_project_files.load(n.path);
+          if(!refreshed)
+          {
+            LOG_ERROR(refreshed.message);
+          }
           changed = true;
-          if(n.path == state_file_path_)
-            markdown_text_ = note_content_cache_.get(n.path);
+          if(n.path == state_file_path_ && refreshed)
+          {
+            markdown_text_ = refreshed.snapshot.content;
+            update_note_cache(n.path, markdown_text_);
+          }
         }
       }
     }
@@ -2384,6 +2482,11 @@ bool App::sync_project_files()
 
 const std::string &App::cached_note_text(const std::string &path)
 {
+  const auto snapshot = g_project_files.ensure_loaded(path);
+  if(!snapshot)
+  {
+    LOG_ERROR(snapshot.message);
+  }
 #ifdef NOTEPP_DEBUG_UI
   const auto before = note_content_cache_.disk_read_count();
   const auto &text = note_content_cache_.get(path);
@@ -2434,13 +2537,20 @@ void App::load_note_content_for_active()
     return;
   }
 
-  if(std::filesystem::exists(state_file_path_))
+  const auto loaded_note = g_project_files.load(state_file_path_);
+  if(!loaded_note)
   {
-    markdown_text_ = cached_note_text(state_file_path_);
+    LOG_ERROR(loaded_note.message);
+    markdown_text_.clear();
+    state_dirty_ = true;
+  }
+  else if(loaded_note.snapshot.existed)
+  {
+    markdown_text_ = loaded_note.snapshot.content;
+    update_note_cache(state_file_path_, markdown_text_);
   }
   else
   {
-    std::filesystem::create_directories(std::filesystem::path(state_file_path_).parent_path());
     markdown_text_.clear();
     update_note_cache(state_file_path_, markdown_text_);
     state_dirty_ = true;
@@ -2503,6 +2613,7 @@ void App::rename_note_storage_for_title(const std::string &new_title)
     if(std::filesystem::exists(new_path, ec))
       std::filesystem::remove(new_path, ec);
     std::filesystem::rename(current_path, new_path, ec);
+    if(!ec) track_project_file_move(current_path, new_path);
   }
 
   state_file_path_ = new_path.string();
@@ -2533,6 +2644,7 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
       if(std::filesystem::exists(new_path, ec))
         std::filesystem::remove(new_path, ec);
       std::filesystem::rename(old_path, new_path, ec);
+      if(!ec) track_project_file_move(old_path, new_path);
     }
     n.path = new_path.string();
   }
@@ -4639,7 +4751,10 @@ void App::frame_ui()
                 {
                   if(std::filesystem::exists(std::filesystem::path(new_path), ec))
                     std::filesystem::remove(std::filesystem::path(new_path), ec);
-                  std::filesystem::rename(std::filesystem::path(n.path), std::filesystem::path(new_path), ec);
+                  const std::filesystem::path old_note_path(n.path);
+                  const std::filesystem::path new_note_path(new_path);
+                  std::filesystem::rename(old_note_path, new_note_path, ec);
+                  if(!ec) track_project_file_move(old_note_path, new_note_path);
                 }
                 n.path = new_path;
               }
@@ -4682,6 +4797,7 @@ void App::frame_ui()
           std::filesystem::rename(old_path, new_path, ren_ec);
           if(!ren_ec)
           {
+            track_project_file_move(old_path, new_path);
             for(auto &img_path : rf.images)
             {
               if(img_path == rename_image_current_path)
@@ -4952,9 +5068,7 @@ void App::frame_ui()
               nn.has_layout = cn.has_layout;
               nn.always_on_top = cn.always_on_top;
               remove_pending_delete_path(nn.path);
-              std::filesystem::create_directories(std::filesystem::path(nn.path).parent_path());
-              std::ofstream out_note(nn.path, std::ios::binary | std::ios::trunc);
-              if(out_note) out_note << cn.content;
+              write_text_file(nn.path, cn.content);
               nf.notes.push_back(std::move(nn));
             }
             folders_.push_back(std::move(nf));
@@ -5976,9 +6090,7 @@ void App::frame_ui()
         pf.notes.push_back(new_note);
         flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
 
-        std::filesystem::create_directories(std::filesystem::path(new_note.path).parent_path());
-        std::ofstream out_note(new_note.path, std::ios::binary | std::ios::trunc);
-        if(out_note) out_note << items.front().content;
+        write_text_file(new_note.path, items.front().content);
       }
       else
       {
@@ -6003,9 +6115,7 @@ void App::frame_ui()
           pf.notes.push_back(new_note);
           flash_mark_note(new_note.path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
 
-          std::filesystem::create_directories(std::filesystem::path(new_note.path).parent_path());
-          std::ofstream out_note(new_note.path, std::ios::binary | std::ios::trunc);
-          if(out_note) out_note << ci.content;
+          write_text_file(new_note.path, ci.content);
         }
       }
 
@@ -6084,7 +6194,10 @@ void App::frame_ui()
         {
           if(std::filesystem::exists(std::filesystem::path(new_path), ec))
             std::filesystem::remove(std::filesystem::path(new_path), ec);
-          std::filesystem::rename(std::filesystem::path(nm.path), std::filesystem::path(new_path), ec);
+          const std::filesystem::path old_note_path(nm.path);
+          const std::filesystem::path new_note_path(new_path);
+          std::filesystem::rename(old_note_path, new_note_path, ec);
+          if(!ec) track_project_file_move(old_note_path, new_note_path);
         }
         nm.path = new_path;
         remove_pending_delete_path(new_path);
@@ -6174,7 +6287,10 @@ void App::frame_ui()
             {
               if(std::filesystem::exists(std::filesystem::path(new_path), ec))
                 std::filesystem::remove(std::filesystem::path(new_path), ec);
-              std::filesystem::rename(std::filesystem::path(n.path), std::filesystem::path(new_path), ec);
+              const std::filesystem::path old_note_path(n.path);
+              const std::filesystem::path new_note_path(new_path);
+              std::filesystem::rename(old_note_path, new_note_path, ec);
+              if(!ec) track_project_file_move(old_note_path, new_note_path);
             }
             n.path = new_path;
             remove_pending_delete_path(new_path);
@@ -6803,13 +6919,9 @@ __CURSOR__)MD",
                   gn.id = generate_uuid();
                   gn.title = globals_title;
                   gn.path = globals_path;
-                  std::filesystem::create_directories(std::filesystem::path(globals_path).parent_path());
                   if(!std::filesystem::exists(globals_path))
-                  {
-                    std::ofstream out(globals_path);
-                    if(out)
-                      out << "```ui\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n";
-                  }
+                    write_text_file(globals_path,
+                                    "```ui\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n");
                   gf.notes.push_back(std::move(gn));
                   flash_mark_note(gf.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
                   flash_mark_folder(gf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
@@ -8461,13 +8573,8 @@ __CURSOR__)MD",
           }
           else if(preview_text != preview_before)
           {
-            std::ofstream out(n.path, std::ios::binary | std::ios::trunc);
-            if(out)
-            {
-              out << preview_text;
-              out.close();
+            if(write_text_file(n.path, preview_text))
               update_note_cache(n.path, preview_text);
-            }
           }
 
           record_preview_history_action("Edit preview widget", n.path, preview_before, preview_text, preview_state_before_frame, preview_state_after);
@@ -8870,16 +8977,13 @@ __CURSOR__)MD",
 
     if(layout_dirty_ && !ImGui::IsAnyMouseDown())
     {
-      save_index();
+      const bool index_saved = save_index();
       capture_to_active_profile();
-      save_profiles();
-      layout_dirty_ = false;
+      const bool profiles_saved = save_profiles();
+      if(index_saved && profiles_saved) layout_dirty_ = false;
     }
-    if(state_dirty_)
-    {
-      save_state();
+    if(state_dirty_ && save_state())
       state_dirty_ = false;
-    }
     render_search_dialog();
     render_debug_history_window();
     render_terminal();
@@ -9456,16 +9560,13 @@ __CURSOR__)MD",
 
   if(layout_dirty_ && !ImGui::IsAnyMouseDown())
   {
-    save_index();
+    const bool index_saved = save_index();
     capture_to_active_profile();
-    save_profiles();
-    layout_dirty_ = false;
+    const bool profiles_saved = save_profiles();
+    if(index_saved && profiles_saved) layout_dirty_ = false;
   }
-  if(state_dirty_)
-  {
-    save_state();
+  if(state_dirty_ && save_state())
     state_dirty_ = false;
-  }
   render_search_dialog();
   render_debug_history_window();
   render_terminal();
