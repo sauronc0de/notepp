@@ -93,6 +93,7 @@ public:
   ReadResult load(const std::filesystem::path &path) noexcept;
   ReadResult ensure_loaded(const std::filesystem::path &path) noexcept;
   SaveResult save(const std::filesystem::path &path, std::string_view desired) noexcept;
+  const Snapshot *known_snapshot(const std::filesystem::path &path) const noexcept;
   void expect_missing(const std::filesystem::path &path);
   void moved(const std::filesystem::path &from, const std::filesystem::path &to);
   void forget(const std::filesystem::path &path);

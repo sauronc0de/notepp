@@ -169,6 +169,9 @@ private:
   std::filesystem::path g_clipboard_file;
   std::filesystem::path profiles_file_;
   std::string index_source_document_;
+  std::string profiles_source_document_;
+  bool index_writable_ = true;
+  bool profiles_writable_ = true;
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;

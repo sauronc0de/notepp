@@ -1780,7 +1780,7 @@ Notes are stored as plain Markdown files — easy to version-control or edit ext
 
 ### Cross-device Git Sync
 
-Notepp can use the installed system Git to synchronize an existing project repository. Git Sync is disabled by default; enable it from the Explorer context menu. When enabled, Notepp performs a fast-forward-only pull before loading a project and saves, commits, and pushes on normal close. Offline, authentication, repository, upstream, timeout, or divergence failures are reported without blocking local editing or exit.
+Notepp can use the installed system Git to synchronize an existing project repository. Git Sync is disabled by default; enable it from the Explorer context menu. When enabled, Notepp performs a fast-forward-only pull before loading a project and saves, commits, and pushes on normal close. Open and close synchronization may wait for bounded Git command timeouts; failures never prevent subsequent local editing or final exit.
 
 See [`docs/git_sync.md`](docs/git_sync.md) for setup, safety guarantees, statuses, and recovery instructions.
 

@@ -5,6 +5,7 @@
 #endif
 #include "demo_note_content.hpp"
 #include "lang.hpp"
+#include "layout_profile_state.hpp"
 #include "log.hpp"
 #if USE_PORTABLE_PATHS
 #include "note_project.hpp"
@@ -15,6 +16,7 @@
 #include "markdown_view.hpp"
 #include "markdown_widgets.hpp"
 #include "note_ui.hpp"
+#include "note_clipboard_state.hpp"
 #include "note_index.hpp"
 #include "string_utils.hpp"
 #include "sync_coordinator.hpp"
@@ -1093,7 +1095,7 @@ bool save_drawings_state()
   return saved;
 }
 
-void load_note_clipboard()
+void load_note_clipboard(const AppConfig &config)
 {
   g_has_copied_note = false;
   g_copied_note_title.clear();
@@ -1107,28 +1109,65 @@ void load_note_clipboard()
     LOG_ERROR(loaded.message);
     return;
   }
-  const std::string &doc = loaded.snapshot.content;
-  g_has_copied_note = json_find_bool(doc, "has_note", false);
-  g_copied_note_title = json_find_string(doc, "title");
-  g_copied_note_content = json_find_string(doc, "content");
-  if(!g_copied_note_content.empty())
+  if(!loaded.snapshot.existed)
   {
-    CopiedNoteItem ci;
-    ci.title = g_copied_note_title;
-    ci.content = g_copied_note_content;
-    ci.font_path = json_find_string(doc, "font_path");
-    ci.font_size = json_find_float(doc, "font_size", 0.0f);
-    ci.use_custom_color = json_find_bool(doc, "use_custom_color", false);
-    ci.color_r = (float)json_find_int(doc, "color_r", 0) / 255.0f;
-    ci.color_g = (float)json_find_int(doc, "color_g", 0) / 255.0f;
-    ci.color_b = (float)json_find_int(doc, "color_b", 0) / 255.0f;
-    ci.width = (float)json_find_int(doc, "w", 520);
-    ci.height = (float)json_find_int(doc, "h", 260);
-    ci.has_layout = json_find_bool(doc, "has_layout", false);
-    ci.always_on_top = json_find_bool(doc, "always_on_top", false);
-    g_copied_notes_batch.push_back(std::move(ci));
+    g_clipboard_dirty = false;
+    return;
   }
-  if(g_copied_notes_batch.empty()) g_has_copied_note = false;
+  const Json document = Json::parse(loaded.snapshot.content, nullptr, false);
+  const auto document_state = notepp::note_clipboard_state::validate_document(document, true);
+  if(document_state != notepp::note_clipboard_state::DocumentState::supported)
+  {
+    (void)record_project_save_error(
+        g_clipboard_file, document_state == notepp::note_clipboard_state::DocumentState::future_schema
+                              ? "note clipboard uses a newer unsupported schema"
+                              : "note clipboard is malformed");
+    return;
+  }
+
+  const int schema = notepp::note_index::read_schema_version(document);
+  const std::vector<Json> items = notepp::note_clipboard_state::read_items(document);
+  const notepp::project_paths::ProjectPaths paths(config.projectRoot);
+  const std::string notes_top_level = project_notes_top_level(config);
+  for(const Json &item : items)
+  {
+    if(!item.is_object()) continue;
+    CopiedNoteItem copied;
+    copied.title = item.value("title", std::string{});
+    copied.content = item.value("content", std::string{});
+    const std::string stored_font = item.value("font_path", std::string{});
+    if(!stored_font.empty())
+    {
+      if(auto resolved = resolve_project_owned_path(paths, stored_font, schema, notes_top_level))
+        copied.font_path = resolved->string();
+      else if(schema < 2)
+      {
+        if(auto migrated = paths.migrate_legacy(stored_font, notes_top_level))
+          copied.font_path = migrated->absolute_path.string();
+      }
+      if(copied.font_path.empty())
+      {
+        LOG_WARNING("Ignoring non-portable clipboard font path: ", stored_font);
+        (void)0;
+      }
+    }
+    copied.font_size = item.value("font_size", 0.0f);
+    copied.use_custom_color = item.value("use_custom_color", false);
+    copied.color_r = (float)item.value("color_r", 0) / 255.0f;
+    copied.color_g = (float)item.value("color_g", 0) / 255.0f;
+    copied.color_b = (float)item.value("color_b", 0) / 255.0f;
+    copied.width = (float)item.value("w", 520);
+    copied.height = (float)item.value("h", 260);
+    copied.has_layout = item.value("has_layout", false);
+    copied.always_on_top = item.value("always_on_top", false);
+    if(!copied.content.empty()) g_copied_notes_batch.push_back(std::move(copied));
+  }
+  g_has_copied_note = !g_copied_notes_batch.empty();
+  if(g_has_copied_note)
+  {
+    g_copied_note_title = g_copied_notes_batch.front().title;
+    g_copied_note_content = g_copied_notes_batch.front().content;
+  }
   g_clipboard_dirty = false;
 }
 } // namespace
@@ -1153,29 +1192,40 @@ void write_persistence_failure_report(const AppConfig &config)
 
 bool App::save_note_clipboard()
 {
-  std::ostringstream out;
-  out << "{\n";
-  out << "  \"has_note\": " << (g_has_copied_note ? "true" : "false") << ",\n";
-  out << "  \"title\": \"" << json_escape(g_copied_note_title) << "\",\n";
-  out << "  \"content\": \"" << json_escape(g_copied_note_content) << "\"";
-  if(!g_copied_notes_batch.empty())
+  std::vector<Json> persisted_items;
+  persisted_items.reserve(g_copied_notes_batch.size());
+  const notepp::project_paths::ProjectPaths paths(config_.projectRoot);
+  const std::string notes_top_level = project_notes_top_level(config_);
+  for(const CopiedNoteItem &copied : g_copied_notes_batch)
   {
-    const CopiedNoteItem &ci = g_copied_notes_batch.front();
-    out << ",\n  \"use_custom_color\": " << (ci.use_custom_color ? "true" : "false");
-    out << ",\n  \"color_r\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_r)) * 255.0f);
-    out << ",\n  \"color_g\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_g)) * 255.0f);
-    out << ",\n  \"color_b\": " << (int)std::lround(std::max(0.0f, std::min(1.0f, ci.color_b)) * 255.0f);
-    out << ",\n  \"w\": " << (int)std::lround(ci.width);
-    out << ",\n  \"h\": " << (int)std::lround(ci.height);
-    out << ",\n  \"has_layout\": " << (ci.has_layout ? "true" : "false");
-    out << ",\n  \"always_on_top\": " << (ci.always_on_top ? "true" : "false");
-    if(!ci.font_path.empty())
-      out << ",\n  \"font_path\": \"" << json_escape(ci.font_path) << "\"";
-    if(ci.font_size > 0.0f)
-      out << ",\n  \"font_size\": " << ci.font_size;
+    Json item = {{"title", copied.title},
+                 {"content", copied.content},
+                 {"use_custom_color", copied.use_custom_color},
+                 {"color_r", (int)std::lround(std::clamp(copied.color_r, 0.0f, 1.0f) * 255.0f)},
+                 {"color_g", (int)std::lround(std::clamp(copied.color_g, 0.0f, 1.0f) * 255.0f)},
+                 {"color_b", (int)std::lround(std::clamp(copied.color_b, 0.0f, 1.0f) * 255.0f)},
+                 {"w", (int)std::lround(copied.width)},
+                 {"h", (int)std::lround(copied.height)},
+                 {"has_layout", copied.has_layout},
+                 {"always_on_top", copied.always_on_top}};
+    if(copied.font_size > 0.0f) item["font_size"] = copied.font_size;
+    if(!copied.font_path.empty())
+    {
+      const auto encoded = portable_project_path(paths, copied.font_path, notes_top_level);
+      if(encoded)
+        item["font_path"] = *encoded;
+      else
+      {
+        LOG_WARNING("Omitting non-portable clipboard font path: ", copied.font_path);
+        (void)0;
+      }
+    }
+    persisted_items.push_back(std::move(item));
   }
-  out << "\n}\n";
-  const bool saved = save_project_text(g_clipboard_file, out.str());
+  const Json root = notepp::note_clipboard_state::make_document(persisted_items);
+  std::string serialized = root.dump(2);
+  serialized.push_back('\n');
+  const bool saved = save_project_text(g_clipboard_file, serialized);
   if(saved) g_clipboard_dirty = false;
   return saved;
 }
@@ -1323,23 +1373,50 @@ void App::begin_git_operation(bool manual_sync)
   git_status_.state = notepp::git_sync::SyncState::syncing;
   git_status_.summary = Lang::t("Git Sync in progress");
   const std::filesystem::path root = config_.projectRoot;
-  git_sync_future_ = std::async(std::launch::async, [this, root, manual_sync] {
-    notepp::git_sync::OperationResult result;
-    if(manual_sync)
-      result = git_client_.manual_sync(root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
-    else
-    {
-      result.status = git_client_.inspect(root);
-      result.success = result.status.state == notepp::git_sync::SyncState::clean ||
-                       result.status.state == notepp::git_sync::SyncState::dirty ||
-                       result.status.state == notepp::git_sync::SyncState::ahead ||
-                       result.status.state == notepp::git_sync::SyncState::behind;
-    }
-    SDL_Event event{};
-    event.type = kGitSyncCompletedEvent;
-    SDL_PushEvent(&event);
-    return GitAsyncResult{std::move(result), {}};
-  });
+  try
+  {
+    git_sync_future_ = std::async(std::launch::async, [this, root, manual_sync] {
+      notepp::git_sync::OperationResult result;
+      try
+      {
+        if(manual_sync)
+          result = git_client_.manual_sync(
+              root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+        else
+        {
+          result.status = git_client_.inspect(root);
+          result.success = result.status.state == notepp::git_sync::SyncState::clean ||
+                           result.status.state == notepp::git_sync::SyncState::dirty ||
+                           result.status.state == notepp::git_sync::SyncState::ahead ||
+                           result.status.state == notepp::git_sync::SyncState::behind;
+        }
+      }
+      catch(const std::exception &error)
+      {
+        result = notepp::git_sync::exception_result("Git Sync", error.what());
+      }
+      catch(...)
+      {
+        result = notepp::git_sync::exception_result("Git Sync");
+      }
+      SDL_Event event{};
+      event.type = kGitSyncCompletedEvent;
+      SDL_PushEvent(&event);
+      return GitAsyncResult{std::move(result), {}};
+    });
+  }
+  catch(const std::exception &error)
+  {
+    git_sync_in_progress_ = false;
+    record_git_status(notepp::git_sync::exception_result(
+                          "Starting Git Sync", error.what())
+                          .status);
+  }
+  catch(...)
+  {
+    git_sync_in_progress_ = false;
+    record_git_status(notepp::git_sync::exception_result("Starting Git Sync").status);
+  }
 }
 
 void App::reload_project_after_git_pull()
@@ -1366,7 +1443,19 @@ void App::reload_project_after_git_pull()
 void App::finish_git_operation()
 {
   if(!git_sync_in_progress_ || !git_sync_future_.valid()) return;
-  GitAsyncResult async_result = git_sync_future_.get();
+  GitAsyncResult async_result;
+  try
+  {
+    async_result = git_sync_future_.get();
+  }
+  catch(const std::exception &error)
+  {
+    async_result.operation = notepp::git_sync::exception_result("Completing Git Sync", error.what());
+  }
+  catch(...)
+  {
+    async_result.operation = notepp::git_sync::exception_result("Completing Git Sync");
+  }
   git_sync_in_progress_ = false;
   record_git_status(async_result.operation.status);
 #if USE_PORTABLE_PATHS
@@ -1377,7 +1466,12 @@ void App::finish_git_operation()
   }
 #endif
   if(async_result.operation.success && async_result.operation.changed_worktree)
+  {
     reload_project_after_git_pull();
+    // Reload/migration may legitimately write portable metadata. Inspect again
+    // asynchronously so the badge cannot remain falsely "Synced".
+    begin_git_operation(false);
+  }
 }
 
 bool App::poll_app_settings()
@@ -1470,17 +1564,55 @@ bool App::switch_project(const std::filesystem::path &new_root)
   git_status_.state = notepp::git_sync::SyncState::syncing;
   git_status_.summary = Lang::t("Git Sync in progress");
   const std::filesystem::path old_root = config_.projectRoot;
-  git_sync_future_ = std::async(std::launch::async, [this, old_root, new_root] {
-    const auto pushed = git_client_.commit_and_push(
-        old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
-    const auto pulled = git_client_.pull_on_open(new_root);
-    notepp::git_sync::OperationResult result = pulled;
-    if(!pushed.success && pulled.success) result = pushed;
-    SDL_Event event{};
-    event.type = kGitSyncCompletedEvent;
-    SDL_PushEvent(&event);
-    return GitAsyncResult{std::move(result), new_root};
-  });
+  try
+  {
+    git_sync_future_ = std::async(std::launch::async, [this, old_root, new_root] {
+      notepp::git_sync::OperationResult result;
+      try
+      {
+        const auto pushed = git_client_.commit_and_push(
+            old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+        const auto pulled = git_client_.pull_on_open(new_root);
+        result = pulled;
+        if(!pushed.success && pulled.success)
+          result = pushed;
+        else if(!pushed.success && !pulled.success)
+        {
+          result = notepp::git_sync::exception_result(
+              "Project switch Git Sync",
+              "Old project push: " + pushed.status.summary + " - " + pushed.status.detail +
+                  "\nNew project pull: " + pulled.status.summary + " - " + pulled.status.detail);
+        }
+      }
+      catch(const std::exception &error)
+      {
+        result = notepp::git_sync::exception_result("Project switch Git Sync", error.what());
+      }
+      catch(...)
+      {
+        result = notepp::git_sync::exception_result("Project switch Git Sync");
+      }
+      SDL_Event event{};
+      event.type = kGitSyncCompletedEvent;
+      SDL_PushEvent(&event);
+      return GitAsyncResult{std::move(result), new_root};
+    });
+  }
+  catch(const std::exception &error)
+  {
+    git_sync_in_progress_ = false;
+    record_git_status(notepp::git_sync::exception_result(
+                          "Starting project switch Git Sync", error.what())
+                          .status);
+    load_switched_project(new_root);
+  }
+  catch(...)
+  {
+    git_sync_in_progress_ = false;
+    record_git_status(
+        notepp::git_sync::exception_result("Starting project switch Git Sync").status);
+    load_switched_project(new_root);
+  }
   return true;
 }
 #endif
@@ -1616,6 +1748,8 @@ int App::run()
               config_.projectRoot, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
           record_git_status(result.status);
           return std::pair{result.success, result.changed_worktree}; });
+    if(close_result.exception_caught)
+      record_git_status(notepp::git_sync::exception_result("Closing Git Sync").status);
     last_save_succeeded_ = close_result.save_succeeded;
     shutdown();
     return 0;
@@ -1632,9 +1766,21 @@ void App::shutdown()
 {
   if(git_sync_future_.valid())
   {
-    const GitAsyncResult result = git_sync_future_.get();
+    try
+    {
+      const GitAsyncResult result = git_sync_future_.get();
+      record_git_status(result.operation.status);
+    }
+    catch(const std::exception &error)
+    {
+      record_git_status(
+          notepp::git_sync::exception_result("Stopping Git Sync", error.what()).status);
+    }
+    catch(...)
+    {
+      record_git_status(notepp::git_sync::exception_result("Stopping Git Sync").status);
+    }
     git_sync_in_progress_ = false;
-    record_git_status(result.operation.status);
   }
   MarkdownWidgets::set_terminal_command_handler({});
   terminal_.stop();
@@ -1673,7 +1819,7 @@ void App::shutdown()
 
 void App::load_state()
 {
-  const bool first_run = !std::filesystem::exists(index_file_);
+  bool first_run = false;
   discard_pending_text_history();
   history_.clear();
   folders_.clear();
@@ -1690,20 +1836,44 @@ void App::load_state()
   bool uuid_migrated = false;
   bool paths_migrated = false;
   bool path_migration_failed = false;
-  index_schema_version_ = 2;
+  index_schema_version_ = notepp::note_index::current_schema_version;
   index_paths_portable_ = true;
+  index_writable_ = true;
   index_source_document_.clear();
   const auto loaded_index = g_project_files.load(index_file_);
   record_project_read(index_file_, loaded_index, true);
+  first_run = loaded_index && !loaded_index.snapshot.existed;
+  Json index_document;
+  notepp::note_index::DocumentState index_state = notepp::note_index::DocumentState::missing;
   if(!loaded_index)
   {
+    index_writable_ = false;
+    (void)record_project_save_error(index_file_, loaded_index.message);
     LOG_ERROR(loaded_index.message);
   }
-  if(loaded_index && loaded_index.snapshot.existed)
+  else
+  {
+    if(loaded_index.snapshot.existed)
+      index_document = Json::parse(loaded_index.snapshot.content, nullptr, false);
+    index_state = notepp::note_index::validate_document(
+        index_document, loaded_index.snapshot.existed);
+    if(index_state == notepp::note_index::DocumentState::malformed)
+    {
+      index_writable_ = false;
+      (void)record_project_save_error(
+          index_file_, "notes index is malformed; canonical reconstruction is blocked");
+    }
+    else if(index_state == notepp::note_index::DocumentState::future_schema)
+    {
+      index_writable_ = false;
+      (void)record_project_save_error(
+          index_file_, "notes index uses a newer unsupported schema; opened read-only");
+    }
+  }
+  if(index_writable_ && loaded_index && loaded_index.snapshot.existed)
   {
     const std::string &doc = loaded_index.snapshot.content;
     index_source_document_ = doc;
-    const Json index_document = Json::parse(doc, nullptr, false);
     index_schema_version_ = notepp::note_index::read_schema_version(index_document);
     index_paths_portable_ = index_schema_version_ >= 2;
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
@@ -1759,6 +1929,7 @@ void App::load_state()
                     }
                     n.title = json_find_string(nobj, "title");
                     if(n.title.empty()) n.title = "Note";
+                    n.content_fingerprint = json_find_string(nobj, "content_fingerprint");
                     const std::string stored_note_path = json_find_string(nobj, "path");
                     if(auto resolved = resolve_project_owned_path(
                            project_paths, stored_note_path, index_schema_version_, notes_top_level))
@@ -1925,8 +2096,11 @@ void App::load_state()
   index_paths_portable_ = index_schema_version_ >= 2;
   paths_migrated = paths_migrated || index_schema_version_ != loaded_index_schema;
 
-  sync_project_files();
-  ensure_default_index();
+  if(index_writable_)
+  {
+    sync_project_files();
+    ensure_default_index();
+  }
 
   {
     bool has_any_note = false;
@@ -1936,14 +2110,14 @@ void App::load_state()
         has_any_note = true;
         break;
       }
-    if(first_run && !has_any_note)
+    if(first_run && index_writable_ && !has_any_note)
       open_or_create_readme();
   }
 
   normalize_active_indices();
   apply_folder_settings(active_folder_idx_);
   load_drawings_state();
-  load_note_clipboard();
+  load_note_clipboard(config_);
   load_note_content_for_active();
   if(uuid_migrated || paths_migrated) save_index();
   load_profiles();
@@ -2038,6 +2212,9 @@ void App::apply_folder_settings(int folder_idx)
 
 bool App::save_index()
 {
+  if(!index_writable_)
+    return record_project_save_error(index_file_,
+                                     "notes index is read-only until its load error is resolved");
   sync_active_folder_settings();
 
   const std::string notes_top_level = project_notes_top_level(config_);
@@ -2087,6 +2264,18 @@ bool App::save_index()
     }
   }
 
+  for(auto &folder : folders_)
+  {
+    for(auto &note : folder.notes)
+    {
+      if(note.path.empty()) continue;
+      const auto snapshot = g_project_files.ensure_loaded(note.path);
+      if(snapshot && snapshot.snapshot.existed)
+        note.content_fingerprint = notepp::note_index::content_fingerprint(
+            snapshot.snapshot.content);
+    }
+  }
+
   Json source_root = Json::parse(index_source_document_, nullptr, false);
   if(!source_root.is_object()) source_root = Json::object();
   Json root = Json::object();
@@ -2122,6 +2311,8 @@ bool App::save_index()
       persisted_note["path"] = note.unresolved_stored_path.empty()
                                    ? *stored_path(note.path, notes_top_level)
                                    : note.unresolved_stored_path;
+      if(!note.content_fingerprint.empty())
+        persisted_note["content_fingerprint"] = note.content_fingerprint;
       persisted_note["x"] = (int)std::lround(note.pos_x);
       persisted_note["y"] = (int)std::lround(note.pos_y);
       persisted_note["w"] = (int)std::lround(note.width);
@@ -2175,14 +2366,35 @@ void App::load_profiles()
   active_profile_id_.clear();
   maximized_profile_id_.clear();
   reduced_profile_id_.clear();
+  profiles_source_document_.clear();
+  profiles_writable_ = true;
 
   const auto loaded_profiles = g_project_files.load(profiles_file_);
   record_project_read(profiles_file_, loaded_profiles, true);
   if(!loaded_profiles)
   {
+    profiles_writable_ = false;
+    (void)record_project_save_error(profiles_file_, loaded_profiles.message);
     LOG_ERROR(loaded_profiles.message);
+    return;
   }
-  if(!loaded_profiles || !loaded_profiles.snapshot.existed)
+  Json profile_document;
+  if(loaded_profiles.snapshot.existed)
+    profile_document = Json::parse(loaded_profiles.snapshot.content, nullptr, false);
+  const auto profile_state = notepp::layout_profile_state::validate_document(
+      profile_document, loaded_profiles.snapshot.existed);
+  if(profile_state == notepp::layout_profile_state::DocumentState::malformed ||
+     profile_state == notepp::layout_profile_state::DocumentState::future_schema)
+  {
+    profiles_writable_ = false;
+    const std::string message =
+        profile_state == notepp::layout_profile_state::DocumentState::future_schema
+            ? "layout profiles use a newer unsupported schema; opened read-only"
+            : "layout profiles are malformed; canonical reconstruction is blocked";
+    (void)record_project_save_error(profiles_file_, message);
+    return;
+  }
+  if(!loaded_profiles.snapshot.existed)
   {
     // First run: create the single default "Default" profile (maximized)
     LayoutProfile p;
@@ -2203,6 +2415,7 @@ void App::load_profiles()
   }
 
   const std::string &doc = loaded_profiles.snapshot.content;
+  profiles_source_document_ = doc;
   active_profile_id_ = json_find_string(doc, "active_profile_id");
   maximized_profile_id_ = json_find_string(doc, "maximized_profile_id");
   reduced_profile_id_ = json_find_string(doc, "reduced_profile_id");
@@ -2279,47 +2492,46 @@ void App::load_profiles()
 
 bool App::save_profiles()
 {
-  std::ostringstream out;
-  out << "{\n";
-  out << "  \"active_profile_id\": \"" << json_escape(active_profile_id_) << "\",\n";
-  out << "  \"maximized_profile_id\": \"" << json_escape(maximized_profile_id_) << "\",\n";
-  out << "  \"reduced_profile_id\": \"" << json_escape(reduced_profile_id_) << "\",\n";
-  out << "  \"profiles\": [\n";
-  for(size_t pi = 0; pi < layout_profiles_.size(); ++pi)
+  if(!profiles_writable_)
+    return record_project_save_error(
+        profiles_file_, "layout profiles are read-only until their load error is resolved");
+
+  Json root = Json::object();
+  root["schemaVersion"] = notepp::layout_profile_state::current_schema_version;
+  root["active_profile_id"] = active_profile_id_;
+  root["maximized_profile_id"] = maximized_profile_id_;
+  root["reduced_profile_id"] = reduced_profile_id_;
+  root["profiles"] = Json::array();
+  for(const auto &profile : layout_profiles_)
   {
-    const auto &p = layout_profiles_[pi];
-    out << "    {\n";
-    out << "      \"id\": \"" << json_escape(p.id) << "\",\n";
-    out << "      \"name\": \"" << json_escape(p.name) << "\",\n";
-    out << "      \"window_maximized\": " << (p.window_maximized ? "true" : "false") << ",\n";
-    out << "      \"window_x\": " << p.window_x << ",\n";
-    out << "      \"window_y\": " << p.window_y << ",\n";
-    out << "      \"window_w\": " << p.window_w << ",\n";
-    out << "      \"window_h\": " << p.window_h << ",\n";
-    out << "      \"note_layouts\": [\n";
-    bool first_nl = true;
-    for(const auto &[note_id, nd] : p.note_layouts)
-    {
-      if(!first_nl) out << ",\n";
-      first_nl = false;
-      out << "        {\"note_id\": \"" << json_escape(note_id)
-          << "\", \"x\": " << (int)std::lround(nd.pos_x)
-          << ", \"y\": " << (int)std::lround(nd.pos_y)
-          << ", \"w\": " << (int)std::lround(nd.width)
-          << ", \"h\": " << (int)std::lround(nd.height)
-          << ", \"hidden\": " << (nd.hidden ? "true" : "false")
-          << ", \"has_layout\": " << (nd.has_layout ? "true" : "false")
-          << ", \"dock_id\": " << nd.dock_id << "}";
-    }
-    if(!first_nl) out << "\n";
-    out << "      ]\n";
-    out << "    }";
-    if(pi + 1 < layout_profiles_.size()) out << ",";
-    out << "\n";
+    Json value = {{"id", profile.id},
+                  {"name", profile.name},
+                  {"window_maximized", profile.window_maximized},
+                  {"window_x", profile.window_x},
+                  {"window_y", profile.window_y},
+                  {"window_w", profile.window_w},
+                  {"window_h", profile.window_h},
+                  {"note_layouts", Json::array()}};
+    for(const auto &[note_id, layout] : profile.note_layouts)
+      value["note_layouts"].push_back(
+          {{"note_id", note_id},
+           {"x", (int)std::lround(layout.pos_x)},
+           {"y", (int)std::lround(layout.pos_y)},
+           {"w", (int)std::lround(layout.width)},
+           {"h", (int)std::lround(layout.height)},
+           {"hidden", layout.hidden},
+           {"has_layout", layout.has_layout},
+           {"dock_id", layout.dock_id}});
+    root["profiles"].push_back(std::move(value));
   }
-  out << "  ]\n";
-  out << "}\n";
-  return save_project_text(profiles_file_, out.str());
+
+  const Json source = Json::parse(profiles_source_document_, nullptr, false);
+  root = notepp::layout_profile_state::merge_unknown_fields(source, root);
+  std::string serialized = root.dump(2);
+  serialized.push_back('\n');
+  if(!save_project_text(profiles_file_, serialized)) return false;
+  profiles_source_document_ = std::move(serialized);
+  return true;
 }
 
 void App::capture_to_active_profile()
@@ -2715,35 +2927,38 @@ bool App::sync_project_files()
   bool changed = false;
   std::error_code ec;
 
-  // ---- 1. Remove stale notes whose files no longer exist on disk ----
-  // An unresolved legacy path must remain in metadata until the user can
-  // restore or relocate its target; otherwise opening a moved project would
-  // silently discard its UUID and layout association.
+  // Missing files remain in metadata. Git/cloud batches and permission errors
+  // must never be interpreted as confirmed user deletion because doing so would
+  // discard stable UUID/layout information. A later verified rename may update
+  // the path; explicit Notepp deletion removes metadata through its own flow.
+  std::unordered_map<std::string, int> missing_fingerprint_counts;
   if(index_paths_portable_)
   {
-    for(auto &f : folders_)
+    for(const auto &folder : folders_)
     {
-      const size_t before = f.notes.size();
-      f.notes.erase(
-          std::remove_if(f.notes.begin(), f.notes.end(), [&](const NoteMeta &n) {
-            std::error_code exists_error;
-            return !n.path.empty() && !fs::exists(fs::path(n.path), exists_error);
-          }),
-          f.notes.end());
-      if(f.notes.size() != before) changed = true;
-    }
-
-    // ---- 2. Remove stale image paths whose files no longer exist on disk ----
-    for(auto &f : folders_)
-    {
-      const size_t before = f.images.size();
-      f.images.erase(
-          std::remove_if(f.images.begin(), f.images.end(), [&](const std::string &img) {
-            std::error_code exists_error;
-            return !img.empty() && !fs::exists(fs::path(img), exists_error);
-          }),
-          f.images.end());
-      if(f.images.size() != before) changed = true;
+      for(const auto &note : folder.notes)
+      {
+        if(note.path.empty()) continue;
+        std::error_code exists_error;
+        const bool exists = fs::exists(note.path, exists_error);
+        if(exists_error)
+        {
+          LOG_WARNING("Cannot inspect note path '", note.path, "': ", exists_error.message());
+          continue;
+        }
+        if(!exists && !note.content_fingerprint.empty())
+          ++missing_fingerprint_counts[folder.name + "\n" + note.content_fingerprint];
+      }
+      for(const auto &image : folder.images)
+      {
+        std::error_code exists_error;
+        (void)fs::exists(image, exists_error);
+        if(exists_error)
+        {
+          LOG_WARNING("Cannot inspect image path '", image, "': ", exists_error.message());
+          (void)0;
+        }
+      }
     }
   }
 
@@ -2784,19 +2999,43 @@ bool App::sync_project_files()
     return true;
   };
 
-  // ---- 4. Scan disk — add new .md and image files ----
-  for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, ec))
+  // Count untracked content before matching. A rename is accepted only when
+  // both the missing metadata and the disk candidate are unique in the folder.
+  std::unordered_map<std::string, int> candidate_fingerprint_counts;
+  std::vector<fs::directory_entry> disk_entries;
   {
-    if(ec)
+    std::error_code count_error;
+    for(const auto &entry : fs::recursive_directory_iterator(config_.dataPath, count_error))
     {
-      ec.clear();
-      continue;
+      if(count_error) break;
+      if(!entry.is_regular_file(count_error))
+      {
+        if(count_error) break;
+        continue;
+      }
+      disk_entries.push_back(entry);
+      const fs::path &path = entry.path();
+      if(lower_ext(path) != ".md" || tracked_notes.contains(norm_path(path))) continue;
+      std::string folder_name;
+      if(!folder_name_for(path, folder_name)) continue;
+      const auto candidate = g_project_files.ensure_loaded(path);
+      record_project_read(path, candidate);
+      if(!candidate || !candidate.snapshot.existed) continue;
+      const std::string fingerprint = notepp::note_index::content_fingerprint(
+          candidate.snapshot.content);
+      ++candidate_fingerprint_counts[folder_name + "\n" + fingerprint];
     }
-    if(!entry.is_regular_file(ec))
+    if(count_error)
     {
-      ec.clear();
-      continue;
+      LOG_WARNING("Cannot fully inspect project notes for external renames: ",
+                  count_error.message());
+      (void)0;
     }
+  }
+
+  // ---- 4. Reconcile the single filesystem scan ----
+  for(const auto &entry : disk_entries)
+  {
     const fs::path &p = entry.path();
     const std::string ext = lower_ext(p);
     const std::string norm = norm_path(p);
@@ -2807,14 +3046,58 @@ bool App::sync_project_files()
       std::string folder_name;
       if(!folder_name_for(p, folder_name)) continue;
       const std::string title = p.stem().string().empty() ? "Note" : p.stem().string();
-      const int fi = find_or_create_folder(folder_name);
-      NoteMeta n;
-      n.id = generate_uuid();
-      n.title = title;
-      n.path = norm;
-      folders_[(size_t)fi].notes.push_back(std::move(n));
+      const auto candidate = g_project_files.ensure_loaded(p);
+      record_project_read(p, candidate);
+      if(!candidate || !candidate.snapshot.existed) continue;
+      const std::string fingerprint = notepp::note_index::content_fingerprint(
+          candidate.snapshot.content);
+      const std::string fingerprint_key = folder_name + "\n" + fingerprint;
+      bool reconciled_rename = false;
+      if(notepp::note_index::unique_rename_evidence(
+             missing_fingerprint_counts[fingerprint_key],
+             candidate_fingerprint_counts[fingerprint_key]))
+      {
+        for(auto &folder : folders_)
+        {
+          if(folder.name != folder_name) continue;
+          for(auto &note : folder.notes)
+          {
+            if(note.content_fingerprint != fingerprint || note.path.empty()) continue;
+            const atomic_file::Snapshot *old_snapshot =
+                g_project_files.known_snapshot(note.path);
+            if(old_snapshot == nullptr || !old_snapshot->existed ||
+               old_snapshot->content != candidate.snapshot.content)
+              continue;
+            std::error_code old_exists_error;
+            const bool old_exists = fs::exists(note.path, old_exists_error);
+            if(old_exists_error || old_exists) continue;
+            const std::filesystem::path old_path(note.path);
+            note.path = norm;
+            note.title = title;
+            note.unresolved_stored_path.clear();
+            g_project_files.moved(old_path, p);
+            g_project_persistence_guard.moved(old_path, p);
+            MarkdownSupport::notify_document_moved(old_path, p);
+            MarkdownWidgets::notify_document_moved(old_path, p);
+            reconciled_rename = true;
+            changed = true;
+            break;
+          }
+          if(reconciled_rename) break;
+        }
+      }
+      if(!reconciled_rename)
+      {
+        const int fi = find_or_create_folder(folder_name);
+        NoteMeta n;
+        n.id = generate_uuid();
+        n.title = title;
+        n.path = norm;
+        n.content_fingerprint = fingerprint;
+        folders_[(size_t)fi].notes.push_back(std::move(n));
+        changed = true;
+      }
       tracked_notes.insert(norm);
-      changed = true;
     }
     else if(kImageExts.count(ext))
     {
@@ -3816,9 +4099,27 @@ void App::render_debug_history_window() const
 
 bool App::frame_begin()
 {
-  if(git_sync_in_progress_ && git_sync_future_.valid() &&
-     git_sync_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
-    finish_git_operation();
+  if(git_sync_in_progress_ && git_sync_future_.valid())
+  {
+    try
+    {
+      if(git_sync_future_.wait_for(std::chrono::seconds(0)) ==
+         std::future_status::ready)
+        finish_git_operation();
+    }
+    catch(const std::exception &error)
+    {
+      git_sync_in_progress_ = false;
+      record_git_status(notepp::git_sync::exception_result(
+                            "Polling Git Sync", error.what())
+                            .status);
+    }
+    catch(...)
+    {
+      git_sync_in_progress_ = false;
+      record_git_status(notepp::git_sync::exception_result("Polling Git Sync").status);
+    }
+  }
   {
     const ImGuiIO &_io = ImGui::GetIO();
     if((_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) == 0)
@@ -4137,7 +4438,8 @@ bool App::frame_begin()
 void App::frame_ui()
 {
   MarkdownView::begin_sidebar_thumbnail_frame();
-  if(git_sync_in_progress_) ImGui::BeginDisabled();
+  const bool git_disabled_for_frame = git_sync_in_progress_;
+  if(git_disabled_for_frame) ImGui::BeginDisabled();
 
   // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -4205,6 +4507,17 @@ void App::frame_ui()
     const ImTextureID recycle_icon = get_toolbar_icon_texture("recycle.png");
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(Lang::t("Explorer"));
+    if(!g_unresolved_persistence_errors.empty())
+    {
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.25f, 1.0f), "!");
+      if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+      {
+        const auto &error = *g_unresolved_persistence_errors.begin();
+        ImGui::SetTooltip("Project persistence error\n%s\n%s", error.first.c_str(),
+                          error.second.c_str());
+      }
+    }
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz - right_margin);
     if(shaded_icon_button("##explorer_refresh", refresh_icon, ImVec2(btn_sz, btn_sz), "R##explorer_refresh"))
@@ -9439,20 +9752,23 @@ __CURSOR__)MD",
       deferred_sidebar_snapshot_before.clear();
     }
 
-    if(layout_dirty_ && !ImGui::IsAnyMouseDown())
+    if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
     {
-      const bool index_saved = save_index();
-      capture_to_active_profile();
-      const bool profiles_saved = save_profiles();
-      if(index_saved && profiles_saved) layout_dirty_ = false;
+      if(layout_dirty_ && !ImGui::IsAnyMouseDown())
+      {
+        const bool index_saved = save_index();
+        capture_to_active_profile();
+        const bool profiles_saved = save_profiles();
+        if(index_saved && profiles_saved) layout_dirty_ = false;
+      }
+      if(state_dirty_ && save_state()) state_dirty_ = false;
+      if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
+      if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     }
-    if(state_dirty_ && save_state())
-      state_dirty_ = false;
     render_search_dialog();
     render_debug_history_window();
     render_terminal();
-    if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
-    if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
+    if(git_disabled_for_frame) ImGui::EndDisabled();
     return;
   }
   request_undo_draw_ = false;
@@ -9486,8 +9802,12 @@ __CURSOR__)MD",
     render_search_dialog();
     render_debug_history_window();
     render_terminal();
-    if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
-    if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
+    if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
+    {
+      if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
+      if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
+    }
+    if(git_disabled_for_frame) ImGui::EndDisabled();
     return;
   }
   NoteMeta &active_note = folders_[(size_t)active_folder_idx_].notes[(size_t)active_note_idx_];
@@ -10022,7 +10342,7 @@ __CURSOR__)MD",
     deferred_sidebar_snapshot_before.clear();
   }
 
-  if(!git_sync_in_progress_)
+  if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
   {
     if(layout_dirty_ && !ImGui::IsAnyMouseDown())
     {
@@ -10038,5 +10358,5 @@ __CURSOR__)MD",
   render_search_dialog();
   render_debug_history_window();
   render_terminal();
-  if(git_sync_in_progress_) ImGui::EndDisabled();
+  if(git_disabled_for_frame) ImGui::EndDisabled();
 }

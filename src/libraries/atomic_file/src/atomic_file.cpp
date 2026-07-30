@@ -766,6 +766,13 @@ SaveResult SnapshotStore::save(const std::filesystem::path &path,
   return result;
 }
 
+const Snapshot *SnapshotStore::known_snapshot(const std::filesystem::path &path) const noexcept
+{
+  const std::string key = path.lexically_normal().generic_string();
+  const auto found = snapshots_.find(key);
+  return found == snapshots_.end() ? nullptr : &found->second;
+}
+
 void SnapshotStore::expect_missing(const std::filesystem::path &path)
 {
   const std::string key = path.lexically_normal().generic_string();

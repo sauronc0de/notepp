@@ -308,6 +308,9 @@ void test_snapshot_store_advances_only_after_success()
   af::SnapshotStore store;
   const af::ReadResult loaded = store.load(file);
   expect(static_cast<bool>(loaded), "snapshot store loads canonical bytes");
+  expect(store.known_snapshot(file) != nullptr &&
+             store.known_snapshot(file)->content == "loaded",
+         "known snapshots expose exact bytes for conservative rename matching");
 
   const af::SaveResult saved = store.save(file, "local-one");
   expect(static_cast<bool>(saved), "snapshot store saves against loaded snapshot");

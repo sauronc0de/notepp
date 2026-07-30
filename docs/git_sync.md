@@ -16,9 +16,9 @@ Notepp does not create repositories, configure remotes, select branches, or stor
 
 When enabled:
 
-- Opening Notepp attempts a bounded `git pull --ff-only` before project state is loaded.
+- Opening Notepp attempts a bounded `git pull --ff-only` before project state is loaded. The window may appear only after that bounded command completes or times out.
 - Switching projects saves the old project, attempts to commit and push it, then attempts a fast-forward pull of the new project before loading it.
-- Closing Notepp atomically saves all project files, including layout state, then commits and pushes them.
+- Closing Notepp atomically saves all project files, including layout state, then commits and pushes them. Exit may wait for the bounded Git commands.
 - Network, authentication, missing-Git, repository, upstream, dirty-tree, timeout and divergence failures are reported but never prevent local editing or exit.
 
 A failed push leaves the local commit intact for a later **Sync now** retry. A failed project save skips Git so incomplete canonical state is never committed.

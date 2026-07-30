@@ -5,6 +5,7 @@
 #include "note_project.hpp"
 #include "process.hpp"
 
+#include <exception>
 #include <filesystem>
 
 int main(int, char **)
@@ -17,33 +18,36 @@ int main(int, char **)
   std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
-
-#if USE_PORTABLE_PATHS
-  auto project = notepp::project::initialize_project();
-
-  if(!project)
-    return 0;
-
-  projectRoot = project->root;
-  dataPath = project->notes;
-  configPath = project->config;
-#else
-  dataPath = DATA_PATH;
-  projectRoot = std::filesystem::path(dataPath).parent_path();
-  configPath = projectRoot / "config";
-  std::filesystem::create_directories(configPath);
-#endif
-
   const std::filesystem::path app_settings_path = notepp::project::get_config_file();
   notepp::app_settings::Store settings_store(app_settings_path);
   const auto settings = settings_store.load();
   notepp::git_sync::Status initial_git_status;
   bool has_initial_git_status = false;
+
+#if USE_PORTABLE_PATHS
+  const auto selected_root = notepp::project::select_initial_project_root();
+  if(!selected_root) return 0;
+  projectRoot = *selected_root;
+
+  // Pull before create_or_open_project can create directories or upgrade the
+  // shared manifest. Every failure is advisory and the local tree still opens.
   if(settings && settings.settings.git_sync_enabled)
   {
     process::SystemRunner runner;
     notepp::git_sync::Client client(runner);
-    const auto pulled = client.pull_on_open(projectRoot);
+    notepp::git_sync::OperationResult pulled;
+    try
+    {
+      pulled = client.pull_on_open(projectRoot);
+    }
+    catch(const std::exception &error)
+    {
+      pulled = notepp::git_sync::exception_result("Startup Git Sync", error.what());
+    }
+    catch(...)
+    {
+      pulled = notepp::git_sync::exception_result("Startup Git Sync");
+    }
     initial_git_status = pulled.status;
     has_initial_git_status = true;
     const notepp::app_settings::GitSyncRecord record{
@@ -53,13 +57,25 @@ int main(int, char **)
     if(!recorded)
     {
       LOG_ERROR("Cannot persist startup Git Sync status: ", recorded.message);
+      (void)0;
     }
     if(!pulled.success)
     {
       LOG_ERROR("Startup Git Sync failed; opening local project: ", pulled.status.summary,
                 pulled.status.detail.empty() ? "" : " - ", pulled.status.detail);
+      (void)0;
     }
   }
+
+  const auto project = notepp::project::create_or_open_project(projectRoot);
+  dataPath = project.notes;
+  configPath = project.config;
+#else
+  dataPath = DATA_PATH;
+  projectRoot = std::filesystem::path(dataPath).parent_path();
+  configPath = projectRoot / "config";
+  std::filesystem::create_directories(configPath);
+#endif
 
   AppConfig config;
   config.assetsPath = assetsPath;
