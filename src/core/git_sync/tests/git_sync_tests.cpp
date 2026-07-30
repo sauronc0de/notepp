@@ -265,6 +265,57 @@ void require_git(const process::Result &result, std::string_view action)
   std::cerr << "FAIL: " << action << ": " << result.stderr_text << result.error << '\n';
 }
 
+void test_offline_close_keeps_local_commit()
+{
+  const fs::path root = fs::temp_directory_path() / "notepp_git_offline_commit_root";
+  fs::create_directories(root);
+  std::vector<std::string> actions;
+  FakeRunner runner([&](const std::vector<std::string> &arguments, const process::RunOptions &) {
+    if(ends_with(arguments, {"--version"})) return exited(0, "git version test\n");
+    if(ends_with(arguments, {"rev-parse", "--show-toplevel"})) return exited(0, root.string() + "\n");
+    if(ends_with(arguments, {"status", "--porcelain=v2", "--branch"}))
+      return exited(0, "# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n? local.md\n");
+    if(ends_with(arguments, {"config", "--get", "branch.main.remote"})) return exited(0, "origin\n");
+    if(ends_with(arguments, {"config", "--get", "branch.main.merge"})) return exited(0, "refs/heads/main\n");
+    if(ends_with(arguments,
+                 {"add", "--all", "--", "notes", "assets", "config", "notepp.project.json"}))
+    {
+      actions.emplace_back("add");
+      return exited();
+    }
+    if(ends_with(arguments, {"diff", "--cached", "--quiet", "--exit-code"})) return exited(1);
+    if(std::find(arguments.begin(), arguments.end(), "commit") != arguments.end())
+    {
+      actions.emplace_back("commit");
+      return exited();
+    }
+    if(ends_with(arguments, {"fetch", "--no-tags", "--", "origin"}))
+    {
+      actions.emplace_back("fetch");
+      return exited(1, {}, "Could not resolve host");
+    }
+    return exited(2, {}, "unexpected fake command");
+  });
+  const auto result = gs::Client(runner).commit_and_push(root, "Notepp sync test");
+  expect(!result.success && result.status.state == gs::SyncState::offline,
+         "offline close reports an offline failure");
+  expect(actions == std::vector<std::string>({"add", "commit", "fetch"}),
+         "local commit is created before the offline fetch");
+  fs::remove_all(root);
+}
+
+void test_state_name_round_trip()
+{
+  for(const gs::SyncState state : {gs::SyncState::unavailable, gs::SyncState::not_repository,
+                                   gs::SyncState::no_upstream, gs::SyncState::clean,
+                                   gs::SyncState::dirty, gs::SyncState::ahead,
+                                   gs::SyncState::behind, gs::SyncState::diverged,
+                                   gs::SyncState::syncing, gs::SyncState::offline,
+                                   gs::SyncState::conflict, gs::SyncState::error})
+    expect(gs::state_from_name(gs::state_name(state)) == state, "Git state name round trips");
+  expect(gs::state_from_name("unknown") == gs::SyncState::error, "unknown state becomes error");
+}
+
 void test_real_repository_integration()
 {
   if(!git({"--version"}).succeeded())
@@ -287,6 +338,9 @@ void test_real_repository_integration()
   require_git(git({"clone", remote.string(), project.string()}), "clone project");
   require_git(git({"config", "user.name", "Notepp Tests"}, project), "configure project name");
   require_git(git({"config", "user.email", "notepp@example.test"}, project), "configure project email");
+  fs::create_directories(project / "notes");
+  fs::create_directories(project / "assets");
+  fs::create_directories(project / "config");
   std::ofstream(project / "notepp.project.json") << "{}\n";
   require_git(git({"add", "."}, project), "stage initial project");
   require_git(git({"commit", "-m", "initial"}, project), "commit initial project");
@@ -298,7 +352,7 @@ void test_real_repository_integration()
   gs::Client client(runner);
   expect(client.inspect(project).state == gs::SyncState::clean, "real repository reports clean");
 
-  std::ofstream(project / "notes.md") << "local note\n";
+  std::ofstream(project / "notes" / "local.md") << "local note\n";
   const gs::OperationResult pushed = client.commit_and_push(project, "Notepp sync test");
   expect(pushed.success && pushed.status.state == gs::SyncState::clean,
          "local files are committed and pushed normally");
@@ -328,6 +382,8 @@ int main()
   test_safe_commands_offline_and_redaction();
   test_behind_dirty_and_failed_final_status();
   test_authentication_and_tls_are_not_offline();
+  test_offline_close_keeps_local_commit();
+  test_state_name_round_trip();
   test_real_repository_integration();
   if(failures != 0)
   {

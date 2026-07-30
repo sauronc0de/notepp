@@ -2,7 +2,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <ctime>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <unordered_set>
@@ -158,6 +161,19 @@ DocumentResult readDocument(const std::filesystem::path &configFile,
     result.needsSave = true;
   }
 
+  if(result.document.contains("lastGitSync") && result.document["lastGitSync"].is_object())
+  {
+    const Json &sync = result.document["lastGitSync"];
+    if(sync.contains("state") && sync["state"].is_string())
+      result.settings.last_git_sync.state = sync["state"].get<std::string>();
+    if(sync.contains("summary") && sync["summary"].is_string())
+      result.settings.last_git_sync.summary = sync["summary"].get<std::string>();
+    if(sync.contains("detail") && sync["detail"].is_string())
+      result.settings.last_git_sync.detail = sync["detail"].get<std::string>();
+    if(sync.contains("attemptedAt") && sync["attemptedAt"].is_string())
+      result.settings.last_git_sync.attempted_at = sync["attemptedAt"].get<std::string>();
+  }
+
   if(result.document.contains("lastProjectPath") &&
      result.document["lastProjectPath"].is_string())
   {
@@ -198,6 +214,11 @@ DocumentResult readDocument(const std::filesystem::path &configFile,
 
   result.document["schemaVersion"] = kSchemaVersion;
   result.document["gitSyncEnabled"] = result.settings.git_sync_enabled;
+  result.document["lastGitSync"] = {
+      {"state", result.settings.last_git_sync.state},
+      {"summary", result.settings.last_git_sync.summary},
+      {"detail", result.settings.last_git_sync.detail},
+      {"attemptedAt", result.settings.last_git_sync.attempted_at}};
   if(result.settings.last_project_path)
     result.document["lastProjectPath"] = normalizedPathString(*result.settings.last_project_path);
   else if(!result.document.contains("lastProjectPath"))
@@ -224,6 +245,20 @@ std::string serialize(const Json &document)
   return content;
 }
 } // namespace
+
+std::string current_utc_timestamp()
+{
+  const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm utc{};
+#ifdef _WIN32
+  gmtime_s(&utc, &now);
+#else
+  gmtime_r(&now, &utc);
+#endif
+  std::ostringstream output;
+  output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+  return output.str();
+}
 
 Store::Store(std::filesystem::path configFile,
              std::filesystem::path legacyRecentProjectsFile)
@@ -262,7 +297,8 @@ LoadResult Store::load() noexcept
 }
 
 UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
-                           const std::optional<std::filesystem::path> &projectPath) noexcept
+                           const std::optional<std::filesystem::path> &projectPath,
+                           const std::optional<GitSyncRecord> &gitSyncRecord) noexcept
 {
   try
   {
@@ -270,6 +306,7 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
     if(!document.success) return {false, document.settings, document.message};
 
     if(setGitSync) document.settings.git_sync_enabled = git_sync_enabled;
+    if(gitSyncRecord) document.settings.last_git_sync = *gitSyncRecord;
     if(projectPath)
     {
       document.settings.last_project_path = projectPath->lexically_normal();
@@ -283,6 +320,11 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
 
     document.document["schemaVersion"] = kSchemaVersion;
     document.document["gitSyncEnabled"] = document.settings.git_sync_enabled;
+    document.document["lastGitSync"] = {
+        {"state", document.settings.last_git_sync.state},
+        {"summary", document.settings.last_git_sync.summary},
+        {"detail", document.settings.last_git_sync.detail},
+        {"attemptedAt", document.settings.last_git_sync.attempted_at}};
     if(document.settings.last_project_path)
       document.document["lastProjectPath"] = normalizedPathString(*document.settings.last_project_path);
     else
@@ -309,12 +351,17 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
 
 UpdateResult Store::set_git_sync_enabled(bool enabled) noexcept
 {
-  return update(true, enabled, std::nullopt);
+  return update(true, enabled, std::nullopt, std::nullopt);
 }
 
 UpdateResult Store::record_project(const std::filesystem::path &path) noexcept
 {
-  return update(false, false, path);
+  return update(false, false, path, std::nullopt);
+}
+
+UpdateResult Store::record_git_sync_status(const GitSyncRecord &record) noexcept
+{
+  return update(false, false, std::nullopt, record);
 }
 
 PollResult Store::poll() noexcept

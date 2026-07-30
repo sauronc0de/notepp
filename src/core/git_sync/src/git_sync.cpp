@@ -402,7 +402,9 @@ std::optional<Status> stage_and_commit(const process::Runner &runner,
                                        const std::filesystem::path &root,
                                        std::string_view message)
 {
-  process::Result result = run_git(runner, root, {"add", "--all", "--", "."}, false);
+  process::Result result = run_git(
+      runner, root,
+      {"add", "--all", "--", "notes", "assets", "config", "notepp.project.json"}, false);
   if(!result.succeeded()) return operation_error(result, "Staging project files", false);
 
   result = run_git(runner, root, {"diff", "--cached", "--quiet", "--exit-code"}, false);
@@ -483,12 +485,16 @@ OperationResult Client::commit_and_push(const std::filesystem::path &project_roo
   if(std::holds_alternative<Status>(resolved)) return failure(std::get<Status>(resolved));
   const Upstream &upstream = std::get<Upstream>(resolved);
 
+  // Commit the checked local project first so an offline close retains a local
+  // recovery point. Fetch may then reveal divergence, in which case both
+  // histories are preserved and no push is attempted.
+  if(const auto error = stage_and_commit(runner_, project_root, message)) return failure(*error);
+
   const process::Result fetched = fetch_upstream(runner_, project_root, upstream);
   if(!fetched.succeeded()) return failure(operation_error(fetched, "Git fetch", true));
   const Status after_fetch = inspect(project_root);
   if(const auto rejected = require_syncable(after_fetch, true)) return failure(*rejected);
 
-  if(const auto error = stage_and_commit(runner_, project_root, message)) return failure(*error);
   const process::Result pushed = push_upstream(runner_, project_root, upstream);
   if(!pushed.succeeded()) return failure(operation_error(pushed, "Git push", true));
   Status final_status = inspect(project_root);
@@ -536,6 +542,17 @@ OperationResult Client::manual_sync(const std::filesystem::path &project_root,
   }
   if(status.state == SyncState::clean) return success(std::move(status));
   return failure(std::move(status));
+}
+
+SyncState state_from_name(std::string_view name) noexcept
+{
+  for(const SyncState state : {SyncState::unavailable, SyncState::not_repository,
+                               SyncState::no_upstream, SyncState::clean, SyncState::dirty,
+                               SyncState::ahead, SyncState::behind, SyncState::diverged,
+                               SyncState::syncing, SyncState::offline, SyncState::conflict,
+                               SyncState::error})
+    if(state_name(state) == name) return state;
+  return SyncState::error;
 }
 
 std::string_view state_name(SyncState state) noexcept

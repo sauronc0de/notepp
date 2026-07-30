@@ -190,6 +190,23 @@ void testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten()
          "out-of-range unsigned schema document is not rewritten");
 }
 
+void testGitSyncStatusRoundTrip()
+{
+  TempDir temp;
+  const fs::path config = temp.path() / "config.json";
+  settings::Store store(config);
+  expect(store.load().success, "status store loads");
+  const settings::GitSyncRecord record{"Offline", "Remote unavailable", "Try again later",
+                                       "2026-07-30T12:00:00Z"};
+  expect(store.record_git_sync_status(record).success, "status record saves");
+  const auto loaded = settings::Store(config).load();
+  expect(loaded.success, "status record reloads");
+  expect(loaded.settings.last_git_sync.state == record.state, "status state round trips");
+  expect(loaded.settings.last_git_sync.detail == record.detail, "status detail round trips");
+  expect(loaded.settings.last_git_sync.attempted_at == record.attempted_at,
+         "status timestamp round trips");
+}
+
 void testPollReportsExternalChangesWithoutChangingProject()
 {
   TempDir temp;
@@ -222,6 +239,7 @@ int main()
   testMalformedSettingsAreNotOverwritten();
   testNewerSchemaIsNotDowngraded();
   testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten();
+  testGitSyncStatusRoundTrip();
   testPollReportsExternalChangesWithoutChangingProject();
   if(failures != 0)
   {

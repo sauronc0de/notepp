@@ -60,4 +60,5 @@ private:
 };
 
 [[nodiscard]] std::string_view state_name(SyncState state) noexcept;
+[[nodiscard]] SyncState state_from_name(std::string_view name) noexcept;
 } // namespace notepp::git_sync
