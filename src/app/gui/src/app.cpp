@@ -1982,196 +1982,144 @@ void App::load_state()
   }
   if(index_writable_ && loaded_index && loaded_index.snapshot.existed)
   {
-    const std::string &doc = loaded_index.snapshot.content;
-    index_source_document_ = doc;
-    index_schema_version_ = notepp::note_index::read_schema_version(index_document);
-    index_paths_portable_ = index_schema_version_ >= 2;
-    active_folder_idx_ = json_find_int(doc, "active_folder", 0);
-    active_note_idx_ = json_find_int(doc, "active_note", 0);
-    folder_overview_mode_ = json_find_bool(doc, "folder_view", false);
-    layout_locked_ = json_find_bool(doc, "layout_locked", false);
-    detached_note_windows_enabled_ = json_find_bool(doc, "detached_note_windows", false);
-    dockers_enabled_ = json_find_bool(doc, "dockers_enabled", false);
-    const std::string saved_lang = json_find_string(doc, "language");
-    if(!saved_lang.empty()) Lang::set_language(saved_lang);
-    const std::string fpat = "\"folders\"";
-    size_t fk = doc.find(fpat);
-    if(fk != std::string::npos)
+    const auto decoded_index = notepp::note_index::decode_document(index_document);
+    if(!decoded_index)
     {
-      size_t fb = doc.find('[', fk + fpat.size());
-      if(fb != std::string::npos)
-      {
-        size_t fe = find_matching(doc, fb, '[', ']');
-        if(fe != std::string::npos)
-        {
-          std::string_view folder_arr(doc.data() + fb + 1, fe - fb - 1);
-          for(std::string_view fobj : json_array_objects(folder_arr))
-          {
-            FolderMeta f;
-            f.name = json_find_string(fobj, "name");
-            if(f.name.empty()) f.name = "General";
-            // Per-folder view settings; use global values as defaults for old files
-            f.layout_locked = json_find_bool(fobj, "layout_locked", layout_locked_);
-            f.detached_note_windows = json_find_bool(fobj, "detached_note_windows", detached_note_windows_enabled_);
-            f.dockers_enabled = json_find_bool(fobj, "dockers_enabled", dockers_enabled_);
-            f.drawings_visible = json_find_bool(fobj, "drawings_visible", true);
-            f.grid_visible = json_find_bool(fobj, "grid_visible", false);
+      index_writable_ = false;
+      (void)record_project_save_error(
+          index_file_, "notes index could not be decoded after validation; opened read-only");
+    }
+    else
+    {
+      index_source_document_ = loaded_index.snapshot.content;
+      index_schema_version_ = decoded_index->schema_version;
+      index_paths_portable_ = index_schema_version_ >= 2;
+      active_folder_idx_ = decoded_index->active_folder;
+      active_note_idx_ = decoded_index->active_note;
+      folder_overview_mode_ = decoded_index->folder_view;
+      layout_locked_ = decoded_index->layout_locked;
+      detached_note_windows_enabled_ = decoded_index->detached_note_windows;
+      dockers_enabled_ = decoded_index->dockers_enabled;
+      if(!decoded_index->language.empty()) Lang::set_language(decoded_index->language);
 
-            const std::string npat = "\"notes\"";
-            size_t nk = fobj.find(npat);
-            if(nk != std::string_view::npos)
+      for(const auto &folder_record : decoded_index->folders)
+      {
+        FolderMeta folder;
+        folder.name = folder_record.name;
+        folder.layout_locked = folder_record.layout_locked;
+        folder.detached_note_windows = folder_record.detached_note_windows;
+        folder.dockers_enabled = folder_record.dockers_enabled;
+        folder.drawings_visible = folder_record.drawings_visible;
+        folder.grid_visible = folder_record.grid_visible;
+
+        for(const auto &note_record : folder_record.notes)
+        {
+          NoteMeta note;
+          note.id = note_record.id;
+          if(note.id.empty())
+          {
+            note.id = generate_uuid();
+            uuid_migrated = true;
+          }
+          note.title = note_record.title;
+          note.content_fingerprint = note_record.content_fingerprint;
+          if(auto resolved = resolve_project_owned_path(
+                 project_paths, note_record.path, index_schema_version_, notes_top_level))
+          {
+            note.path = resolved->string();
+            paths_migrated = paths_migrated || index_schema_version_ < 2;
+          }
+          else
+          {
+            const std::filesystem::path expected_path = make_note_path(folder.name, note.title);
+            std::error_code expected_error;
+            if(index_schema_version_ < 2 &&
+               std::filesystem::exists(expected_path, expected_error) && !expected_error)
             {
-              size_t nb = fobj.find('[', nk + npat.size());
-              if(nb != std::string_view::npos)
+              note.path = expected_path.string();
+              paths_migrated = true;
+            }
+            else
+            {
+              note.path.clear();
+              note.unresolved_stored_path = note_record.path;
+              path_migration_failed = true;
+              LOG_ERROR("Cannot migrate note path '", note_record.path,
+                        "' in folder '", folder.name,
+                        "'; preserving legacy index schema");
+            }
+          }
+          note.pos_x = static_cast<float>(note_record.x);
+          note.pos_y = static_cast<float>(note_record.y);
+          note.width = static_cast<float>(note_record.width);
+          note.height = static_cast<float>(note_record.height);
+          note.has_layout = note_record.has_layout;
+          note.hidden = note_record.hidden;
+          note.always_on_top = note_record.always_on_top;
+          note.dock_id = static_cast<ImGuiID>(note_record.dock_id);
+          note.use_custom_color = note_record.use_custom_color;
+          note.color_r = static_cast<float>(note_record.color_r) / 255.0F;
+          note.color_g = static_cast<float>(note_record.color_g) / 255.0F;
+          note.color_b = static_cast<float>(note_record.color_b) / 255.0F;
+          if(!note_record.font_path.empty())
+          {
+            if(auto resolved_font = resolve_project_owned_path(
+                   project_paths, note_record.font_path, index_schema_version_, notes_top_level))
+            {
+              note.font_path = resolved_font->string();
+              paths_migrated = paths_migrated || index_schema_version_ < 2;
+            }
+            else
+            {
+              std::optional<notepp::project_paths::LegacyPathResult> migrated_font;
+              if(index_schema_version_ < 2)
               {
-                size_t ne = find_matching(fobj, nb, '[', ']');
-                if(ne != std::string_view::npos)
+                if(auto encoded_parent = project_paths.encode(config_.dataPath / folder.name))
                 {
-                  std::string_view notes_arr = fobj.substr(nb + 1, ne - nb - 1);
-                  for(std::string_view nobj : json_array_objects(notes_arr))
-                  {
-                    NoteMeta n;
-                    n.id = json_find_string(nobj, "id");
-                    if(n.id.empty())
-                    {
-                      n.id = generate_uuid();
-                      uuid_migrated = true;
-                    }
-                    n.title = json_find_string(nobj, "title");
-                    if(n.title.empty()) n.title = "Note";
-                    n.content_fingerprint = json_find_string(nobj, "content_fingerprint");
-                    const std::string stored_note_path = json_find_string(nobj, "path");
-                    if(auto resolved = resolve_project_owned_path(
-                           project_paths, stored_note_path, index_schema_version_, notes_top_level))
-                    {
-                      n.path = resolved->string();
-                      paths_migrated = paths_migrated || index_schema_version_ < 2;
-                    }
-                    else
-                    {
-                      const std::filesystem::path expected_path = make_note_path(f.name, n.title);
-                      std::error_code expected_error;
-                      if(index_schema_version_ < 2 && std::filesystem::exists(expected_path, expected_error) && !expected_error)
-                      {
-                        n.path = expected_path.string();
-                        paths_migrated = true;
-                      }
-                      else
-                      {
-                        n.path.clear();
-                        n.unresolved_stored_path = stored_note_path;
-                        path_migration_failed = true;
-                        LOG_ERROR("Cannot migrate note path '", stored_note_path,
-                                  "' in folder '", f.name, "'; preserving legacy index schema");
-                      }
-                    }
-                    n.pos_x = (float)json_find_int(nobj, "x", 0);
-                    n.pos_y = (float)json_find_int(nobj, "y", 0);
-                    n.width = (float)json_find_int(nobj, "w", 520);
-                    n.height = (float)json_find_int(nobj, "h", 260);
-                    n.has_layout = json_find_bool(nobj, "has_layout", false);
-                    n.hidden = json_find_bool(nobj, "hidden", false);
-                    n.always_on_top = json_find_bool(nobj, "always_on_top", false);
-                    n.dock_id = (ImGuiID)json_find_int(nobj, "dock_id", 0);
-                    n.use_custom_color = json_find_bool(nobj, "use_custom_color", false);
-                    n.color_r = (float)json_find_int(nobj, "color_r", 0) / 255.0f;
-                    n.color_g = (float)json_find_int(nobj, "color_g", 0) / 255.0f;
-                    n.color_b = (float)json_find_int(nobj, "color_b", 0) / 255.0f;
-                    const std::string stored_font_path = json_find_string(nobj, "font_path");
-                    if(!stored_font_path.empty())
-                    {
-                      if(auto resolved_font = resolve_project_owned_path(
-                             project_paths, stored_font_path, index_schema_version_, notes_top_level))
-                      {
-                        n.font_path = resolved_font->string();
-                        paths_migrated = paths_migrated || index_schema_version_ < 2;
-                      }
-                      else
-                      {
-                        std::optional<notepp::project_paths::LegacyPathResult> migrated_font;
-                        if(index_schema_version_ < 2)
-                        {
-                          if(auto encoded_parent = project_paths.encode(config_.dataPath / f.name))
-                          {
-                            if(auto result = project_paths.migrate_legacy_child(
-                                   stored_font_path, *encoded_parent, notes_top_level))
-                              migrated_font = *result;
-                          }
-                        }
-                        if(migrated_font)
-                        {
-                          n.font_path = migrated_font->absolute_path.string();
-                          paths_migrated = true;
-                        }
-                        else
-                        {
-                          n.font_path.clear();
-                          n.unresolved_stored_font_path = stored_font_path;
-                          path_migration_failed = true;
-                          LOG_ERROR("Cannot migrate font path '", stored_font_path,
-                                    "'; preserving it as non-I/O metadata");
-                        }
-                      }
-                    }
-                    n.font_size = json_find_float(nobj, "font_size", 0.0f);
-                    if(n.path.empty() && n.unresolved_stored_path.empty())
-                      n.path = make_note_path(f.name, n.title);
-                    f.notes.push_back(std::move(n));
-                  }
+                  if(auto result = project_paths.migrate_legacy_child(
+                         note_record.font_path, *encoded_parent, notes_top_level))
+                    migrated_font = *result;
                 }
               }
-            }
-            // Parse images array
-            {
-              const std::string ipat = "\"images\"";
-              size_t ik = fobj.find(ipat);
-              if(ik != std::string_view::npos)
+              if(migrated_font)
               {
-                size_t ib = fobj.find('[', ik + ipat.size());
-                if(ib != std::string_view::npos)
-                {
-                  size_t ie = find_matching(fobj, ib, '[', ']');
-                  if(ie != std::string_view::npos)
-                  {
-                    std::string_view img_arr = fobj.substr(ib + 1, ie - ib - 1);
-                    size_t pos = 0;
-                    while(pos < img_arr.size())
-                    {
-                      size_t q1 = img_arr.find('"', pos);
-                      if(q1 == std::string_view::npos) break;
-                      size_t q2 = q1 + 1;
-                      while(q2 < img_arr.size() && img_arr[q2] != '"')
-                      {
-                        if(img_arr[q2] == '\\') ++q2; // skip escaped char
-                        ++q2;
-                      }
-                      if(q2 >= img_arr.size()) break;
-                      std::string img_path = json_unescape(img_arr.substr(q1 + 1, q2 - q1 - 1));
-                      if(!img_path.empty())
-                      {
-                        if(auto resolved_image = resolve_project_owned_path(
-                               project_paths, img_path, index_schema_version_, notes_top_level))
-                        {
-                          f.images.push_back(resolved_image->string());
-                          paths_migrated = paths_migrated || index_schema_version_ < 2;
-                        }
-                        else
-                        {
-                          f.unresolved_stored_images.push_back(std::move(img_path));
-                          path_migration_failed = true;
-                          LOG_ERROR("Cannot migrate image path in folder '", f.name,
-                                    "'; preserving legacy index schema");
-                        }
-                      }
-                      pos = q2 + 1;
-                    }
-                  }
-                }
+                note.font_path = migrated_font->absolute_path.string();
+                paths_migrated = true;
+              }
+              else
+              {
+                note.font_path.clear();
+                note.unresolved_stored_font_path = note_record.font_path;
+                path_migration_failed = true;
+                LOG_ERROR("Cannot migrate font path '", note_record.font_path,
+                          "'; preserving it as non-I/O metadata");
               }
             }
-            folders_.push_back(std::move(f));
+          }
+          note.font_size = note_record.font_size;
+          if(note.path.empty() && note.unresolved_stored_path.empty())
+            note.path = make_note_path(folder.name, note.title);
+          folder.notes.push_back(std::move(note));
+        }
+
+        for(const std::string &stored_image : folder_record.images)
+        {
+          if(stored_image.empty()) continue;
+          if(auto resolved_image = resolve_project_owned_path(
+                 project_paths, stored_image, index_schema_version_, notes_top_level))
+          {
+            folder.images.push_back(resolved_image->string());
+            paths_migrated = paths_migrated || index_schema_version_ < 2;
+          }
+          else
+          {
+            folder.unresolved_stored_images.push_back(stored_image);
+            path_migration_failed = true;
+            LOG_ERROR("Cannot migrate image path in folder '", folder.name,
+                      "'; preserving legacy index schema");
           }
         }
+        folders_.push_back(std::move(folder));
       }
     }
   }
@@ -2549,63 +2497,43 @@ void App::load_profiles()
     return;
   }
 
-  const std::string &doc = loaded_profiles.snapshot.content;
-  profiles_source_document_ = doc;
-  active_profile_id_ = json_find_string(doc, "active_profile_id");
-  maximized_profile_id_ = json_find_string(doc, "maximized_profile_id");
-  reduced_profile_id_ = json_find_string(doc, "reduced_profile_id");
-
-  const std::string ppat = "\"profiles\"";
-  size_t pk = doc.find(ppat);
-  if(pk == std::string::npos) return;
-  size_t pb = doc.find('[', pk + ppat.size());
-  if(pb == std::string::npos) return;
-  size_t pe = find_matching(doc, pb, '[', ']');
-  if(pe == std::string::npos) return;
-
-  std::string_view profiles_arr(doc.data() + pb + 1, pe - pb - 1);
-  for(std::string_view pobj : json_array_objects(profiles_arr))
+  const auto decoded_profiles =
+      notepp::layout_profile_state::decode_document(profile_document);
+  if(!decoded_profiles)
   {
-    LayoutProfile p;
-    p.id = json_find_string(pobj, "id");
-    if(p.id.empty()) continue;
-    p.name = json_find_string(pobj, "name");
-    if(p.name.empty()) p.name = "Profile";
-    p.window_maximized = json_find_bool(pobj, "window_maximized", true);
-    p.window_x = json_find_int(pobj, "window_x", -1);
-    p.window_y = json_find_int(pobj, "window_y", -1);
-    p.window_w = json_find_int(pobj, "window_w", 1100);
-    p.window_h = json_find_int(pobj, "window_h", 700);
+    profiles_writable_ = false;
+    (void)record_project_save_error(
+        profiles_file_, "layout profiles could not be decoded after validation; opened read-only");
+    return;
+  }
 
-    const std::string nlpat = "\"note_layouts\"";
-    size_t nlk = pobj.find(nlpat);
-    if(nlk != std::string_view::npos)
+  profiles_source_document_ = loaded_profiles.snapshot.content;
+  active_profile_id_ = decoded_profiles->active_profile_id;
+  maximized_profile_id_ = decoded_profiles->maximized_profile_id;
+  reduced_profile_id_ = decoded_profiles->reduced_profile_id;
+  for(const auto &profile_record : decoded_profiles->profiles)
+  {
+    LayoutProfile profile;
+    profile.id = profile_record.id;
+    profile.name = profile_record.name;
+    profile.window_maximized = profile_record.window_maximized;
+    profile.window_x = profile_record.window_x;
+    profile.window_y = profile_record.window_y;
+    profile.window_w = profile_record.window_w;
+    profile.window_h = profile_record.window_h;
+    for(const auto &[note_id, layout_record] : profile_record.note_layouts)
     {
-      size_t nlb = pobj.find('[', nlk + nlpat.size());
-      if(nlb != std::string_view::npos)
-      {
-        size_t nle = find_matching(pobj, nlb, '[', ']');
-        if(nle != std::string_view::npos)
-        {
-          std::string_view nl_arr = pobj.substr(nlb + 1, nle - nlb - 1);
-          for(std::string_view nlobj : json_array_objects(nl_arr))
-          {
-            const std::string note_id = json_find_string(nlobj, "note_id");
-            if(note_id.empty()) continue;
-            NoteLayoutData nd;
-            nd.pos_x = (float)json_find_int(nlobj, "x", 0);
-            nd.pos_y = (float)json_find_int(nlobj, "y", 0);
-            nd.width = (float)json_find_int(nlobj, "w", 520);
-            nd.height = (float)json_find_int(nlobj, "h", 260);
-            nd.hidden = json_find_bool(nlobj, "hidden", false);
-            nd.has_layout = json_find_bool(nlobj, "has_layout", false);
-            nd.dock_id = (ImGuiID)json_find_int(nlobj, "dock_id", 0);
-            p.note_layouts[note_id] = nd;
-          }
-        }
-      }
+      NoteLayoutData layout;
+      layout.pos_x = static_cast<float>(layout_record.x);
+      layout.pos_y = static_cast<float>(layout_record.y);
+      layout.width = static_cast<float>(layout_record.width);
+      layout.height = static_cast<float>(layout_record.height);
+      layout.hidden = layout_record.hidden;
+      layout.has_layout = layout_record.has_layout;
+      layout.dock_id = static_cast<ImGuiID>(layout_record.dock_id);
+      profile.note_layouts.emplace(note_id, layout);
     }
-    layout_profiles_.push_back(std::move(p));
+    layout_profiles_.push_back(std::move(profile));
   }
 
   // Restore last active profile (apply its window state so the window

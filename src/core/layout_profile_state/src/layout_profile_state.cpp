@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 namespace notepp::layout_profile_state
 {
@@ -141,6 +142,56 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
     }
   }
   return DocumentState::supported;
+}
+
+std::optional<Document> decode_document(const nlohmann::json &document) noexcept
+{
+  if(validate_document(document, true) != DocumentState::supported)
+    return std::nullopt;
+
+  try
+  {
+    Document decoded;
+    decoded.active_profile_id = document.value("active_profile_id", std::string{});
+    decoded.maximized_profile_id = document.value("maximized_profile_id", std::string{});
+    decoded.reduced_profile_id = document.value("reduced_profile_id", std::string{});
+    for(const Json &profile_value : document.at("profiles"))
+    {
+      ProfileRecord profile;
+      profile.id = profile_value.at("id").get<std::string>();
+      profile.name = profile_value.value("name", std::string{"Profile"});
+      if(profile.name.empty()) profile.name = "Profile";
+      profile.window_maximized = profile_value.value("window_maximized", true);
+      profile.window_x = profile_value.value("window_x", -1);
+      profile.window_y = profile_value.value("window_y", -1);
+      profile.window_w = profile_value.value("window_w", 1100);
+      profile.window_h = profile_value.value("window_h", 700);
+
+      const auto layouts = profile_value.find("note_layouts");
+      if(layouts != profile_value.end())
+      {
+        for(const Json &layout_value : *layouts)
+        {
+          NoteLayoutRecord layout;
+          layout.x = layout_value.value("x", 0);
+          layout.y = layout_value.value("y", 0);
+          layout.width = layout_value.value("w", 520);
+          layout.height = layout_value.value("h", 260);
+          layout.dock_id = layout_value.value("dock_id", 0);
+          layout.hidden = layout_value.value("hidden", false);
+          layout.has_layout = layout_value.value("has_layout", false);
+          profile.note_layouts.emplace(
+              layout_value.at("note_id").get<std::string>(), layout);
+        }
+      }
+      decoded.profiles.push_back(std::move(profile));
+    }
+    return decoded;
+  }
+  catch(...)
+  {
+    return std::nullopt;
+  }
 }
 
 nlohmann::json merge_unknown_fields(const nlohmann::json &source,

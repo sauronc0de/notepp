@@ -2,8 +2,10 @@
 
 #include <nlohmann/json_fwd.hpp>
 
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace notepp::note_index
 {
@@ -18,6 +20,57 @@ enum class DocumentState
 };
 
 DocumentState validate_document(const nlohmann::json &document, bool existed) noexcept;
+
+struct NoteRecord
+{
+  std::string id;
+  std::string title = "Note";
+  std::string path;
+  std::string font_path;
+  std::string content_fingerprint;
+  int x = 0;
+  int y = 0;
+  int width = 520;
+  int height = 260;
+  int dock_id = 0;
+  int color_r = 0;
+  int color_g = 0;
+  int color_b = 0;
+  float font_size = 0.0F;
+  bool has_layout = false;
+  bool hidden = false;
+  bool always_on_top = false;
+  bool use_custom_color = false;
+};
+
+struct FolderRecord
+{
+  std::string name = "General";
+  std::vector<NoteRecord> notes;
+  std::vector<std::string> images;
+  bool layout_locked = false;
+  bool detached_note_windows = false;
+  bool dockers_enabled = false;
+  bool drawings_visible = true;
+  bool grid_visible = false;
+};
+
+struct Document
+{
+  int schema_version = 1;
+  int active_folder = 0;
+  int active_note = 0;
+  std::string language;
+  std::vector<FolderRecord> folders;
+  bool folder_view = false;
+  bool layout_locked = false;
+  bool detached_note_windows = false;
+  bool dockers_enabled = false;
+};
+
+// Decode only canonical, validated fields. Unknown extension objects are never
+// searched recursively and therefore cannot shadow canonical keys.
+std::optional<Document> decode_document(const nlohmann::json &document) noexcept;
 
 // Stable SHA-256 content fingerprint persisted with note metadata. It is used
 // only as conservative rename evidence after unique matching; an available

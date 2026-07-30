@@ -13,6 +13,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace notepp::note_index
@@ -279,6 +280,73 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
   const int schema = read_schema_version(document);
   if(schema > current_schema_version) return DocumentState::future_schema;
   return DocumentState::supported;
+}
+
+std::optional<Document> decode_document(const nlohmann::json &document) noexcept
+{
+  if(validate_document(document, true) != DocumentState::supported)
+    return std::nullopt;
+
+  try
+  {
+    Document decoded;
+    decoded.schema_version = read_schema_version(document);
+    decoded.active_folder = document.value("active_folder", 0);
+    decoded.active_note = document.value("active_note", 0);
+    decoded.folder_view = document.value("folder_view", false);
+    decoded.layout_locked = document.value("layout_locked", false);
+    decoded.detached_note_windows = document.value("detached_note_windows", false);
+    decoded.dockers_enabled = document.value("dockers_enabled", false);
+    decoded.language = document.value("language", std::string{});
+
+    for(const Json &folder_value : document.at("folders"))
+    {
+      FolderRecord folder;
+      folder.name = folder_value.value("name", std::string{"General"});
+      if(folder.name.empty()) folder.name = "General";
+      folder.layout_locked = folder_value.value("layout_locked", decoded.layout_locked);
+      folder.detached_note_windows = folder_value.value(
+          "detached_note_windows", decoded.detached_note_windows);
+      folder.dockers_enabled = folder_value.value("dockers_enabled", decoded.dockers_enabled);
+      folder.drawings_visible = folder_value.value("drawings_visible", true);
+      folder.grid_visible = folder_value.value("grid_visible", false);
+
+      for(const Json &note_value : folder_value.at("notes"))
+      {
+        NoteRecord note;
+        note.id = note_value.value("id", std::string{});
+        note.title = note_value.value("title", std::string{"Note"});
+        if(note.title.empty()) note.title = "Note";
+        note.path = note_value.value("path", std::string{});
+        note.font_path = note_value.value("font_path", std::string{});
+        note.content_fingerprint = note_value.value("content_fingerprint", std::string{});
+        note.x = note_value.value("x", 0);
+        note.y = note_value.value("y", 0);
+        note.width = note_value.value("w", 520);
+        note.height = note_value.value("h", 260);
+        note.dock_id = note_value.value("dock_id", 0);
+        note.color_r = note_value.value("color_r", 0);
+        note.color_g = note_value.value("color_g", 0);
+        note.color_b = note_value.value("color_b", 0);
+        note.font_size = static_cast<float>(note_value.value("font_size", 0.0));
+        note.has_layout = note_value.value("has_layout", false);
+        note.hidden = note_value.value("hidden", false);
+        note.always_on_top = note_value.value("always_on_top", false);
+        note.use_custom_color = note_value.value("use_custom_color", false);
+        folder.notes.push_back(std::move(note));
+      }
+
+      const auto images = folder_value.find("images");
+      if(images != folder_value.end())
+        for(const Json &image : *images) folder.images.push_back(image.get<std::string>());
+      decoded.folders.push_back(std::move(folder));
+    }
+    return decoded;
+  }
+  catch(...)
+  {
+    return std::nullopt;
+  }
 }
 
 std::string content_fingerprint(std::string_view content)

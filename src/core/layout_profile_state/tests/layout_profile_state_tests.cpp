@@ -66,6 +66,61 @@ void test_validation()
            "malformed known layout profile fields make the document read-only");
 }
 
+void test_structured_decode_ignores_shadow_keys_in_extensions()
+{
+  const Json document = {
+      {"aaaExtension", Json{{"active_profile_id", "shadow-profile"},
+                            {"profiles", Json::array({Json{{"id", "shadow"}}})},
+                            {"note_layouts", Json::array({Json{{"note_id", "shadow-note"}}})}}},
+      {"schemaVersion", 1},
+      {"active_profile_id", "canonical-profile"},
+      {"maximized_profile_id", "max-profile"},
+      {"reduced_profile_id", "reduced-profile"},
+      {"profiles", Json::array({Json{
+                       {"aaaExtension", Json{{"note_layouts", Json::array({Json{{"note_id", "nested-shadow"}}})}}},
+                       {"id", "canonical-profile"},
+                       {"name", "Canonical"},
+                       {"window_maximized", false},
+                       {"window_x", 10},
+                       {"window_y", 20},
+                       {"window_w", 1200},
+                       {"window_h", 800},
+                       {"note_layouts", Json::array({Json{{"aaaExtension", Json{{"x", 999}}},
+                                                          {"note_id", "stable-note"},
+                                                          {"x", 30},
+                                                          {"y", 40},
+                                                          {"w", 600},
+                                                          {"h", 300},
+                                                          {"dock_id", 7},
+                                                          {"hidden", true},
+                                                          {"has_layout", true}}})}}})}};
+
+  const Json merged = notepp::layout_profile_state::merge_unknown_fields(document, document);
+  expect(merged["aaaExtension"]["active_profile_id"] == "shadow-profile",
+         "shadowing extension data remains preserved during merge");
+  const auto decoded = notepp::layout_profile_state::decode_document(merged);
+  expect(decoded.has_value(), "validated merged profile state decodes into structured state");
+  if(!decoded) return;
+  expect(decoded->active_profile_id == "canonical-profile" &&
+             decoded->maximized_profile_id == "max-profile" &&
+             decoded->reduced_profile_id == "reduced-profile",
+         "extension scalar keys cannot shadow canonical profile selection");
+  expect(decoded->profiles.size() == 1 &&
+             decoded->profiles[0].id == "canonical-profile" &&
+             decoded->profiles[0].name == "Canonical",
+         "extension profiles cannot shadow the canonical profiles array");
+  expect(decoded->profiles[0].window_x == 10 &&
+             decoded->profiles[0].window_w == 1200 &&
+             !decoded->profiles[0].window_maximized,
+         "canonical window state survives structured decoding");
+  const auto layout = decoded->profiles[0].note_layouts.find("stable-note");
+  expect(layout != decoded->profiles[0].note_layouts.end() &&
+             layout->second.x == 30 && layout->second.width == 600 &&
+             layout->second.dock_id == 7 && layout->second.hidden &&
+             layout->second.has_layout,
+         "extension note layouts cannot shadow canonical layout state");
+}
+
 void test_unknown_fields_follow_stable_ids()
 {
   const Json source = {{"pluginRoot", true},
@@ -92,6 +147,7 @@ void test_unknown_fields_follow_stable_ids()
 int main()
 {
   test_validation();
+  test_structured_decode_ignores_shadow_keys_in_extensions();
   test_unknown_fields_follow_stable_ids();
   if(failures != 0) return EXIT_FAILURE;
   std::cout << "layout_profile_state tests passed\n";

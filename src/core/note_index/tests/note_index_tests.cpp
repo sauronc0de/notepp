@@ -140,6 +140,58 @@ void test_document_validation_and_fingerprint()
            "malformed known index fields make the document read-only");
 }
 
+void test_structured_decode_ignores_shadow_keys_in_extensions()
+{
+  const Json document = {
+      {"aaaExtension", Json{{"active_folder", 99},
+                            {"folders", Json::array({Json{{"name", "shadow"}}})},
+                            {"notes", Json::array({Json{{"id", "shadow-id"}}})}}},
+      {"schemaVersion", 2},
+      {"active_folder", 1},
+      {"active_note", 2},
+      {"folder_view", true},
+      {"layout_locked", true},
+      {"detached_note_windows", true},
+      {"dockers_enabled", true},
+      {"language", "eu"},
+      {"folders", Json::array({Json{
+                      {"aaaExtension", Json{{"notes", Json::array({Json{{"id", "nested-shadow"}}})}}},
+                      {"name", "canonical"},
+                      {"notes", Json::array({Json{{"aaaExtension", Json{{"title", "shadow-title"}}},
+                                                  {"id", "stable-id"},
+                                                  {"title", "canonical-title"},
+                                                  {"path", "notes/canonical.md"},
+                                                  {"x", 12},
+                                                  {"y", 34},
+                                                  {"w", 640},
+                                                  {"h", 480},
+                                                  {"hidden", true}}})},
+                      {"images", Json::array({"notes/image.png"})}}})}};
+
+  const Json merged = notepp::note_index::merge_unknown_fields(document, document);
+  expect(merged["aaaExtension"]["active_folder"] == 99,
+         "shadowing extension data remains preserved during merge");
+  const auto decoded = notepp::note_index::decode_document(merged);
+  expect(decoded.has_value(), "validated merged indexes decode into structured state");
+  if(!decoded) return;
+  expect(decoded->active_folder == 1 && decoded->active_note == 2,
+         "extension scalar keys cannot shadow canonical selection state");
+  expect(decoded->folder_view && decoded->layout_locked &&
+             decoded->detached_note_windows && decoded->dockers_enabled,
+         "canonical top-level booleans are decoded directly");
+  expect(decoded->language == "eu", "canonical language is decoded directly");
+  expect(decoded->folders.size() == 1 && decoded->folders[0].name == "canonical",
+         "extension folders cannot shadow the canonical folders array");
+  expect(decoded->folders[0].notes.size() == 1 &&
+             decoded->folders[0].notes[0].id == "stable-id" &&
+             decoded->folders[0].notes[0].title == "canonical-title",
+         "extension notes and fields cannot shadow canonical note identity");
+  expect(decoded->folders[0].notes[0].x == 12 &&
+             decoded->folders[0].notes[0].width == 640 &&
+             decoded->folders[0].notes[0].hidden,
+         "canonical note layout state survives structured decoding");
+}
+
 void test_identity_fallback_is_legacy_only()
 {
   const Json source = {{"folders", Json::array({Json{{"name", "old"},
@@ -170,6 +222,7 @@ int main()
   test_schema_migration_never_downgrades_v2();
   test_schema_reader_prefers_established_key_and_accepts_compatibility_key();
   test_document_validation_and_fingerprint();
+  test_structured_decode_ignores_shadow_keys_in_extensions();
   test_identity_fallback_is_legacy_only();
   test_does_not_restore_removed_entities();
   if(failures != 0)
