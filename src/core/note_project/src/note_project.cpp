@@ -177,7 +177,9 @@ void save_last_project_path(const fs::path &path)
   notepp::app_settings::Store store(get_config_file(), get_recent_projects_file());
   const auto updated = store.record_project(path);
   if(!updated)
+  {
     LOG_ERROR("Cannot update Notepp app settings: ", updated.message);
+  }
 }
 
 std::vector<fs::path> load_recent_projects()

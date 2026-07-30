@@ -1251,7 +1251,9 @@ bool App::poll_app_settings()
   if(!polled)
   {
     if(app_settings_error_ != polled.message)
+    {
       LOG_ERROR("Cannot reload Notepp app settings: ", polled.message);
+    }
     app_settings_error_ = polled.message;
     return false;
   }
@@ -1261,7 +1263,9 @@ bool App::poll_app_settings()
   const bool toggle_changed = git_sync_enabled_ != polled.settings.git_sync_enabled;
   git_sync_enabled_ = polled.settings.git_sync_enabled;
   if(toggle_changed)
+  {
     LOG_INFO("Git Sync setting reloaded: ", git_sync_enabled_ ? "enabled" : "disabled");
+  }
   return toggle_changed;
 }
 
