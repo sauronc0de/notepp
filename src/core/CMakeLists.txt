@@ -9,6 +9,7 @@
 # optional `tests/` directory.
 
 add_subdirectory(app_settings)
+add_subdirectory(git_sync)
 add_subdirectory(lang)
 add_subdirectory(markdown_images)
 add_subdirectory(markdown_sections)

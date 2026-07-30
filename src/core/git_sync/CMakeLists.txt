@@ -1,0 +1,10 @@
+add_library(git_sync STATIC src/git_sync.cpp)
+target_include_directories(git_sync PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+target_link_libraries(git_sync PUBLIC process)
+
+if(ENABLE_TEST)
+  add_executable(git_sync_tests tests/git_sync_tests.cpp)
+  target_link_libraries(git_sync_tests PRIVATE git_sync process)
+  add_test(NAME git_sync_tests COMMAND git_sync_tests)
+  set_tests_properties(git_sync_tests PROPERTIES TIMEOUT 60)
+endif()
