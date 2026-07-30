@@ -1528,7 +1528,8 @@ void App::load_state()
   {
     const std::string &doc = loaded_index.snapshot.content;
     index_source_document_ = doc;
-    index_schema_version_ = json_find_int(doc, "schema_version", 1);
+    const Json index_document = Json::parse(doc, nullptr, false);
+    index_schema_version_ = notepp::note_index::read_schema_version(index_document);
     index_paths_portable_ = index_schema_version_ >= 2;
     active_folder_idx_ = json_find_int(doc, "active_folder", 0);
     active_note_idx_ = json_find_int(doc, "active_note", 0);
@@ -1915,7 +1916,7 @@ bool App::save_index()
   if(!source_root.is_object()) source_root = Json::object();
   Json root = Json::object();
 
-  root["schema_version"] = index_schema_version_;
+  root["schemaVersion"] = index_schema_version_;
   root["active_folder"] = active_folder_idx_;
   root["active_note"] = active_note_idx_;
   root["folder_view"] = folder_overview_mode_;

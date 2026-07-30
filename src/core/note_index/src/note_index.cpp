@@ -41,6 +41,29 @@ Json matching_note(const Json &notes, const Json &current_note, std::size_t inde
 }
 } // namespace
 
+int read_schema_version(const nlohmann::json &document,
+                        int default_version) noexcept
+{
+  if(!document.is_object()) return default_version;
+
+  const auto read_key = [&](const char *key) -> int {
+    const auto found = document.find(key);
+    if(found == document.end() || !found->is_number_integer())
+      return default_version;
+    try
+    {
+      return found->get<int>();
+    }
+    catch(...)
+    {
+      return default_version;
+    }
+  };
+
+  if(document.contains("schemaVersion")) return read_key("schemaVersion");
+  return read_key("schema_version");
+}
+
 int schema_after_path_migration(int loaded_schema, bool migration_failed) noexcept
 {
   if(loaded_schema >= 2 || migration_failed) return loaded_schema;

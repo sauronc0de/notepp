@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <limits>
 #include <sstream>
 #include <unordered_set>
@@ -101,14 +102,28 @@ DocumentResult readDocument(const std::filesystem::path &configFile,
   {
     try
     {
-      const long long schema_version = result.document["schemaVersion"].get<long long>();
-      if(schema_version < std::numeric_limits<int>::min() ||
-         schema_version > std::numeric_limits<int>::max())
+      const Json &schema = result.document["schemaVersion"];
+      if(schema.is_number_unsigned())
       {
-        result.message = "App settings schema version is outside the supported numeric range";
-        return result;
+        const auto schema_version = schema.get<std::uint64_t>();
+        if(schema_version > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+        {
+          result.message = "App settings schema version is outside the supported numeric range";
+          return result;
+        }
+        result.settings.schema_version = static_cast<int>(schema_version);
       }
-      result.settings.schema_version = static_cast<int>(schema_version);
+      else
+      {
+        const auto schema_version = schema.get<std::int64_t>();
+        if(schema_version < static_cast<std::int64_t>(std::numeric_limits<int>::min()) ||
+           schema_version > static_cast<std::int64_t>(std::numeric_limits<int>::max()))
+        {
+          result.message = "App settings schema version is outside the supported numeric range";
+          return result;
+        }
+        result.settings.schema_version = static_cast<int>(schema_version);
+      }
     }
     catch(const std::exception &error)
     {

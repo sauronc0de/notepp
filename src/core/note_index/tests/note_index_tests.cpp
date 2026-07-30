@@ -61,6 +61,19 @@ void test_schema_migration_never_downgrades_v2()
          "a complete legacy migration upgrades to portable schema v2");
 }
 
+void test_schema_reader_prefers_established_key_and_accepts_compatibility_key()
+{
+  expect(notepp::note_index::read_schema_version(Json{{"schemaVersion", 2}}) == 2,
+         "the established camel-case schema key is read");
+  expect(notepp::note_index::read_schema_version(Json{{"schema_version", 2}}) == 2,
+         "the briefly emitted snake-case schema key remains readable");
+  expect(notepp::note_index::read_schema_version(
+             Json{{"schemaVersion", 3}, {"schema_version", 1}}) == 3,
+         "the established key wins when both spellings are present");
+  expect(notepp::note_index::read_schema_version(Json::object()) == 1,
+         "a legacy index without a schema key defaults to version one");
+}
+
 void test_does_not_restore_removed_entities()
 {
   const Json source = {{"folders", Json::array({Json{{"name", "removed"},
@@ -75,6 +88,7 @@ int main()
 {
   test_preserves_unknown_fields_during_migration();
   test_schema_migration_never_downgrades_v2();
+  test_schema_reader_prefers_established_key_and_accepts_compatibility_key();
   test_does_not_restore_removed_entities();
   if(failures != 0)
   {

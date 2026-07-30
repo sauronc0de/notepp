@@ -170,6 +170,26 @@ void testNewerSchemaIsNotDowngraded()
          "newer settings document is not downgraded");
 }
 
+void testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten()
+{
+  TempDir temp;
+  const fs::path config = temp.path() / "config.json";
+  const std::string future =
+      R"({"schemaVersion":18446744073709551615,"gitSyncEnabled":true,"recentProjects":[]})";
+  {
+    std::ofstream output(config);
+    output << future;
+  }
+
+  settings::Store store(config);
+  expect(!store.load().success, "UINT64_MAX schema version is rejected");
+  expect(!store.set_git_sync_enabled(false).success,
+         "out-of-range unsigned schema blocks destructive updates");
+  const auto loaded = atomic_file::read_text(config);
+  expect(loaded && loaded.snapshot.content == future,
+         "out-of-range unsigned schema document is not rewritten");
+}
+
 void testPollReportsExternalChangesWithoutChangingProject()
 {
   TempDir temp;
@@ -201,6 +221,7 @@ int main()
   testRecentProjectsAreNormalizedDeduplicatedAndCapped();
   testMalformedSettingsAreNotOverwritten();
   testNewerSchemaIsNotDowngraded();
+  testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten();
   testPollReportsExternalChangesWithoutChangingProject();
   if(failures != 0)
   {
