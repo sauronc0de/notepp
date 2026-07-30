@@ -3353,6 +3353,22 @@ const std::string &App::cached_note_text(const std::string &path)
   {
     LOG_ERROR(snapshot.message);
   }
+  else if(snapshot.snapshot.existed && !atomic_file::shared_writes_suspended())
+  {
+    int folder_index = -1;
+    int note_index = -1;
+    if(find_note_by_path(path, folder_index, note_index))
+    {
+      NoteMeta &note = folders_[static_cast<std::size_t>(folder_index)]
+                           .notes[static_cast<std::size_t>(note_index)];
+      if(!notepp::note_index::strong_content_fingerprint(note.content_fingerprint))
+      {
+        note.content_fingerprint = notepp::note_index::content_fingerprint(
+            snapshot.snapshot.content);
+        layout_dirty_ = true;
+      }
+    }
+  }
 #ifdef NOTEPP_DEBUG_UI
   const auto before = note_content_cache_.disk_read_count();
   const auto &text = note_content_cache_.get(path);
