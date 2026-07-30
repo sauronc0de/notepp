@@ -4,8 +4,10 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <thread>
 #include <vector>
+#include <cwctype>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -38,18 +40,29 @@ void append_bounded(std::string &destination, const char *data, std::size_t size
 }
 
 #ifdef _WIN32
-std::wstring widen(std::string_view value)
+bool widen(std::string_view value, std::wstring &result)
 {
-  if(value.empty()) return {};
+  result.clear();
+  if(value.empty()) return true;
+  if(value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) return false;
   const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
                                        static_cast<int>(value.size()), nullptr, 0);
-  if(size <= 0) return {};
-  std::wstring result(static_cast<std::size_t>(size), L'\0');
-  if(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                         static_cast<int>(value.size()), result.data(), size) != size)
-    return {};
-  return result;
+  if(size <= 0) return false;
+  result.resize(static_cast<std::size_t>(size));
+  return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                             static_cast<int>(value.size()), result.data(), size) == size;
 }
+
+struct CaseInsensitiveWideLess
+{
+  bool operator()(std::wstring_view left, std::wstring_view right) const noexcept
+  {
+    return std::lexicographical_compare(left.begin(), left.end(), right.begin(), right.end(),
+                                        [](wchar_t lhs, wchar_t rhs) {
+                                          return std::towlower(lhs) < std::towlower(rhs);
+                                        });
+  }
+};
 
 std::string windows_error(DWORD code)
 {
@@ -135,9 +148,9 @@ std::wstring quote_windows_argument(std::wstring_view argument)
   return output;
 }
 
-std::vector<wchar_t> make_environment(const RunOptions &options)
+bool make_environment(const RunOptions &options, std::vector<wchar_t> &block)
 {
-  std::map<std::wstring, std::wstring, std::less<>> values;
+  std::map<std::wstring, std::wstring, CaseInsensitiveWideLess> values;
   LPWCH environment = GetEnvironmentStringsW();
   if(environment != nullptr)
   {
@@ -150,9 +163,17 @@ std::vector<wchar_t> make_environment(const RunOptions &options)
     }
     FreeEnvironmentStringsW(environment);
   }
-  for(const auto &[key, value] : options.environment_overrides) values[widen(key)] = widen(value);
+  for(const auto &[key, value] : options.environment_overrides)
+  {
+    std::wstring wide_key;
+    std::wstring wide_value;
+    if(!widen(key, wide_key) || !widen(value, wide_value) || wide_key.empty() ||
+       wide_key.find(L'=') != std::wstring::npos)
+      return false;
+    values[std::move(wide_key)] = std::move(wide_value);
+  }
 
-  std::vector<wchar_t> block;
+  block.clear();
   for(const auto &[key, value] : values)
   {
     block.insert(block.end(), key.begin(), key.end());
@@ -161,7 +182,7 @@ std::vector<wchar_t> make_environment(const RunOptions &options)
     block.push_back(L'\0');
   }
   block.push_back(L'\0');
-  return block;
+  return true;
 }
 
 void drain_handle(HANDLE handle, std::string &output, std::size_t maximum, bool &truncated)
@@ -227,8 +248,9 @@ std::vector<std::string> make_environment(const RunOptions &options)
 
 void drain_descriptor(int descriptor, std::string &output, std::size_t maximum, bool &truncated)
 {
+  constexpr std::size_t kMaximumReadsPerTurn = 16;
   std::array<char, 4096> buffer{};
-  for(;;)
+  for(std::size_t iteration = 0; iteration < kMaximumReadsPerTurn; ++iteration)
   {
     const ssize_t count = read(descriptor, buffer.data(), buffer.size());
     if(count > 0)
@@ -314,18 +336,30 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   std::wstring command = quote_windows_argument(executable.wstring());
   for(const std::string &argument : arguments)
   {
+    std::wstring wide_argument;
+    if(!widen(argument, wide_argument))
+    {
+      result.error = "A process argument is not valid UTF-8";
+      return result;
+    }
     command.push_back(L' ');
-    command += quote_windows_argument(widen(argument));
+    command += quote_windows_argument(wide_argument);
   }
   std::vector<wchar_t> mutable_command(command.begin(), command.end());
   mutable_command.push_back(L'\0');
-  std::vector<wchar_t> environment = make_environment(options);
+  std::vector<wchar_t> environment;
+  if(!make_environment(options, environment))
+  {
+    result.error = "A process environment override is not valid UTF-8";
+    return result;
+  }
   const std::wstring working_directory = options.working_directory.empty()
                                              ? std::wstring{}
                                              : options.working_directory.wstring();
 
   PROCESS_INFORMATION process_info{};
-  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+  const DWORD flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                      EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED;
   if(!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, TRUE, flags,
                      environment.data(), working_directory.empty() ? nullptr : working_directory.c_str(),
                      &startup.StartupInfo, &process_info))
@@ -335,14 +369,14 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   }
   Handle process_handle(process_info.hProcess);
   Handle thread_handle(process_info.hThread);
-  stdout_write.reset();
-  stderr_write.reset();
 
   Handle job(CreateJobObjectW(nullptr, nullptr));
   if(job.get() == nullptr)
   {
+    const DWORD error = GetLastError();
     TerminateProcess(process_handle.get(), 1);
-    result.error = windows_error(GetLastError());
+    WaitForSingleObject(process_handle.get(), 5000);
+    result.error = windows_error(error);
     return result;
   }
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -350,10 +384,22 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   if(!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
      !AssignProcessToJobObject(job.get(), process_handle.get()))
   {
+    const DWORD error = GetLastError();
     TerminateProcess(process_handle.get(), 1);
-    result.error = windows_error(GetLastError());
+    WaitForSingleObject(process_handle.get(), 5000);
+    result.error = windows_error(error);
     return result;
   }
+  if(ResumeThread(thread_handle.get()) == static_cast<DWORD>(-1))
+  {
+    const DWORD error = GetLastError();
+    TerminateJobObject(job.get(), 1);
+    WaitForSingleObject(process_handle.get(), 5000);
+    result.error = windows_error(error);
+    return result;
+  }
+  stdout_write.reset();
+  stderr_write.reset();
 
   bool stdout_truncated = false;
   bool stderr_truncated = false;
@@ -402,7 +448,11 @@ Result SystemRunner::run(const std::filesystem::path &executable,
     }
     else
       result.error = windows_error(GetLastError());
+    // The direct child may have left descendants holding inherited pipe
+    // writers. End the entire assigned tree before waiting for readers.
+    TerminateJobObject(job.get(), 1);
   }
+  job.reset();
 
   stdout_thread.join();
   stderr_thread.join();
@@ -559,17 +609,20 @@ Result SystemRunner::run(const std::filesystem::path &executable,
     const auto grace_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
     while(std::chrono::steady_clock::now() < grace_deadline)
     {
-      if(waitpid(pid, &wait_status, WNOHANG) == pid)
+      if(!child_exited)
       {
-        child_exited = true;
-        break;
+        const pid_t waited = waitpid(pid, &wait_status, WNOHANG);
+        if(waited == pid) child_exited = true;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+    // Kill the process group even when its leader already exited: surviving
+    // descendants may ignore SIGTERM and continue holding resources.
+    (void)kill(-pid, SIGKILL);
     if(!child_exited)
     {
-      (void)kill(-pid, SIGKILL);
       while(waitpid(pid, &wait_status, 0) < 0 && errno == EINTR) {}
+      child_exited = true;
     }
   }
 

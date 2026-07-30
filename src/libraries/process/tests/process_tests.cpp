@@ -11,6 +11,7 @@
 #include <vector>
 
 #ifndef _WIN32
+#include <csignal>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -54,6 +55,18 @@ int child_main(int argc, char **argv)
     std::this_thread::sleep_for(5s);
     return 0;
   }
+  if(mode == "continuous")
+  {
+    std::cout.setf(std::ios::unitbuf);
+    std::cerr.setf(std::ios::unitbuf);
+    const std::string output(4096, 'o');
+    const std::string error(4096, 'e');
+    for(;;)
+    {
+      std::cout << output;
+      std::cerr << error;
+    }
+  }
 #ifndef _WIN32
   if(mode == "tree")
   {
@@ -61,6 +74,7 @@ int child_main(int argc, char **argv)
     const pid_t child = fork();
     if(child == 0)
     {
+      std::signal(SIGTERM, SIG_IGN);
       std::this_thread::sleep_for(1500ms);
       std::ofstream(argv[3]) << "survived";
       _exit(0);
@@ -110,6 +124,23 @@ void test_output_cap()
   expect(result.output_truncated, "truncation is reported");
 }
 
+#ifdef _WIN32
+void test_windows_environment_and_utf8_validation()
+{
+  _putenv_s("notepp_process_test", "inherited value");
+  process::RunOptions options;
+  options.environment_overrides["NOTEPP_PROCESS_TEST"] = "override value";
+  const process::Result environment = run_self({"echo", "argument", "error", "0"}, options);
+  expect(environment.succeeded() && environment.stdout_text.find("override value") != std::string::npos,
+         "Windows environment overrides replace inherited keys case-insensitively");
+  _putenv_s("notepp_process_test", "");
+
+  const process::Result invalid = run_self({std::string(1, static_cast<char>(0xFF))});
+  expect(invalid.termination == process::Termination::spawn_failed && !invalid.error.empty(),
+         "invalid UTF-8 process arguments fail before spawning");
+}
+#endif
+
 void test_missing_executable()
 {
   const process::Result result = process::run("notepp-definitely-missing-executable", {});
@@ -135,6 +166,18 @@ void test_timeout_and_cancellation()
   const process::Result cancelled = run_self({"sleep"}, cancel_options);
   cancel.join();
   expect(cancelled.termination == process::Termination::cancelled, "stop token cancels child");
+
+  process::RunOptions continuous_options;
+  continuous_options.timeout = 100ms;
+  continuous_options.max_output_bytes = 1024;
+  const auto started = std::chrono::steady_clock::now();
+  const process::Result continuous = run_self({"continuous"}, continuous_options);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  expect(continuous.termination == process::Termination::timed_out,
+         "continuous dual-stream output cannot defeat timeout");
+  expect(elapsed < 2s, "continuous output timeout remains bounded");
+  expect(continuous.stdout_text.size() == 1024 && continuous.stderr_text.size() == 1024,
+         "continuous dual streams respect output bounds");
 }
 
 #ifndef _WIN32
@@ -158,6 +201,9 @@ int main(int argc, char **argv)
   executable_path = fs::absolute(argv[0]).string();
   test_arguments_environment_working_directory_and_exit();
   test_output_cap();
+#ifdef _WIN32
+  test_windows_environment_and_utf8_validation();
+#endif
   test_missing_executable();
   test_timeout_and_cancellation();
 #ifndef _WIN32
