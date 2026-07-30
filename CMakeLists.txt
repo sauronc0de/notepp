@@ -5,7 +5,7 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
 endif()
 
 set(ProjectName "Notepp")
-project(${ProjectName} VERSION 0.1.1 LANGUAGES C CXX)
+project(${ProjectName} VERSION 0.1.2 LANGUAGES C CXX)
 
 # Use the highest C++ standard the toolchain reliably supports.
 set(CMAKE_CXX_STANDARD 23)
