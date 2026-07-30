@@ -19,10 +19,14 @@ enum class DocumentState
 
 DocumentState validate_document(const nlohmann::json &document, bool existed) noexcept;
 
-// Stable, inexpensive content fingerprint persisted with note metadata. It is
-// used only as conservative rename evidence; equality is verified with bytes
-// before metadata is transferred.
+// Stable SHA-256 content fingerprint persisted with note metadata. It is used
+// only as conservative rename evidence after unique matching; an available
+// source snapshot is additionally verified byte-for-byte.
 std::string content_fingerprint(std::string_view content);
+constexpr bool strong_content_fingerprint(std::string_view fingerprint) noexcept
+{
+  return fingerprint.size() == 64U;
+}
 constexpr bool unique_rename_evidence(int missing_matches, int disk_matches) noexcept
 {
   return missing_matches == 1 && disk_matches == 1;

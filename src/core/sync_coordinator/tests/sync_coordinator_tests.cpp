@@ -22,6 +22,23 @@ void test_project_write_policy()
   expect(!sc::project_writes_allowed(true), "every UI branch blocks project writes during Git");
 }
 
+void test_async_close_state_machine_serializes_git()
+{
+  using sc::CloseAction;
+  expect(sc::next_close_action(false, false, false, true, false) == CloseAction::wait,
+         "close does nothing before a request");
+  expect(sc::next_close_action(true, true, false, true, false) == CloseAction::wait,
+         "close waits for an active manual or inspection operation");
+  expect(sc::next_close_action(true, false, false, true, false) == CloseAction::persist,
+         "close persists on the UI thread before Git");
+  expect(sc::next_close_action(true, false, true, true, true) == CloseAction::start_git,
+         "successful persistence starts exactly one asynchronous close push");
+  expect(sc::next_close_action(true, false, true, true, false) == CloseAction::exit,
+         "failed persistence skips Git and exits with recovery data");
+  expect(sc::next_close_action(true, false, true, false, true) == CloseAction::exit,
+         "disabled Git exits after local persistence");
+}
+
 void test_disabled_open_makes_no_git_call()
 {
   int git_calls = 0;
@@ -107,6 +124,7 @@ void test_manual_changed_worktree_reloads_once()
 int main()
 {
   test_project_write_policy();
+  test_async_close_state_machine_serializes_git();
   test_disabled_open_makes_no_git_call();
   test_disabled_lifecycle_makes_zero_git_calls();
   test_pull_precedes_load_and_failures_still_load();

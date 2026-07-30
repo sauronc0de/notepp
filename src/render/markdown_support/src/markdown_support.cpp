@@ -412,6 +412,7 @@ void record_preview_read(const std::filesystem::path &path,
 
 bool save_preview_file(const std::filesystem::path &path, std::string_view content)
 {
+  if(atomic_file::shared_writes_suspended()) return false;
   const std::string key = path.lexically_normal().generic_string();
   if(!g_preview_persistence_guard.may_write(path))
   {

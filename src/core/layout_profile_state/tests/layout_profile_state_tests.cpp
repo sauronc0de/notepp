@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -31,6 +32,38 @@ void test_validation()
                                                                {"note_layouts", "bad"}}})}},
                            true) == DocumentState::malformed,
          "malformed nested profile data blocks canonical writes");
+
+  const Json valid_profile = {
+      {"schemaVersion", 1},
+      {"active_profile_id", "p"},
+      {"profiles", Json::array({Json{{"id", "p"},
+                                     {"name", "Profile"},
+                                     {"window_maximized", false},
+                                     {"window_x", 10},
+                                     {"window_y", 20},
+                                     {"window_w", 1100},
+                                     {"window_h", 700},
+                                     {"note_layouts", Json::array({Json{{"note_id", "n"},
+                                                                        {"x", 0},
+                                                                        {"y", 0},
+                                                                        {"w", 520},
+                                                                        {"h", 260},
+                                                                        {"dock_id", 0},
+                                                                        {"hidden", false},
+                                                                        {"has_layout", true}}})}}})}};
+  expect(validate_document(valid_profile, true) == DocumentState::supported,
+         "all known layout profile fields validate");
+  Json bad_active = valid_profile;
+  bad_active["active_profile_id"] = 4;
+  Json bad_name = valid_profile;
+  bad_name["profiles"][0]["name"] = 4;
+  Json bad_width = valid_profile;
+  bad_width["profiles"][0]["window_w"] = 0;
+  Json bad_hidden = valid_profile;
+  bad_hidden["profiles"][0]["note_layouts"][0]["hidden"] = "false";
+  for(const Json &malformed : std::vector<Json>{bad_active, bad_name, bad_width, bad_hidden})
+    expect(validate_document(malformed, true) == DocumentState::malformed,
+           "malformed known layout profile fields make the document read-only");
 }
 
 void test_unknown_fields_follow_stable_ids()

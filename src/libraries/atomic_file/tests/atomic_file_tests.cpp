@@ -415,6 +415,26 @@ void test_shared_snapshot_store_coordinates_writers()
   writer_one.clear();
 }
 
+void test_shared_write_suspension()
+{
+  TempDirectory temp;
+  const fs::path file = temp.path() / "shared.md";
+  write_direct(file, "initial");
+  af::SnapshotStore &store = af::shared_snapshot_store();
+  store.clear();
+  expect(static_cast<bool>(store.load(file)), "shared store loads before suspension");
+  af::set_shared_writes_suspended(true);
+  const af::SaveResult blocked = store.save(file, "blocked");
+  af::set_shared_writes_suspended(false);
+  expect(!blocked && blocked.disposition == af::SaveDisposition::io_error,
+         "shared project writes fail fast while suspended");
+  expect_equal(read_direct(file), "initial", "suspension preserves canonical bytes");
+  expect(static_cast<bool>(store.save(file, "retried")),
+         "dirty content can retry after suspension ends");
+  expect_equal(read_direct(file), "retried", "retry publishes after suspension");
+  store.clear();
+}
+
 void test_move_no_replace_preserves_collision()
 {
   TempDirectory temp;
@@ -589,6 +609,7 @@ int main()
   test_snapshot_store_retains_expected_state_after_io_failure();
   test_snapshot_store_requires_reload_after_read_failure();
   test_shared_snapshot_store_coordinates_writers();
+  test_shared_write_suspension();
   test_move_no_replace_preserves_collision();
   test_save_batch_aggregates_failures();
   test_persistence_guard_retries_io_failures();

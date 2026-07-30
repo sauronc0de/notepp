@@ -18,7 +18,7 @@ When enabled:
 
 - Opening Notepp attempts a bounded `git pull --ff-only` before project state is loaded. The window may appear only after that bounded command completes or times out.
 - Switching projects saves the old project, attempts to commit and push it, then attempts a fast-forward pull of the new project before loading it.
-- Closing Notepp atomically saves all project files, including layout state, then commits and pushes them. Exit may wait for the bounded Git commands.
+- Closing Notepp atomically saves all project files, including layout state, then runs commit/push on its serialized Git worker. The window remains responsive in its closing state until the bounded operation finishes.
 - Network, authentication, missing-Git, repository, upstream, dirty-tree, timeout and divergence failures are reported but never prevent local editing or exit.
 
 A failed push leaves the local commit intact for a later **Sync now** retry. A failed project save skips Git so incomplete canonical state is never committed.
@@ -27,7 +27,7 @@ A failed push leaves the local commit intact for a later **Sync now** retry. A f
 
 Notepp only uses fast-forward pulls and ordinary pushes to the branch's exact configured upstream. It never automatically runs reset, clean, rebase, stash, force push, branch replacement, merge conflict resolution, repository initialization or remote configuration.
 
-All commands are launched without a shell, use bounded output and timeouts, and disable interactive credential prompts. Credentials remain owned by system Git.
+All commands are launched without a shell, receive null standard input, use bounded output and timeouts, disable Git/SSH askpass and commit signing prompts, and request noninteractive lookup from the system credential manager. Credentials remain owned by system Git.
 
 ## Status and recovery
 

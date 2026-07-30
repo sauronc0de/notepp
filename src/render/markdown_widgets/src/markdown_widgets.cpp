@@ -5809,6 +5809,7 @@ static void apply_global_replacements_to_disk(
     }
 
     // Write back without overwriting an externally changed globals file.
+    if(atomic_file::shared_writes_suspended()) continue;
     const std::filesystem::path globals_path(file_path);
     const std::string key = globals_path.lexically_normal().generic_string();
     if(!g_widget_persistence_guard.may_write(globals_path))

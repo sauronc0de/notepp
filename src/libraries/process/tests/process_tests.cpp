@@ -55,6 +55,13 @@ int child_main(int argc, char **argv)
     std::this_thread::sleep_for(5s);
     return 0;
   }
+  if(mode == "stdin")
+  {
+    char value = 0;
+    std::cin.read(&value, 1);
+    std::cout << (std::cin.eof() ? "eof" : "input") << '\n';
+    return 0;
+  }
   if(mode == "continuous")
   {
     std::cout.setf(std::ios::unitbuf);
@@ -111,6 +118,15 @@ void test_arguments_environment_working_directory_and_exit()
   expect(result.stderr_text.find("stderr value") != std::string::npos,
          "stderr is captured separately");
   fs::remove_all(directory);
+}
+
+void test_null_stdin()
+{
+  process::RunOptions options;
+  options.timeout = 1s;
+  const process::Result result = run_self({"stdin"}, options);
+  expect(result.succeeded(), "child reading stdin exits normally");
+  expect(result.stdout_text == "eof\n", "child stdin is connected to the null device");
 }
 
 void test_output_cap()
@@ -200,6 +216,7 @@ int main(int argc, char **argv)
   if(argc > 1 && std::string_view(argv[1]) == "--child") return child_main(argc, argv);
   executable_path = fs::absolute(argv[0]).string();
   test_arguments_environment_working_directory_and_exit();
+  test_null_stdin();
   test_output_cap();
 #ifdef _WIN32
   test_windows_environment_and_utf8_validation();

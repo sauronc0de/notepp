@@ -2,12 +2,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace notepp::note_index
 {
@@ -47,6 +53,140 @@ Json matching_note(const Json &notes, const Json &current_note, std::size_t inde
     return notes[index];
   return Json::object();
 }
+
+bool integer_in_int_range(const Json &value)
+{
+  if(!value.is_number_integer()) return false;
+  try
+  {
+    if(value.is_number_unsigned())
+      return value.get<std::uint64_t>() <=
+             static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    const std::int64_t number = value.get<std::int64_t>();
+    return number >= std::numeric_limits<int>::min() &&
+           number <= std::numeric_limits<int>::max();
+  }
+  catch(...)
+  {
+    return false;
+  }
+}
+
+bool index_value(const Json &value)
+{
+  return integer_in_int_range(value) && value.get<int>() >= -1;
+}
+
+bool positive_int(const Json &value)
+{
+  return integer_in_int_range(value) && value.get<int>() > 0;
+}
+
+bool nonnegative_int(const Json &value)
+{
+  return integer_in_int_range(value) && value.get<int>() >= 0;
+}
+
+template <typename Predicate>
+bool optional_field(const Json &object, const char *key, Predicate predicate)
+{
+  const auto found = object.find(key);
+  return found == object.end() || predicate(*found);
+}
+
+bool finite_nonnegative_number(const Json &value)
+{
+  if(!value.is_number()) return false;
+  try
+  {
+    const double number = value.get<double>();
+    return std::isfinite(number) && number >= 0.0 && number <= 1000.0;
+  }
+  catch(...)
+  {
+    return false;
+  }
+}
+
+bool valid_fingerprint(const Json &value)
+{
+  if(!value.is_string()) return false;
+  const std::string &text = value.get_ref<const std::string &>();
+  if(text.size() != 16U && text.size() != 64U) return false;
+  return std::all_of(text.begin(), text.end(), [](unsigned char character) {
+    return std::isxdigit(character) != 0;
+  });
+}
+
+constexpr std::array<std::uint32_t, 64> kSha256Constants{
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U,
+    0x923f82a4U, 0xab1c5ed5U, 0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+    0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U, 0xe49b69c1U, 0xefbe4786U,
+    0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U,
+    0x06ca6351U, 0x14292967U, 0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+    0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U, 0xa2bfe8a1U, 0xa81a664bU,
+    0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU,
+    0x5b9cca4fU, 0x682e6ff3U, 0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+    0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U};
+
+void sha256_block(std::array<std::uint32_t, 8> &state, const std::uint8_t *block)
+{
+  std::array<std::uint32_t, 64> words{};
+  for(std::size_t index = 0; index < 16U; ++index)
+  {
+    const std::size_t offset = index * 4U;
+    words[index] = (static_cast<std::uint32_t>(block[offset]) << 24U) |
+                   (static_cast<std::uint32_t>(block[offset + 1U]) << 16U) |
+                   (static_cast<std::uint32_t>(block[offset + 2U]) << 8U) |
+                   static_cast<std::uint32_t>(block[offset + 3U]);
+  }
+  for(std::size_t index = 16U; index < words.size(); ++index)
+  {
+    const std::uint32_t s0 = std::rotr(words[index - 15U], 7) ^
+                             std::rotr(words[index - 15U], 18) ^
+                             (words[index - 15U] >> 3U);
+    const std::uint32_t s1 = std::rotr(words[index - 2U], 17) ^
+                             std::rotr(words[index - 2U], 19) ^
+                             (words[index - 2U] >> 10U);
+    words[index] = words[index - 16U] + s0 + words[index - 7U] + s1;
+  }
+
+  std::uint32_t a = state[0];
+  std::uint32_t b = state[1];
+  std::uint32_t c = state[2];
+  std::uint32_t d = state[3];
+  std::uint32_t e = state[4];
+  std::uint32_t f = state[5];
+  std::uint32_t g = state[6];
+  std::uint32_t h = state[7];
+  for(std::size_t index = 0; index < words.size(); ++index)
+  {
+    const std::uint32_t sum1 = std::rotr(e, 6) ^ std::rotr(e, 11) ^ std::rotr(e, 25);
+    const std::uint32_t choose = (e & f) ^ (~e & g);
+    const std::uint32_t temp1 = h + sum1 + choose + kSha256Constants[index] + words[index];
+    const std::uint32_t sum0 = std::rotr(a, 2) ^ std::rotr(a, 13) ^ std::rotr(a, 22);
+    const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+    const std::uint32_t temp2 = sum0 + majority;
+    h = g;
+    g = f;
+    f = e;
+    e = d + temp1;
+    d = c;
+    c = b;
+    b = a;
+    a = temp1 + temp2;
+  }
+  state[0] += a;
+  state[1] += b;
+  state[2] += c;
+  state[3] += d;
+  state[4] += e;
+  state[5] += f;
+  state[6] += g;
+  state[7] += h;
+}
 } // namespace
 
 DocumentState validate_document(const nlohmann::json &document, bool existed) noexcept
@@ -56,20 +196,85 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
   for(const char *key : {"schemaVersion", "schema_version"})
   {
     const auto value = document.find(key);
-    if(value != document.end() && !value->is_number_integer())
+    if(value == document.end()) continue;
+    if(!value->is_number_integer()) return DocumentState::malformed;
+    try
+    {
+      if(value->is_number_unsigned())
+      {
+        const std::uint64_t schema = value->get<std::uint64_t>();
+        if(schema == 0U) return DocumentState::malformed;
+        if(schema > static_cast<std::uint64_t>(current_schema_version))
+          return DocumentState::future_schema;
+      }
+      else
+      {
+        const std::int64_t schema = value->get<std::int64_t>();
+        if(schema < 1) return DocumentState::malformed;
+        if(schema > current_schema_version) return DocumentState::future_schema;
+      }
+    }
+    catch(...)
+    {
       return DocumentState::malformed;
+    }
   }
+  if(!optional_field(document, "active_folder", index_value) ||
+     !optional_field(document, "active_note", index_value) ||
+     !optional_field(document, "folder_view", [](const Json &value) { return value.is_boolean(); }) ||
+     !optional_field(document, "layout_locked", [](const Json &value) { return value.is_boolean(); }) ||
+     !optional_field(document, "detached_note_windows", [](const Json &value) { return value.is_boolean(); }) ||
+     !optional_field(document, "dockers_enabled", [](const Json &value) { return value.is_boolean(); }) ||
+     !optional_field(document, "language", [](const Json &value) { return value.is_string(); }))
+    return DocumentState::malformed;
+
   const auto folders = document.find("folders");
   if(folders == document.end() || !folders->is_array()) return DocumentState::malformed;
   for(const auto &folder : *folders)
   {
-    if(!folder.is_object()) return DocumentState::malformed;
+    if(!folder.is_object() ||
+       !optional_field(folder, "name", [](const Json &value) { return value.is_string(); }) ||
+       !optional_field(folder, "layout_locked", [](const Json &value) { return value.is_boolean(); }) ||
+       !optional_field(folder, "detached_note_windows", [](const Json &value) { return value.is_boolean(); }) ||
+       !optional_field(folder, "dockers_enabled", [](const Json &value) { return value.is_boolean(); }) ||
+       !optional_field(folder, "drawings_visible", [](const Json &value) { return value.is_boolean(); }) ||
+       !optional_field(folder, "grid_visible", [](const Json &value) { return value.is_boolean(); }))
+      return DocumentState::malformed;
     const auto notes = folder.find("notes");
     if(notes == folder.end() || !notes->is_array()) return DocumentState::malformed;
     for(const auto &note : *notes)
+    {
       if(!note.is_object()) return DocumentState::malformed;
+      for(const char *key : {"id", "title", "path", "font_path"})
+        if(!optional_field(note, key, [](const Json &value) { return value.is_string(); }))
+          return DocumentState::malformed;
+      if(!optional_field(note, "content_fingerprint", valid_fingerprint))
+        return DocumentState::malformed;
+      for(const char *key : {"x", "y"})
+        if(!optional_field(note, key, integer_in_int_range)) return DocumentState::malformed;
+      for(const char *key : {"w", "h"})
+        if(!optional_field(note, key, positive_int)) return DocumentState::malformed;
+      if(!optional_field(note, "dock_id", nonnegative_int)) return DocumentState::malformed;
+      for(const char *key : {"color_r", "color_g", "color_b"})
+      {
+        if(!optional_field(note, key, [](const Json &value) {
+             return integer_in_int_range(value) && value.get<int>() >= 0 && value.get<int>() <= 255;
+           }))
+          return DocumentState::malformed;
+      }
+      for(const char *key : {"has_layout", "hidden", "always_on_top", "use_custom_color"})
+        if(!optional_field(note, key, [](const Json &value) { return value.is_boolean(); }))
+          return DocumentState::malformed;
+      if(!optional_field(note, "font_size", finite_nonnegative_number))
+        return DocumentState::malformed;
+    }
     const auto images = folder.find("images");
-    if(images != folder.end() && !images->is_array()) return DocumentState::malformed;
+    if(images != folder.end())
+    {
+      if(!images->is_array() ||
+         !std::all_of(images->begin(), images->end(), [](const Json &image) { return image.is_string(); }))
+        return DocumentState::malformed;
+    }
   }
   const int schema = read_schema_version(document);
   if(schema > current_schema_version) return DocumentState::future_schema;
@@ -78,14 +283,23 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
 
 std::string content_fingerprint(std::string_view content)
 {
-  std::uint64_t hash = 14695981039346656037ULL;
-  for(const unsigned char byte : content)
-  {
-    hash ^= byte;
-    hash *= 1099511628211ULL;
-  }
+  std::array<std::uint32_t, 8> state{0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U,
+                                     0xa54ff53aU, 0x510e527fU, 0x9b05688cU,
+                                     0x1f83d9abU, 0x5be0cd19U};
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(content.size() + 72U);
+  for(const unsigned char byte : content) bytes.push_back(byte);
+  bytes.push_back(0x80U);
+  while(bytes.size() % 64U != 56U) bytes.push_back(0U);
+  const std::uint64_t bit_length = static_cast<std::uint64_t>(content.size()) * 8U;
+  for(int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>((bit_length >> static_cast<unsigned int>(shift)) & 0xffU));
+  for(std::size_t offset = 0; offset < bytes.size(); offset += 64U)
+    sha256_block(state, bytes.data() + offset);
+
   std::ostringstream out;
-  out << std::hex << std::setfill('0') << std::setw(16) << hash;
+  out << std::hex << std::setfill('0');
+  for(const std::uint32_t word : state) out << std::setw(8) << word;
   return out.str();
 }
 

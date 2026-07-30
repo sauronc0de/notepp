@@ -296,6 +296,13 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   Handle stdout_write(stdout_write_raw);
   Handle stderr_read(stderr_read_raw);
   Handle stderr_write(stderr_write_raw);
+  Handle stdin_null(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+  if(stdin_null.get() == INVALID_HANDLE_VALUE)
+  {
+    result.error = windows_error(GetLastError());
+    return result;
+  }
   if(!SetHandleInformation(stdout_read.get(), HANDLE_FLAG_INHERIT, 0) ||
      !SetHandleInformation(stderr_read.get(), HANDLE_FLAG_INHERIT, 0))
   {
@@ -317,7 +324,7 @@ Result SystemRunner::run(const std::filesystem::path &executable,
     PPROC_THREAD_ATTRIBUTE_LIST value;
     ~AttributeCleanup() { DeleteProcThreadAttributeList(value); }
   } attribute_cleanup{attributes};
-  std::array<HANDLE, 2> inherited{stdout_write.get(), stderr_write.get()};
+  std::array<HANDLE, 3> inherited{stdin_null.get(), stdout_write.get(), stderr_write.get()};
   if(!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                 inherited.data(), sizeof(inherited), nullptr, nullptr))
   {
@@ -328,7 +335,7 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   STARTUPINFOEXW startup{};
   startup.StartupInfo.cb = sizeof(startup);
   startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-  startup.StartupInfo.hStdInput = nullptr;
+  startup.StartupInfo.hStdInput = stdin_null.get();
   startup.StartupInfo.hStdOutput = stdout_write.get();
   startup.StartupInfo.hStdError = stderr_write.get();
   startup.lpAttributeList = attributes;
@@ -459,19 +466,28 @@ Result SystemRunner::run(const std::filesystem::path &executable,
   result.output_truncated = stdout_truncated || stderr_truncated;
   return result;
 #else
-  int stdout_pipe[2]{};
-  int stderr_pipe[2]{};
+  int stdout_pipe[2]{-1, -1};
+  int stderr_pipe[2]{-1, -1};
   if(pipe2(stdout_pipe, O_CLOEXEC) != 0 || pipe2(stderr_pipe, O_CLOEXEC) != 0)
   {
-    if(stdout_pipe[0] != 0) close(stdout_pipe[0]);
-    if(stdout_pipe[1] != 0) close(stdout_pipe[1]);
-    result.error = std::strerror(errno);
+    const int pipe_error = errno;
+    if(stdout_pipe[0] >= 0) close(stdout_pipe[0]);
+    if(stdout_pipe[1] >= 0) close(stdout_pipe[1]);
+    if(stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+    if(stderr_pipe[1] >= 0) close(stderr_pipe[1]);
+    result.error = std::strerror(pipe_error);
     return result;
   }
   FileDescriptor stdout_read(stdout_pipe[0]);
   FileDescriptor stdout_write(stdout_pipe[1]);
   FileDescriptor stderr_read(stderr_pipe[0]);
   FileDescriptor stderr_write(stderr_pipe[1]);
+  FileDescriptor stdin_null(open("/dev/null", O_RDONLY | O_CLOEXEC));
+  if(stdin_null.get() < 0)
+  {
+    result.error = std::strerror(errno);
+    return result;
+  }
 
   posix_spawn_file_actions_t actions;
   const int actions_init_result = posix_spawn_file_actions_init(&actions);
@@ -485,7 +501,9 @@ Result SystemRunner::run(const std::filesystem::path &executable,
     posix_spawn_file_actions_t *value;
     ~ActionsCleanup() { posix_spawn_file_actions_destroy(value); }
   } actions_cleanup{&actions};
-  int actions_result = posix_spawn_file_actions_adddup2(&actions, stdout_write.get(), STDOUT_FILENO);
+  int actions_result = posix_spawn_file_actions_adddup2(&actions, stdin_null.get(), STDIN_FILENO);
+  if(actions_result == 0)
+    actions_result = posix_spawn_file_actions_adddup2(&actions, stdout_write.get(), STDOUT_FILENO);
   if(actions_result == 0)
     actions_result = posix_spawn_file_actions_adddup2(&actions, stderr_write.get(), STDERR_FILENO);
   if(actions_result == 0)
@@ -496,6 +514,8 @@ Result SystemRunner::run(const std::filesystem::path &executable,
     actions_result = posix_spawn_file_actions_addclose(&actions, stdout_write.get());
   if(actions_result == 0)
     actions_result = posix_spawn_file_actions_addclose(&actions, stderr_write.get());
+  if(actions_result == 0 && stdin_null.get() != STDIN_FILENO)
+    actions_result = posix_spawn_file_actions_addclose(&actions, stdin_null.get());
   if(actions_result != 0)
   {
     result.error = std::strerror(actions_result);

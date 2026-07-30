@@ -45,8 +45,30 @@ public:
                       const process::RunOptions &options) const override
   {
     expect(executable == "git", "git client invokes only the system git executable");
+    expect(options.environment_overrides.at("GIT_TERMINAL_PROMPT") == "0",
+           "Git terminal prompts are disabled");
+    expect(options.environment_overrides.at("GCM_INTERACTIVE") == "Never",
+           "system credential manager lookup is noninteractive");
+    expect(options.environment_overrides.at("GIT_ASKPASS") == "git" &&
+               options.environment_overrides.at("SSH_ASKPASS") == "git",
+           "askpass fallbacks fail immediately through non-helper Git invocation");
+    expect(options.environment_overrides.at("SSH_ASKPASS_REQUIRE") == "never",
+           "SSH askpass is disabled");
+    expect(options.environment_overrides.at("GIT_SSH_COMMAND").find("BatchMode=yes") !=
+               std::string::npos,
+           "SSH password prompts are disabled");
     calls.emplace_back(arguments.begin(), arguments.end());
-    return handler_(calls.back(), options);
+    const auto &call = calls.back();
+    const auto has_config = [&](std::string_view setting) {
+      for(std::size_t index = 0; index + 1U < call.size(); ++index)
+        if(call[index] == "-c" && call[index + 1U] == setting) return true;
+      return false;
+    };
+    expect(has_config("credential.interactive=never"),
+           "credential helpers receive noninteractive configuration");
+    expect(has_config("core.askPass="), "Git askpass helpers cannot prompt");
+    expect(has_config("commit.gpgSign=false"), "commit signing cannot invoke pinentry");
+    return handler_(call, options);
   }
 
   mutable std::vector<std::vector<std::string>> calls;
@@ -303,6 +325,8 @@ void test_offline_close_keeps_local_commit()
       return exited(0, std::string("notes/local.md\0", 15));
     if(std::find(arguments.begin(), arguments.end(), "commit") != arguments.end())
     {
+      expect(std::find(arguments.begin(), arguments.end(), "--no-gpg-sign") != arguments.end(),
+             "sync commits explicitly disable signing prompts");
       actions.emplace_back("commit");
       return exited();
     }
@@ -375,6 +399,10 @@ void test_real_repository_integration()
   require_git(git({"push", "-u", "origin", "HEAD"}, project), "push initial project");
   require_git(git({"remote", "add", "decoy", decoy.string()}, project), "add decoy remote");
   require_git(git({"config", "remote.pushDefault", "decoy"}, project), "configure misleading push default");
+  require_git(git({"config", "commit.gpgSign", "true"}, project),
+              "configure signing that sync must override");
+  require_git(git({"config", "user.signingkey", "notepp-test-missing-key"}, project),
+              "configure unavailable signing key");
 
   process::SystemRunner runner;
   gs::Client client(runner);

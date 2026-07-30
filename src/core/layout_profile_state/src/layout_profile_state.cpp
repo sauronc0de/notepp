@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace notepp::layout_profile_state
@@ -38,19 +39,67 @@ Json merge_layouts(const Json &source, const Json &current)
   }
   return result;
 }
+
+bool integer_in_int_range(const Json &value)
+{
+  if(!value.is_number_integer()) return false;
+  try
+  {
+    if(value.is_number_unsigned())
+      return value.get<std::uint64_t>() <=
+             static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    const std::int64_t number = value.get<std::int64_t>();
+    return number >= std::numeric_limits<int>::min() &&
+           number <= std::numeric_limits<int>::max();
+  }
+  catch(...)
+  {
+    return false;
+  }
+}
+
+bool positive_int(const Json &value)
+{
+  return integer_in_int_range(value) && value.get<int>() > 0;
+}
+
+bool nonnegative_int(const Json &value)
+{
+  return integer_in_int_range(value) && value.get<int>() >= 0;
+}
+
+template <typename Predicate>
+bool optional_field(const Json &object, const char *key, Predicate predicate)
+{
+  const auto found = object.find(key);
+  return found == object.end() || predicate(*found);
+}
 } // namespace
 
 DocumentState validate_document(const nlohmann::json &document, bool existed) noexcept
 {
   if(!existed) return DocumentState::missing;
   if(!document.is_object()) return DocumentState::malformed;
+  for(const char *key : {"active_profile_id", "maximized_profile_id", "reduced_profile_id"})
+    if(!optional_field(document, key, [](const Json &value) { return value.is_string(); }))
+      return DocumentState::malformed;
+
   const auto profiles = document.find("profiles");
   if(profiles == document.end() || !profiles->is_array()) return DocumentState::malformed;
   for(const auto &profile : *profiles)
   {
     if(!profile.is_object()) return DocumentState::malformed;
     const auto id = profile.find("id");
-    if(id == profile.end() || !id->is_string()) return DocumentState::malformed;
+    if(id == profile.end() || !id->is_string() || id->get_ref<const std::string &>().empty())
+      return DocumentState::malformed;
+    if(!optional_field(profile, "name", [](const Json &value) { return value.is_string(); }) ||
+       !optional_field(profile, "window_maximized", [](const Json &value) { return value.is_boolean(); }))
+      return DocumentState::malformed;
+    for(const char *key : {"window_x", "window_y"})
+      if(!optional_field(profile, key, integer_in_int_range)) return DocumentState::malformed;
+    for(const char *key : {"window_w", "window_h"})
+      if(!optional_field(profile, key, positive_int)) return DocumentState::malformed;
+
     const auto layouts = profile.find("note_layouts");
     if(layouts != profile.end())
     {
@@ -59,29 +108,36 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
       {
         if(!layout.is_object()) return DocumentState::malformed;
         const auto note_id = layout.find("note_id");
-        if(note_id == layout.end() || !note_id->is_string())
+        if(note_id == layout.end() || !note_id->is_string() ||
+           note_id->get_ref<const std::string &>().empty())
           return DocumentState::malformed;
+        for(const char *key : {"x", "y"})
+          if(!optional_field(layout, key, integer_in_int_range))
+            return DocumentState::malformed;
+        for(const char *key : {"w", "h"})
+          if(!optional_field(layout, key, positive_int))
+            return DocumentState::malformed;
+        if(!optional_field(layout, "dock_id", nonnegative_int))
+          return DocumentState::malformed;
+        for(const char *key : {"hidden", "has_layout"})
+          if(!optional_field(layout, key, [](const Json &value) { return value.is_boolean(); }))
+            return DocumentState::malformed;
       }
     }
   }
   const auto schema = document.find("schemaVersion");
   if(schema != document.end())
   {
-    if(!schema->is_number_integer()) return DocumentState::malformed;
+    if(!integer_in_int_range(*schema)) return DocumentState::malformed;
     try
     {
-      if(schema->is_number_unsigned())
-      {
-        if(schema->get<std::uint64_t>() >
-           static_cast<std::uint64_t>(current_schema_version))
-          return DocumentState::future_schema;
-      }
-      else if(schema->get<std::int64_t>() > current_schema_version)
-        return DocumentState::future_schema;
+      const int value = schema->get<int>();
+      if(value < 1) return DocumentState::malformed;
+      if(value > current_schema_version) return DocumentState::future_schema;
     }
     catch(...)
     {
-      return DocumentState::future_schema;
+      return DocumentState::malformed;
     }
   }
   return DocumentState::supported;

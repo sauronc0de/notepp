@@ -28,6 +28,7 @@ namespace
 {
 constexpr unsigned int kUniqueAttempts = 64;
 constexpr std::size_t kMaxSiblingComponent = 240;
+std::atomic<bool> g_shared_writes_suspended{false};
 std::atomic<std::uint64_t> g_unique_counter{0};
 
 enum class PublishDisposition
@@ -736,6 +737,13 @@ ReadResult SnapshotStore::ensure_loaded(const std::filesystem::path &path) noexc
 SaveResult SnapshotStore::save(const std::filesystem::path &path,
                                std::string_view desired) noexcept
 {
+  if(this == &shared_snapshot_store() && shared_writes_suspended())
+  {
+    SaveResult failed;
+    failed.disposition = SaveDisposition::io_error;
+    failed.message = "project writes are suspended during Git synchronization";
+    return failed;
+  }
   const std::string key = path.lexically_normal().generic_string();
   if(const auto read_error = read_errors_.find(key); read_error != read_errors_.end())
   {
@@ -924,6 +932,16 @@ SnapshotStore &shared_snapshot_store() noexcept
 {
   static SnapshotStore store;
   return store;
+}
+
+void set_shared_writes_suspended(bool suspended) noexcept
+{
+  g_shared_writes_suspended.store(suspended, std::memory_order_release);
+}
+
+bool shared_writes_suspended() noexcept
+{
+  return g_shared_writes_suspended.load(std::memory_order_acquire);
 }
 
 void SaveBatch::record(const std::filesystem::path &path,

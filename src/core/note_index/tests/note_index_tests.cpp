@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -91,14 +93,51 @@ void test_document_validation_and_fingerprint()
   expect(notepp::note_index::content_fingerprint("same") ==
              notepp::note_index::content_fingerprint("same"),
          "fingerprints are stable");
+  expect(notepp::note_index::content_fingerprint("abc") ==
+             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+         "fingerprints use the portable SHA-256 representation");
   expect(notepp::note_index::content_fingerprint("same") !=
              notepp::note_index::content_fingerprint("different"),
          "different content has different rename evidence");
+  expect(notepp::note_index::strong_content_fingerprint(
+             notepp::note_index::content_fingerprint("same")),
+         "new fingerprints provide persistent startup rename evidence");
+  expect(!notepp::note_index::strong_content_fingerprint("0123456789abcdef"),
+         "legacy weak fingerprints require an in-process byte snapshot");
   expect(notepp::note_index::unique_rename_evidence(1, 1),
          "one missing note and one exact disk match retain identity");
   expect(!notepp::note_index::unique_rename_evidence(2, 1) &&
              !notepp::note_index::unique_rename_evidence(1, 2),
          "ambiguous rename evidence never selects a metadata winner");
+
+  const Json valid_note = {{"id", "stable"}, {"title", "a"}, {"path", "notes/a.md"}, {"x", 0}, {"y", 0}, {"w", 520}, {"h", 260}, {"dock_id", 0}, {"hidden", false}, {"font_size", 14.0}};
+  const auto document_with_note = [&](Json note) {
+    return Json{{"schemaVersion", 2},
+                {"active_folder", 0},
+                {"active_note", 0},
+                {"folders", Json::array({Json{{"name", "."},
+                                              {"notes", Json::array({std::move(note)})},
+                                              {"images", Json::array({"notes/image.png"})}}})}};
+  };
+  expect(notepp::note_index::validate_document(document_with_note(valid_note), true) ==
+             notepp::note_index::DocumentState::supported,
+         "all known current note fields validate");
+  const auto changed_note = [&](const char *key, Json value) {
+    Json note = valid_note;
+    note[key] = std::move(value);
+    return document_with_note(std::move(note));
+  };
+  const std::vector<Json> malformed_documents{
+      changed_note("title", 42),
+      changed_note("hidden", "false"),
+      changed_note("w", 0),
+      changed_note("font_size", "large"),
+      Json{{"schemaVersion", 2}, {"active_note", 1.5}, {"folders", Json::array()}},
+      Json{{"schemaVersion", 2}, {"folders", Json::array({Json{{"notes", Json::array()}, {"images", Json::array({4})}}})}}};
+  for(const Json &malformed : malformed_documents)
+    expect(notepp::note_index::validate_document(malformed, true) ==
+               notepp::note_index::DocumentState::malformed,
+           "malformed known index fields make the document read-only");
 }
 
 void test_identity_fallback_is_legacy_only()

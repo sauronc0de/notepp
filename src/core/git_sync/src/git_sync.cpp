@@ -153,7 +153,11 @@ bool is_offline_error(std::string_view detail)
 process::Result run_git(const process::Runner &runner, const std::filesystem::path &root,
                         std::vector<std::string> arguments, bool network)
 {
-  std::vector<std::string> full_arguments;
+  std::vector<std::string> full_arguments{
+      "-c", "credential.interactive=never",
+      "-c", "core.askPass=",
+      "-c", "commit.gpgSign=false",
+      "-c", "tag.gpgSign=false"};
   if(!root.empty())
   {
     full_arguments.emplace_back("-C");
@@ -168,6 +172,11 @@ process::Result run_git(const process::Runner &runner, const std::filesystem::pa
   options.environment_overrides["LANG"] = "C";
   options.environment_overrides["GIT_TERMINAL_PROMPT"] = "0";
   options.environment_overrides["GCM_INTERACTIVE"] = "Never";
+  options.environment_overrides["GIT_ASKPASS"] = "git";
+  options.environment_overrides["SSH_ASKPASS"] = "git";
+  options.environment_overrides["SSH_ASKPASS_REQUIRE"] = "never";
+  options.environment_overrides["GIT_SSH_COMMAND"] =
+      "ssh -oBatchMode=yes -oNumberOfPasswordPrompts=0";
   return runner.run("git", full_arguments, options);
 }
 
@@ -438,7 +447,7 @@ std::optional<Status> stage_and_commit(const process::Runner &runner,
   }
   if(staged_paths.empty()) return std::nullopt;
 
-  std::vector<std::string> commit_arguments = {"commit", "--only", "-m",
+  std::vector<std::string> commit_arguments = {"commit", "--no-gpg-sign", "--only", "-m",
                                                std::string(message), "--"};
   commit_arguments.insert(commit_arguments.end(), staged_paths.begin(), staged_paths.end());
   result = run_git(runner, root, std::move(commit_arguments), false);

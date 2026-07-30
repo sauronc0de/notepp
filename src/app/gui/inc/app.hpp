@@ -43,6 +43,14 @@ private:
   process::SystemRunner git_process_runner_;
   notepp::git_sync::Client git_client_;
   bool git_sync_enabled_ = false;
+  enum class GitOperationKind
+  {
+    none,
+    inspect,
+    manual,
+    project_switch,
+    close
+  };
   struct GitAsyncResult
   {
     notepp::git_sync::OperationResult operation;
@@ -50,6 +58,10 @@ private:
   };
   bool git_status_available_ = false;
   bool git_sync_in_progress_ = false;
+  GitOperationKind git_operation_kind_ = GitOperationKind::none;
+  bool close_requested_ = false;
+  bool close_persisted_ = false;
+  bool close_save_succeeded_ = false;
   notepp::git_sync::Status git_status_;
   std::string git_last_attempt_;
   std::future<GitAsyncResult> git_sync_future_;
@@ -57,7 +69,10 @@ private:
   bool poll_app_settings();
   void record_git_status(const notepp::git_sync::Status &status);
   void begin_git_operation(bool manual_sync);
+  void begin_close_git_operation();
   void finish_git_operation();
+  void request_close();
+  void advance_close();
   bool save_imgui_settings();
   bool persist_before_close();
   void destroy_runtime();

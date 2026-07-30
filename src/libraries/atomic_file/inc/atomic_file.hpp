@@ -142,6 +142,12 @@ private:
 // successful write through one UI surface updates every other writer's baseline.
 SnapshotStore &shared_snapshot_store() noexcept;
 
+// Application-level Git operations suspend every writer using the shared
+// project registry. The guard is process-wide and fail-fast; callers retain
+// their dirty state and retry after the coherent Git batch completes.
+void set_shared_writes_suspended(bool suspended) noexcept;
+bool shared_writes_suspended() noexcept;
+
 struct SaveIssue
 {
   std::filesystem::path path;
