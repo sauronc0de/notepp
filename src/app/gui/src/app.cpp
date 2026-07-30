@@ -17,6 +17,7 @@
 #include "note_ui.hpp"
 #include "note_index.hpp"
 #include "string_utils.hpp"
+#include "sync_coordinator.hpp"
 #include "tiny_json.hpp"
 
 #include <nlohmann/json.hpp>
@@ -112,6 +113,7 @@ using Json = nlohmann::json;
 namespace
 {
 constexpr Uint32 kProjectFilesChangedEvent = SDL_USEREVENT + 17;
+constexpr Uint32 kGitSyncCompletedEvent = SDL_USEREVENT + 18;
 
 Uint32 project_file_watch_timer_callback(Uint32 interval, void *)
 {
@@ -1180,7 +1182,8 @@ bool App::save_note_clipboard()
 
 App::App(AppConfig config)
     : config_(std::move(config)),
-      app_settings_store_(config_.appSettingsPath)
+      app_settings_store_(config_.appSettingsPath),
+      git_client_(git_process_runner_)
 {
   const auto app_settings = app_settings_store_.load();
   if(app_settings)
@@ -1191,6 +1194,21 @@ App::App(AppConfig config)
   {
     app_settings_error_ = app_settings.message;
     LOG_ERROR("Cannot load Notepp app settings: ", app_settings_error_);
+  }
+  if(app_settings) git_last_attempt_ = app_settings.settings.last_git_sync.attempted_at;
+  if(config_.hasInitialGitStatus)
+  {
+    git_status_ = config_.initialGitStatus;
+    git_status_available_ = true;
+  }
+  else if(app_settings && !app_settings.settings.last_git_sync.state.empty())
+  {
+    git_status_.state = notepp::git_sync::state_from_name(app_settings.settings.last_git_sync.state);
+    git_status_.summary = app_settings.settings.last_git_sync.summary;
+    git_status_.detail = app_settings.settings.last_git_sync.detail;
+    git_status_.checked_at = std::chrono::system_clock::now();
+    git_last_attempt_ = app_settings.settings.last_git_sync.attempted_at;
+    git_status_available_ = true;
   }
 
   g_project_files.clear();
@@ -1245,6 +1263,123 @@ App::App(AppConfig config)
   Lang::init(config_.assetsPath / "languages");
 }
 
+void App::record_git_status(const notepp::git_sync::Status &status)
+{
+  git_status_ = status;
+  git_status_available_ = true;
+  git_last_attempt_ = notepp::app_settings::current_utc_timestamp();
+  const notepp::app_settings::GitSyncRecord record{
+      std::string(notepp::git_sync::state_name(status.state)), status.summary, status.detail,
+      git_last_attempt_};
+  const auto saved = app_settings_store_.record_git_sync_status(record);
+  if(!saved)
+  {
+    app_settings_error_ = saved.message;
+    LOG_ERROR("Cannot persist Git Sync status: ", saved.message);
+  }
+  if(status.state == notepp::git_sync::SyncState::clean)
+  {
+    LOG_INFO("Git Sync: ", status.summary);
+  }
+  else
+  {
+    LOG_ERROR("Git Sync: ", status.summary, status.detail.empty() ? "" : " - ", status.detail);
+  }
+  dirty_ = true;
+}
+
+bool App::save_imgui_settings()
+{
+  if(!ImGui::GetCurrentContext()) return true;
+  std::size_t ini_size = 0;
+  const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
+  return save_project_text(imgui_ini_file_,
+                           std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
+}
+
+void App::begin_git_operation(bool manual_sync)
+{
+  if(git_sync_in_progress_) return;
+  if(!git_sync_enabled_)
+  {
+    notepp::git_sync::Status disabled;
+    disabled.state = notepp::git_sync::SyncState::error;
+    disabled.summary = Lang::t("Git Sync is disabled");
+    record_git_status(disabled);
+    return;
+  }
+  if(manual_sync && (!save_state() || !save_imgui_settings()))
+  {
+    notepp::git_sync::Status failed;
+    failed.state = notepp::git_sync::SyncState::conflict;
+    failed.summary = Lang::t("Git Sync skipped because project save failed");
+    failed.detail = g_last_persistence_error;
+    record_git_status(failed);
+    return;
+  }
+
+  git_sync_in_progress_ = true;
+  git_status_available_ = true;
+  git_status_.state = notepp::git_sync::SyncState::syncing;
+  git_status_.summary = Lang::t("Git Sync in progress");
+  const std::filesystem::path root = config_.projectRoot;
+  git_sync_future_ = std::async(std::launch::async, [this, root, manual_sync] {
+    notepp::git_sync::OperationResult result;
+    if(manual_sync)
+      result = git_client_.manual_sync(root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+    else
+    {
+      result.status = git_client_.inspect(root);
+      result.success = result.status.state == notepp::git_sync::SyncState::clean ||
+                       result.status.state == notepp::git_sync::SyncState::dirty ||
+                       result.status.state == notepp::git_sync::SyncState::ahead ||
+                       result.status.state == notepp::git_sync::SyncState::behind;
+    }
+    SDL_Event event{};
+    event.type = kGitSyncCompletedEvent;
+    SDL_PushEvent(&event);
+    return GitAsyncResult{std::move(result), {}};
+  });
+}
+
+void App::reload_project_after_git_pull()
+{
+  // Git changed a coherent project tree. Any edits made while the operation was
+  // running are first preserved through checked saves; stale files become visible
+  // recovery copies rather than overwriting pulled data.
+  if(state_dirty_ || layout_dirty_ || g_drawings_dirty || g_clipboard_dirty)
+    (void)save_state();
+  MarkdownWidgets::reset_persistence_state();
+  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
+  load_state();
+  const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
+  record_project_read(imgui_ini_file_, ini_snapshot, true);
+  if(ini_snapshot && ini_snapshot.snapshot.existed)
+    ImGui::LoadIniSettingsFromMemory(ini_snapshot.snapshot.content.data(),
+                                     ini_snapshot.snapshot.content.size());
+  g_explorer_image_cache.clear();
+  g_explorer_font_cache.clear();
+  MarkdownView::clear_sidebar_thumbnail_cache();
+  reset_sidebar_state_ = true;
+}
+
+void App::finish_git_operation()
+{
+  if(!git_sync_in_progress_ || !git_sync_future_.valid()) return;
+  GitAsyncResult async_result = git_sync_future_.get();
+  git_sync_in_progress_ = false;
+  record_git_status(async_result.operation.status);
+#if USE_PORTABLE_PATHS
+  if(!async_result.switch_root.empty())
+  {
+    load_switched_project(async_result.switch_root);
+    return;
+  }
+#endif
+  if(async_result.operation.success && async_result.operation.changed_worktree)
+    reload_project_after_git_pull();
+}
+
 bool App::poll_app_settings()
 {
   const auto polled = app_settings_store_.poll();
@@ -1270,13 +1405,8 @@ bool App::poll_app_settings()
 }
 
 #if USE_PORTABLE_PATHS
-bool App::switch_project(const std::filesystem::path &new_root)
+void App::load_switched_project(const std::filesystem::path &new_root)
 {
-  if(!save_state())
-  {
-    LOG_ERROR("Project switch cancelled because project files could not be saved");
-    return false;
-  }
   g_project_files.clear();
   g_project_persistence_guard.clear();
   g_project_save_batch.clear();
@@ -1284,11 +1414,10 @@ bool App::switch_project(const std::filesystem::path &new_root)
   g_last_persistence_error.clear();
   MarkdownWidgets::reset_persistence_state();
 
-  auto project = notepp::project::create_or_open_project(new_root);
+  const auto project = notepp::project::create_or_open_project(new_root);
   config_.projectRoot = project.root;
   config_.dataPath = project.notes;
   config_.configPath = project.config;
-
   default_state_file_ = config_.configPath / "note.md";
   legacy_state_meta_file_ = config_.configPath / "current_note_path.txt";
   index_file_ = config_.configPath / "notes_index.json";
@@ -1308,17 +1437,94 @@ bool App::switch_project(const std::filesystem::path &new_root)
   g_explorer_image_cache.clear();
   g_explorer_font_cache.clear();
   MarkdownView::clear_sidebar_thumbnail_cache();
-
   MarkdownView::set_document_path(config_.dataPath);
-
+  terminal_.setDefaultWorkingDirectory(config_.dataPath);
   note_title_ = "Note";
   markdown_text_.clear();
-
   reset_sidebar_state_ = true;
   load_state();
+
+  const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
+  record_project_read(imgui_ini_file_, ini_snapshot, true);
+  if(ini_snapshot && ini_snapshot.snapshot.existed)
+    ImGui::LoadIniSettingsFromMemory(ini_snapshot.snapshot.content.data(),
+                                     ini_snapshot.snapshot.content.size());
+}
+
+bool App::switch_project(const std::filesystem::path &new_root)
+{
+  if(git_sync_in_progress_) return false;
+  if(!save_state() || !save_imgui_settings())
+  {
+    LOG_ERROR("Project switch cancelled because project files could not be saved");
+    return false;
+  }
+  if(!git_sync_enabled_)
+  {
+    load_switched_project(new_root);
+    return true;
+  }
+
+  git_sync_in_progress_ = true;
+  git_status_available_ = true;
+  git_status_.state = notepp::git_sync::SyncState::syncing;
+  git_status_.summary = Lang::t("Git Sync in progress");
+  const std::filesystem::path old_root = config_.projectRoot;
+  git_sync_future_ = std::async(std::launch::async, [this, old_root, new_root] {
+    const auto pushed = git_client_.commit_and_push(
+        old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+    const auto pulled = git_client_.pull_on_open(new_root);
+    notepp::git_sync::OperationResult result = pulled;
+    if(!pushed.success && pulled.success) result = pushed;
+    SDL_Event event{};
+    event.type = kGitSyncCompletedEvent;
+    SDL_PushEvent(&event);
+    return GitAsyncResult{std::move(result), new_root};
+  });
   return true;
 }
 #endif
+
+bool App::persist_before_close()
+{
+  layout_profiles_.erase(
+      std::remove_if(layout_profiles_.begin(), layout_profiles_.end(),
+                     [](const LayoutProfile &profile) { return profile.pending_delete; }),
+      layout_profiles_.end());
+  if(!layout_profiles_.empty()) capture_to_active_profile();
+
+  bool saved = save_state();
+  if(!save_imgui_settings()) saved = false;
+  saved = saved && g_unresolved_persistence_errors.empty() &&
+          MarkdownSupport::last_persistence_error().empty() &&
+          MarkdownWidgets::last_persistence_error().empty();
+  last_save_succeeded_ = saved;
+
+  if(saved)
+  {
+    std::unordered_set<std::string> alive_paths;
+    for(const FolderMeta &folder : folders_)
+      for(const NoteMeta &note : folder.notes)
+        if(!note.path.empty()) alive_paths.insert(note.path);
+    for(const std::string &path : pending_fs_delete_paths_)
+    {
+      if(path.empty() || alive_paths.contains(path)) continue;
+      std::error_code remove_error;
+      std::filesystem::remove(std::filesystem::path(path + ".bak"), remove_error);
+      if(remove_error)
+      {
+        LOG_WARNING("Cannot remove backup '", path, ".bak': ", remove_error.message());
+      }
+    }
+    pending_fs_delete_paths_.clear();
+  }
+  else
+  {
+    LOG_ERROR("Project close retained recovery files because persistence was incomplete");
+    write_persistence_failure_report(config_);
+  }
+  return saved;
+}
 
 int App::run()
 {
@@ -1403,7 +1609,14 @@ int App::run()
       }
     }
 
-    last_save_succeeded_ = save_state();
+    if(git_sync_in_progress_) finish_git_operation();
+    const auto close_result = notepp::sync_coordinator::close(
+        git_sync_enabled_, [this] { return persist_before_close(); }, [this] {
+          const auto result = git_client_.commit_and_push(
+              config_.projectRoot, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+          record_git_status(result.status);
+          return std::pair{result.success, result.changed_worktree}; });
+    last_save_succeeded_ = close_result.save_succeeded;
     shutdown();
     return 0;
   }
@@ -1417,64 +1630,22 @@ int App::run()
 }
 void App::shutdown()
 {
+  if(git_sync_future_.valid())
+  {
+    const GitAsyncResult result = git_sync_future_.get();
+    git_sync_in_progress_ = false;
+    record_git_status(result.operation.status);
+  }
   MarkdownWidgets::set_terminal_command_handler({});
   terminal_.stop();
 
   clear_toolbar_icon_cache();
   MarkdownView::shutdown_sidebar_thumbnail_cache();
 
-  // Permanently remove soft-deleted profiles before final save
-  layout_profiles_.erase(
-      std::remove_if(layout_profiles_.begin(), layout_profiles_.end(),
-                     [](const LayoutProfile &p) { return p.pending_delete; }),
-      layout_profiles_.end());
-  if(!layout_profiles_.empty())
-  {
-    capture_to_active_profile();
-    if(!save_profiles()) last_save_succeeded_ = false;
-  }
-
   if(file_watch_timer_ != 0)
   {
     SDL_RemoveTimer(file_watch_timer_);
     file_watch_timer_ = 0;
-  }
-
-  // Safe to call multiple times.
-  if(ImGui::GetCurrentContext())
-  {
-    std::size_t ini_size = 0;
-    const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
-    if(!save_project_text(
-           imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size)))
-      last_save_succeeded_ = false;
-  }
-
-  if(last_save_succeeded_ && g_unresolved_persistence_errors.empty() &&
-     MarkdownSupport::last_persistence_error().empty() &&
-     MarkdownWidgets::last_persistence_error().empty())
-  {
-    std::unordered_set<std::string> alive_paths;
-    for(const FolderMeta &folder : folders_)
-      for(const NoteMeta &note : folder.notes)
-        if(!note.path.empty()) alive_paths.insert(note.path);
-
-    for(const std::string &path : pending_fs_delete_paths_)
-    {
-      if(path.empty() || alive_paths.contains(path)) continue;
-      std::error_code remove_error;
-      std::filesystem::remove(std::filesystem::path(path + ".bak"), remove_error);
-      if(remove_error)
-      {
-        LOG_WARNING("Cannot remove backup '", path, ".bak': ", remove_error.message());
-      }
-    }
-    pending_fs_delete_paths_.clear();
-  }
-  else
-  {
-    LOG_ERROR("Project close retained recovery files because persistence was incomplete");
-    write_persistence_failure_report(config_);
   }
 
   if(ImGui::GetCurrentContext())
@@ -3645,6 +3816,9 @@ void App::render_debug_history_window() const
 
 bool App::frame_begin()
 {
+  if(git_sync_in_progress_ && git_sync_future_.valid() &&
+     git_sync_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    finish_git_operation();
   {
     const ImGuiIO &_io = ImGui::GetIO();
     if((_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) == 0)
@@ -3658,10 +3832,16 @@ bool App::frame_begin()
   SDL_Event event;
   while(SDL_PollEvent(&event))
   {
+    if(event.type == kGitSyncCompletedEvent)
+    {
+      finish_git_operation();
+      had_event = true;
+      continue;
+    }
     if(event.type == kProjectFilesChangedEvent)
     {
       if(poll_app_settings()) had_event = true;
-      if(sync_project_files()) had_event = true;
+      if(!git_sync_in_progress_ && sync_project_files()) had_event = true;
       continue;
     }
 
@@ -3701,6 +3881,12 @@ bool App::frame_begin()
       // their saved positions before any position-save logic can run.
       if(we == SDL_WINDOWEVENT_RESTORED)
         force_note_layout_restore_ = true;
+    }
+
+    if(git_sync_in_progress_)
+    {
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      continue;
     }
 
     if(event.type == SDL_KEYDOWN &&
@@ -3951,6 +4137,7 @@ bool App::frame_begin()
 void App::frame_ui()
 {
   MarkdownView::begin_sidebar_thumbnail_frame();
+  if(git_sync_in_progress_) ImGui::BeginDisabled();
 
   // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
   ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -4048,6 +4235,30 @@ void App::frame_ui()
     }
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("Restore removed notes"));
+    const std::string sync_state_name = git_status_available_
+                                            ? std::string(notepp::git_sync::state_name(git_status_.state))
+                                            : std::string{};
+    const char *sync_label = !git_sync_enabled_
+                                 ? Lang::t("Git Sync disabled")
+                             : git_sync_in_progress_
+                                 ? Lang::t("Syncing")
+                             : git_status_available_
+                                 ? Lang::t(sync_state_name.c_str())
+                                 : Lang::t("Git status unknown");
+    const ImVec4 sync_color = git_sync_in_progress_ ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
+                              : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
+                                  ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
+                                  : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
+    ImGui::TextColored(sync_color, "%s", sync_label);
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && git_status_available_)
+      ImGui::SetTooltip("%s%s%s%s%s", git_status_.summary.c_str(),
+                        git_status_.detail.empty() ? "" : "\n", git_status_.detail.c_str(),
+                        git_last_attempt_.empty() ? "" : "\nLast attempt: ", git_last_attempt_.c_str());
+    if(git_sync_enabled_)
+    {
+      ImGui::SameLine();
+      if(ImGui::SmallButton(Lang::t("Sync now"))) begin_git_operation(true);
+    }
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -5113,11 +5324,29 @@ void App::frame_ui()
       {
         git_sync_enabled_ = updated.settings.git_sync_enabled;
         app_settings_error_.clear();
+        if(git_sync_enabled_) begin_git_operation(false);
       }
       else
       {
         app_settings_error_ = updated.message;
         LOG_ERROR("Cannot save Git Sync setting: ", app_settings_error_);
+      }
+    }
+    if(git_sync_enabled_ && ImGui::MenuItem(Lang::t("Sync now"), nullptr, false, !git_sync_in_progress_))
+      begin_git_operation(true);
+    if(git_sync_enabled_ && git_status_available_ &&
+       ImGui::MenuItem(Lang::t("Retry Git Sync"), nullptr, false, !git_sync_in_progress_))
+      begin_git_operation(true);
+    if(git_status_available_)
+    {
+      ImGui::TextDisabled("%s", git_status_.summary.c_str());
+      if(!git_last_attempt_.empty())
+        ImGui::TextDisabled("%s: %s", Lang::t("Last Git Sync attempt"), git_last_attempt_.c_str());
+      if(!git_status_.detail.empty())
+      {
+        ImGui::PushTextWrapPos(420.0f);
+        ImGui::TextDisabled("%s", git_status_.detail.c_str());
+        ImGui::PopTextWrapPos();
       }
     }
     if(!app_settings_error_.empty())
@@ -9793,18 +10022,21 @@ __CURSOR__)MD",
     deferred_sidebar_snapshot_before.clear();
   }
 
-  if(layout_dirty_ && !ImGui::IsAnyMouseDown())
+  if(!git_sync_in_progress_)
   {
-    const bool index_saved = save_index();
-    capture_to_active_profile();
-    const bool profiles_saved = save_profiles();
-    if(index_saved && profiles_saved) layout_dirty_ = false;
+    if(layout_dirty_ && !ImGui::IsAnyMouseDown())
+    {
+      const bool index_saved = save_index();
+      capture_to_active_profile();
+      const bool profiles_saved = save_profiles();
+      if(index_saved && profiles_saved) layout_dirty_ = false;
+    }
+    if(state_dirty_ && save_state()) state_dirty_ = false;
+    if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
+    if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
   }
-  if(state_dirty_ && save_state())
-    state_dirty_ = false;
   render_search_dialog();
   render_debug_history_window();
   render_terminal();
-  if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
-  if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
+  if(git_sync_in_progress_) ImGui::EndDisabled();
 }

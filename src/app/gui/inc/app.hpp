@@ -2,6 +2,7 @@
 
 #include "app_settings.hpp"
 #include "emoji_picker.hpp"
+#include "git_sync.hpp"
 #include "note_history.hpp"
 #include "note_model.hpp"
 #include "note_storage.hpp"
@@ -10,6 +11,7 @@
 #include <imgui.h>
 
 #include <filesystem>
+#include <future>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,6 +27,8 @@ struct AppConfig
   std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
+  bool hasInitialGitStatus = false;
+  notepp::git_sync::Status initialGitStatus;
 };
 
 class App
@@ -36,9 +40,31 @@ public:
 private:
   AppConfig config_;
   notepp::app_settings::Store app_settings_store_;
+  process::SystemRunner git_process_runner_;
+  notepp::git_sync::Client git_client_;
   bool git_sync_enabled_ = false;
+  struct GitAsyncResult
+  {
+    notepp::git_sync::OperationResult operation;
+    std::filesystem::path switch_root;
+  };
+  bool git_status_available_ = false;
+  bool git_sync_in_progress_ = false;
+  notepp::git_sync::Status git_status_;
+  std::string git_last_attempt_;
+  std::future<GitAsyncResult> git_sync_future_;
   std::string app_settings_error_;
   bool poll_app_settings();
+  void record_git_status(const notepp::git_sync::Status &status);
+  void begin_git_operation(bool manual_sync);
+  void finish_git_operation();
+  bool save_imgui_settings();
+  bool persist_before_close();
+  void destroy_runtime();
+  void reload_project_after_git_pull();
+#if USE_PORTABLE_PATHS
+  void load_switched_project(const std::filesystem::path &new_root);
+#endif
   void init_sdl_gl();
   void init_imgui();
   void load_state();

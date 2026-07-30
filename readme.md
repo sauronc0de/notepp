@@ -1778,6 +1778,12 @@ Notes are stored as plain Markdown files — easy to version-control or edit ext
 | `config/layout_profiles.json` | Layout profiles |
 | `config/markdown_preview_state.json` | Collapsed/expanded section states |
 
+### Cross-device Git Sync
+
+Notepp can use the installed system Git to synchronize an existing project repository. Git Sync is disabled by default; enable it from the Explorer context menu. When enabled, Notepp performs a fast-forward-only pull before loading a project and saves, commits, and pushes on normal close. Offline, authentication, repository, upstream, timeout, or divergence failures are reported without blocking local editing or exit.
+
+See [`docs/git_sync.md`](docs/git_sync.md) for setup, safety guarantees, statuses, and recovery instructions.
+
 ---
 
 ## 16. Embedded Terminal

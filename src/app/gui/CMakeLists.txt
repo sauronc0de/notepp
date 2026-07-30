@@ -62,10 +62,12 @@ target_link_libraries(${PROJECT_NAME}
     imgui
     imgui_md
     string_utils
+    sync_coordinator
     note_history
     note_index
     lang
     emoji_picker
+    git_sync
     note_model
     note_storage
     markdown_view
