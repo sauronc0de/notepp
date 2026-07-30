@@ -12,6 +12,7 @@ struct NoteMeta
   std::string title;
   std::string path;
   std::string font_path;
+  std::string content_fingerprint;
   // Non-empty only when a legacy/invalid stored path could not be resolved.
   // It is retained for non-destructive migration but never used for I/O.
   std::string unresolved_stored_path;

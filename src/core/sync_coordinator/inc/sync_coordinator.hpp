@@ -12,11 +12,17 @@ struct Result
   bool git_succeeded = true;
   bool worktree_changed = false;
   bool reloaded = false;
+  bool exception_caught = false;
 };
 
 using SaveAction = std::function<bool()>;
 using GitAction = std::function<std::pair<bool, bool>()>;
 using VoidAction = std::function<void()>;
+
+constexpr bool project_writes_allowed(bool git_sync_in_progress) noexcept
+{
+  return !git_sync_in_progress;
+}
 
 [[nodiscard]] Result open(bool enabled, const GitAction &pull, const VoidAction &load);
 [[nodiscard]] Result close(bool enabled, const SaveAction &save, const GitAction &push);

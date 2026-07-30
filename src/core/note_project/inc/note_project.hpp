@@ -27,6 +27,8 @@ void save_last_project_path(const std::filesystem::path &path);
 std::vector<std::filesystem::path> load_recent_projects();
 
 std::optional<std::filesystem::path> select_project_folder();
+// Select the startup root without creating or upgrading any project files.
+std::optional<std::filesystem::path> select_initial_project_root();
 
 ProjectInfo create_or_open_project(const std::filesystem::path &root);
 

@@ -253,18 +253,16 @@ ProjectInfo create_or_open_project(const fs::path &root)
   return project;
 }
 
+std::optional<fs::path> select_initial_project_root()
+{
+  if(auto last_path = load_last_project_path()) return last_path;
+  return select_project_folder();
+}
+
 std::optional<ProjectInfo> initialize_project()
 {
-  if(auto lastPath = load_last_project_path())
-  {
-    return create_or_open_project(*lastPath);
-  }
-
-  auto selectedPath = select_project_folder();
-
-  if(!selectedPath)
-    return std::nullopt;
-
-  return create_or_open_project(*selectedPath);
+  const auto root = select_initial_project_root();
+  if(!root) return std::nullopt;
+  return create_or_open_project(*root);
 }
 } // namespace notepp::project

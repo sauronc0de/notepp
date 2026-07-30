@@ -16,6 +16,12 @@ void expect(bool condition, const char *message)
   std::cerr << "FAIL: " << message << '\n';
 }
 
+void test_project_write_policy()
+{
+  expect(sc::project_writes_allowed(false), "project writes are allowed while idle");
+  expect(!sc::project_writes_allowed(true), "every UI branch blocks project writes during Git");
+}
+
 void test_disabled_open_makes_no_git_call()
 {
   int git_calls = 0;
@@ -71,6 +77,25 @@ void test_switch_ordering()
   expect(result.continued && !result.git_succeeded, "switch loads despite Git failure");
 }
 
+void test_callback_exceptions_are_contained()
+{
+  const auto opened = sc::open(
+      true, []() -> std::pair<bool, bool> { throw 1; }, [] { throw 2; });
+  expect(opened.exception_caught && !opened.git_succeeded,
+         "open converts callback exceptions to failure state");
+
+  const auto closed = sc::close(
+      true, []() -> bool { throw 1; }, [] { return std::pair{true, false}; });
+  expect(closed.exception_caught && !closed.save_succeeded,
+         "close contains save exceptions and skips Git");
+
+  const auto switched = sc::switch_project(
+      true, [] { return true; }, []() -> std::pair<bool, bool> { throw 1; },
+      [] { return std::pair{true, false}; }, [] {});
+  expect(switched.exception_caught && switched.continued,
+         "switch remains nonblocking after Git exceptions");
+}
+
 void test_manual_changed_worktree_reloads_once()
 {
   int reloads = 0;
@@ -81,11 +106,13 @@ void test_manual_changed_worktree_reloads_once()
 
 int main()
 {
+  test_project_write_policy();
   test_disabled_open_makes_no_git_call();
   test_disabled_lifecycle_makes_zero_git_calls();
   test_pull_precedes_load_and_failures_still_load();
   test_close_save_precedes_git_and_failure_still_exits();
   test_switch_ordering();
+  test_callback_exceptions_are_contained();
   test_manual_changed_worktree_reloads_once();
   if(failures != 0) return EXIT_FAILURE;
   std::cout << "sync_coordinator tests passed\n";

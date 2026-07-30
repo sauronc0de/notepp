@@ -55,9 +55,17 @@ private:
   Handler handler_;
 };
 
+bool is_status_call(const std::vector<std::string> &arguments)
+{
+  return std::find(arguments.begin(), arguments.end(), "status") != arguments.end() &&
+         std::find(arguments.begin(), arguments.end(), "--porcelain=v2") != arguments.end();
+}
+
 bool ends_with(const std::vector<std::string> &arguments, std::initializer_list<std::string_view> suffix)
 {
   if(arguments.size() < suffix.size()) return false;
+  if(!suffix.size()) return true;
+  if(*suffix.begin() == "status") return is_status_call(arguments);
   auto argument = arguments.end() - static_cast<std::ptrdiff_t>(suffix.size());
   for(const std::string_view expected : suffix)
   {
@@ -277,13 +285,22 @@ void test_offline_close_keeps_local_commit()
       return exited(0, "# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -0\n? local.md\n");
     if(ends_with(arguments, {"config", "--get", "branch.main.remote"})) return exited(0, "origin\n");
     if(ends_with(arguments, {"config", "--get", "branch.main.merge"})) return exited(0, "refs/heads/main\n");
-    if(ends_with(arguments,
-                 {"add", "--all", "--", "notes", "assets", "config", "notepp.project.json"}))
+    if(std::find(arguments.begin(), arguments.end(), "add") != arguments.end())
     {
+      expect(std::find(arguments.begin(), arguments.end(), ":(exclude,glob)**/*.bak") !=
+                 arguments.end(),
+             "backup files are excluded from staging");
+      expect(std::find(arguments.begin(), arguments.end(),
+                       ":(exclude,glob)**/*.~npp-t-*") != arguments.end(),
+             "atomic temporary files are excluded from staging");
+      expect(std::find(arguments.begin(), arguments.end(), ":(exclude,glob)**/*.tmp") !=
+                 arguments.end(),
+             "legacy temporary files are excluded from staging");
       actions.emplace_back("add");
       return exited();
     }
-    if(ends_with(arguments, {"diff", "--cached", "--quiet", "--exit-code"})) return exited(1);
+    if(std::find(arguments.begin(), arguments.end(), "--name-only") != arguments.end())
+      return exited(0, std::string("notes/local.md\0", 15));
     if(std::find(arguments.begin(), arguments.end(), "commit") != arguments.end())
     {
       actions.emplace_back("commit");
@@ -302,6 +319,17 @@ void test_offline_close_keeps_local_commit()
   expect(actions == std::vector<std::string>({"add", "commit", "fetch"}),
          "local commit is created before the offline fetch");
   fs::remove_all(root);
+}
+
+void test_exception_conversion()
+{
+  const auto result = gs::exception_result(
+      "Manual Git Sync", "unexpected failure at https://token@host/repo?access_token=secret");
+  expect(!result.success && result.status.state == gs::SyncState::error,
+         "exceptions become ordinary Git error results");
+  expect(result.status.detail.find("token") == std::string::npos &&
+             result.status.detail.find("secret") == std::string::npos,
+         "exception details are credential-redacted");
 }
 
 void test_state_name_round_trip()
@@ -353,11 +381,17 @@ void test_real_repository_integration()
   expect(client.inspect(project).state == gs::SyncState::clean, "real repository reports clean");
 
   std::ofstream(project / "notes" / "local.md") << "local note\n";
+  std::ofstream(project / "notes" / "deleted.md.bak") << "undo backup\n";
+  std::ofstream(project / "config" / "index.~npp-t-test.json") << "partial temporary\n";
   const gs::OperationResult pushed = client.commit_and_push(project, "Notepp sync test");
   expect(pushed.success && pushed.status.state == gs::SyncState::clean,
          "local files are committed and pushed normally");
   expect(!git({"show-ref"}, decoy).succeeded(),
          "explicit upstream push ignores a different remote.pushDefault");
+  expect(git({"ls-files", "--error-unmatch", "notes/deleted.md.bak"}, project).exit_code != 0,
+         "soft-delete backups are not committed");
+  expect(git({"ls-files", "--error-unmatch", "config/index.~npp-t-test.json"}, project).exit_code != 0,
+         "atomic temporary files are not committed");
 
   require_git(git({"clone", remote.string(), peer.string()}), "clone peer");
   require_git(git({"config", "user.name", "Notepp Tests"}, peer), "configure peer name");
@@ -383,6 +417,7 @@ int main()
   test_behind_dirty_and_failed_final_status();
   test_authentication_and_tls_are_not_offline();
   test_offline_close_keeps_local_commit();
+  test_exception_conversion();
   test_state_name_round_trip();
   test_real_repository_integration();
   if(failures != 0)

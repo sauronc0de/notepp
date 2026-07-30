@@ -74,6 +74,47 @@ void test_schema_reader_prefers_established_key_and_accepts_compatibility_key()
          "a legacy index without a schema key defaults to version one");
 }
 
+void test_document_validation_and_fingerprint()
+{
+  expect(notepp::note_index::validate_document(Json{}, false) ==
+             notepp::note_index::DocumentState::missing,
+         "missing indexes are distinguished from malformed indexes");
+  expect(notepp::note_index::validate_document(Json::parse("{", nullptr, false), true) ==
+             notepp::note_index::DocumentState::malformed,
+         "malformed indexes block reconstruction");
+  expect(notepp::note_index::validate_document(Json{{"schemaVersion", 2}, {"folders", Json::array()}}, true) ==
+             notepp::note_index::DocumentState::supported,
+         "current indexes are writable");
+  expect(notepp::note_index::validate_document(Json{{"schemaVersion", 3}, {"folders", Json::array()}}, true) ==
+             notepp::note_index::DocumentState::future_schema,
+         "future indexes are read-only");
+  expect(notepp::note_index::content_fingerprint("same") ==
+             notepp::note_index::content_fingerprint("same"),
+         "fingerprints are stable");
+  expect(notepp::note_index::content_fingerprint("same") !=
+             notepp::note_index::content_fingerprint("different"),
+         "different content has different rename evidence");
+  expect(notepp::note_index::unique_rename_evidence(1, 1),
+         "one missing note and one exact disk match retain identity");
+  expect(!notepp::note_index::unique_rename_evidence(2, 1) &&
+             !notepp::note_index::unique_rename_evidence(1, 2),
+         "ambiguous rename evidence never selects a metadata winner");
+}
+
+void test_identity_fallback_is_legacy_only()
+{
+  const Json source = {{"folders", Json::array({Json{{"name", "old"},
+                                                     {"pluginFolder", 1},
+                                                     {"notes", Json::array({Json{{"id", "old-id"}, {"plugin", 2}}})}}})}};
+  const Json current = {{"folders", Json::array({Json{{"name", "new"},
+                                                      {"notes", Json::array({Json{{"id", "new-id"}}})}}})}};
+  const Json merged = notepp::note_index::merge_unknown_fields(source, current);
+  expect(!merged["folders"][0].contains("pluginFolder"),
+         "position does not transfer folder fields across named identities");
+  expect(!merged["folders"][0]["notes"][0].contains("plugin"),
+         "position does not transfer note fields across stable identities");
+}
+
 void test_does_not_restore_removed_entities()
 {
   const Json source = {{"folders", Json::array({Json{{"name", "removed"},
@@ -89,6 +130,8 @@ int main()
   test_preserves_unknown_fields_during_migration();
   test_schema_migration_never_downgrades_v2();
   test_schema_reader_prefers_established_key_and_accepts_compatibility_key();
+  test_document_validation_and_fingerprint();
+  test_identity_fallback_is_legacy_only();
   test_does_not_restore_removed_entities();
   if(failures != 0)
   {

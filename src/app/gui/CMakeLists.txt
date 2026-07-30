@@ -66,8 +66,10 @@ target_link_libraries(${PROJECT_NAME}
     note_history
     note_index
     lang
+    layout_profile_state
     emoji_picker
     git_sync
+    note_clipboard_state
     note_model
     note_storage
     markdown_view

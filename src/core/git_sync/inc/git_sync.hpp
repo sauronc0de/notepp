@@ -59,6 +59,8 @@ private:
   const process::Runner &runner_;
 };
 
+[[nodiscard]] OperationResult exception_result(std::string_view action,
+                                               std::string_view detail = {});
 [[nodiscard]] std::string_view state_name(SyncState state) noexcept;
 [[nodiscard]] SyncState state_from_name(std::string_view name) noexcept;
 } // namespace notepp::git_sync

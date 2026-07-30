@@ -123,6 +123,21 @@ void test_existing_manifest_is_upgraded_compatibly()
   expect_eq_str(second.projectId, first.projectId, "upgraded manifest id remains stable");
 }
 
+void test_select_initial_root_does_not_mutate_project()
+{
+  ScopedXdgConfig env;
+  const fs::path root = env.base() / "selected-only";
+  fs::create_directories(root);
+  npp::save_last_project_path(root);
+
+  const auto selected = npp::select_initial_project_root();
+  expect_true(selected.has_value() && *selected == root, "initial root is selected");
+  expect_true(!fs::exists(root / "notepp.project.json"),
+              "selecting a startup root does not create a manifest before Git pull");
+  expect_true(!fs::exists(root / "notes") && !fs::exists(root / "config"),
+              "selecting a startup root does not create project directories");
+}
+
 void test_save_and_load_last_project_path()
 {
   ScopedXdgConfig env;
@@ -270,6 +285,7 @@ int main()
 {
   test_create_or_open_project_creates_layout();
   test_existing_manifest_is_upgraded_compatibly();
+  test_select_initial_root_does_not_mutate_project();
   test_save_and_load_last_project_path();
   test_project_open_preserves_git_sync_setting();
   test_recent_projects_dedupe_and_cap();

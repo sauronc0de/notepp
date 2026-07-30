@@ -3,6 +3,10 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdint>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <string>
 
 namespace notepp::note_index
@@ -20,7 +24,9 @@ Json matching_folder(const Json &folders, const Json &current_folder, std::size_
     if(folder.is_object() && folder.value("name", std::string{}) == name)
       return folder;
   }
-  if(index < folders.size() && folders[index].is_object()) return folders[index];
+  if(name.empty() && index < folders.size() && folders[index].is_object() &&
+     folders[index].value("name", std::string{}).empty())
+    return folders[index];
   return Json::object();
 }
 
@@ -36,10 +42,52 @@ Json matching_note(const Json &notes, const Json &current_note, std::size_t inde
         return note;
     }
   }
-  if(index < notes.size() && notes[index].is_object()) return notes[index];
+  if(index < notes.size() && notes[index].is_object() &&
+     notes[index].value("id", std::string{}).empty())
+    return notes[index];
   return Json::object();
 }
 } // namespace
+
+DocumentState validate_document(const nlohmann::json &document, bool existed) noexcept
+{
+  if(!existed) return DocumentState::missing;
+  if(!document.is_object()) return DocumentState::malformed;
+  for(const char *key : {"schemaVersion", "schema_version"})
+  {
+    const auto value = document.find(key);
+    if(value != document.end() && !value->is_number_integer())
+      return DocumentState::malformed;
+  }
+  const auto folders = document.find("folders");
+  if(folders == document.end() || !folders->is_array()) return DocumentState::malformed;
+  for(const auto &folder : *folders)
+  {
+    if(!folder.is_object()) return DocumentState::malformed;
+    const auto notes = folder.find("notes");
+    if(notes == folder.end() || !notes->is_array()) return DocumentState::malformed;
+    for(const auto &note : *notes)
+      if(!note.is_object()) return DocumentState::malformed;
+    const auto images = folder.find("images");
+    if(images != folder.end() && !images->is_array()) return DocumentState::malformed;
+  }
+  const int schema = read_schema_version(document);
+  if(schema > current_schema_version) return DocumentState::future_schema;
+  return DocumentState::supported;
+}
+
+std::string content_fingerprint(std::string_view content)
+{
+  std::uint64_t hash = 14695981039346656037ULL;
+  for(const unsigned char byte : content)
+  {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  std::ostringstream out;
+  out << std::hex << std::setfill('0') << std::setw(16) << hash;
+  return out.str();
+}
 
 int read_schema_version(const nlohmann::json &document,
                         int default_version) noexcept
@@ -52,7 +100,17 @@ int read_schema_version(const nlohmann::json &document,
       return default_version;
     try
     {
-      return found->get<int>();
+      if(found->is_number_unsigned())
+      {
+        const std::uint64_t value = found->get<std::uint64_t>();
+        if(value > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+          return current_schema_version + 1;
+        return static_cast<int>(value);
+      }
+      const std::int64_t value = found->get<std::int64_t>();
+      if(value < 1) return default_version;
+      if(value > std::numeric_limits<int>::max()) return current_schema_version + 1;
+      return static_cast<int>(value);
     }
     catch(...)
     {

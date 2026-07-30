@@ -373,6 +373,19 @@ process::Result push_upstream(const process::Runner &runner, const std::filesyst
                  {"push", "--porcelain", "--", upstream.remote, "HEAD:" + upstream.merge_ref}, true);
 }
 
+std::vector<std::string> project_pathspec()
+{
+  return {"notes", "assets", "config", "notepp.project.json",
+          ":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
+          ":(exclude,glob)**/*.tmp"};
+}
+
+std::vector<std::string> status_pathspec()
+{
+  return {".", ":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
+          ":(exclude,glob)**/*.tmp"};
+}
+
 bool synchronized(const Status &status)
 {
   return status.state == SyncState::clean;
@@ -402,18 +415,33 @@ std::optional<Status> stage_and_commit(const process::Runner &runner,
                                        const std::filesystem::path &root,
                                        std::string_view message)
 {
-  process::Result result = run_git(
-      runner, root,
-      {"add", "--all", "--", "notes", "assets", "config", "notepp.project.json"}, false);
+  std::vector<std::string> add_arguments = {"add", "--all", "--"};
+  const auto pathspec = project_pathspec();
+  add_arguments.insert(add_arguments.end(), pathspec.begin(), pathspec.end());
+  process::Result result = run_git(runner, root, std::move(add_arguments), false);
   if(!result.succeeded()) return operation_error(result, "Staging project files", false);
 
-  result = run_git(runner, root, {"diff", "--cached", "--quiet", "--exit-code"}, false);
-  if(result.termination != process::Termination::exited)
-    return operation_error(result, "Inspecting staged project files", false);
-  if(result.exit_code == 0) return std::nullopt;
-  if(result.exit_code != 1) return operation_error(result, "Inspecting staged project files", false);
+  std::vector<std::string> list_arguments = {"diff", "--cached", "--name-only", "-z", "--"};
+  list_arguments.insert(list_arguments.end(), pathspec.begin(), pathspec.end());
+  result = run_git(runner, root, std::move(list_arguments), false);
+  if(!result.succeeded()) return operation_error(result, "Inspecting staged project files", false);
 
-  result = run_git(runner, root, {"commit", "-m", std::string(message)}, false);
+  std::vector<std::string> staged_paths;
+  std::size_t position = 0;
+  while(position < result.stdout_text.size())
+  {
+    const std::size_t end = result.stdout_text.find('\0', position);
+    const std::size_t length = (end == std::string::npos ? result.stdout_text.size() : end) - position;
+    if(length != 0) staged_paths.push_back(result.stdout_text.substr(position, length));
+    if(end == std::string::npos) break;
+    position = end + 1;
+  }
+  if(staged_paths.empty()) return std::nullopt;
+
+  std::vector<std::string> commit_arguments = {"commit", "--only", "-m",
+                                               std::string(message), "--"};
+  commit_arguments.insert(commit_arguments.end(), staged_paths.begin(), staged_paths.end());
+  result = run_git(runner, root, std::move(commit_arguments), false);
   if(!result.succeeded()) return operation_error(result, "Creating the sync commit", false);
   return std::nullopt;
 }
@@ -449,7 +477,10 @@ Status Client::inspect(const std::filesystem::path &project_root) const
     return status;
   }
 
-  result = run_git(runner_, project_root, {"status", "--porcelain=v2", "--branch"}, false);
+  std::vector<std::string> status_arguments = {"status", "--porcelain=v2", "--branch", "--"};
+  const auto pathspec = status_pathspec();
+  status_arguments.insert(status_arguments.end(), pathspec.begin(), pathspec.end());
+  result = run_git(runner_, project_root, std::move(status_arguments), false);
   if(!result.succeeded()) return command_failure(result, "Reading Git status", false);
   return parse_status(result.stdout_text);
 }
@@ -542,6 +573,17 @@ OperationResult Client::manual_sync(const std::filesystem::path &project_root,
   }
   if(status.state == SyncState::clean) return success(std::move(status));
   return failure(std::move(status));
+}
+
+OperationResult exception_result(std::string_view action, std::string_view detail)
+{
+  OperationResult result;
+  result.status.state = SyncState::error;
+  result.status.summary = std::string(action) + " failed unexpectedly";
+  result.status.detail = detail.empty() ? "The operation was stopped; local files remain available."
+                                        : redact(std::string(detail));
+  result.status.checked_at = std::chrono::system_clock::now();
+  return result;
 }
 
 SyncState state_from_name(std::string_view name) noexcept
