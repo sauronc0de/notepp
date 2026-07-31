@@ -57,6 +57,7 @@ using MarkdownTables::try_parse_markdown_table;
 int md_editor_cb(ImGuiInputTextCallbackData *data);
 bool parse_task_line(std::string_view line, size_t &check_col_out, std::string_view &label_out);
 void set_preview_document_path(std::string_view path);
+void request_preview_heading(std::string_view document_path, std::string_view heading_path);
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);

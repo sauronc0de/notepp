@@ -76,6 +76,7 @@ using MarkdownSupport::MdFormatState;
 using MarkdownSupport::normalize_input_text_buffer;
 using MarkdownSupport::render_preview_with_task_checkboxes;
 using MarkdownSupport::render_preview_with_task_checkboxes_ex;
+using MarkdownSupport::request_preview_heading;
 using MarkdownSupport::rgba_to_hex;
 
 static ImVec2 nonzero_invisible_button_size(float w, float h)
@@ -4528,6 +4529,20 @@ bool App::frame_begin()
   }
   pinned_topmost_viewports_.clear();
 
+  // frame_begin runs before NewFrame applies mouse clicks; track the clicked window
+  // so a click away from the non-modal switcher immediately releases its shortcuts.
+  bool note_switcher_mouse_focus_override_valid = false;
+  bool note_switcher_mouse_focus_override = false;
+  const auto note_switcher_contains_window = [](ImGuiWindow *window) {
+    if(window == nullptr || ImGui::GetCurrentContext() == nullptr) return false;
+    ImGuiWindow *switcher = ImGui::FindWindowByName("Quick Note Switcher");
+    return switcher != nullptr && ImGui::IsWindowWithinBeginStackOf(window, switcher);
+  };
+  const auto note_switcher_has_keyboard_focus = [&]() {
+    if(note_switcher_mouse_focus_override_valid) return note_switcher_mouse_focus_override;
+    return GImGui != nullptr && note_switcher_contains_window(GImGui->NavWindow);
+  };
+
   bool had_event = false;
   SDL_Event event;
   while(SDL_PollEvent(&event))
@@ -4589,13 +4604,73 @@ bool App::frame_begin()
       continue;
     }
 
+    if(event.type == SDL_MOUSEBUTTONDOWN)
+    {
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      ImVec2 mouse_pos(static_cast<float>(event.button.x), static_cast<float>(event.button.y));
+      if((ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
+      {
+        int window_x = 0;
+        int window_y = 0;
+        if(SDL_Window *event_window = SDL_GetWindowFromID(event.button.windowID))
+        {
+          SDL_GetWindowPosition(event_window, &window_x, &window_y);
+          mouse_pos.x += static_cast<float>(window_x);
+          mouse_pos.y += static_cast<float>(window_y);
+        }
+      }
+      ImGuiWindow *hovered_window = nullptr;
+      ImGuiWindow *hovered_window_under_moving_window = nullptr;
+      ImGui::FindHoveredWindowEx(mouse_pos, true, &hovered_window,
+                                 &hovered_window_under_moving_window);
+      note_switcher_mouse_focus_override_valid = true;
+      note_switcher_mouse_focus_override = note_switcher_contains_window(hovered_window);
+      continue;
+    }
+
     if(event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE &&
-       search_window_visible_ &&
+       (search_window_visible_ || note_switcher_window_visible_) &&
        !(terminal_visible_ && terminal_.hasFocus()))
     {
+      request_close_search_ = search_window_visible_;
+      request_close_note_switcher_ = note_switcher_window_visible_;
+      continue;
+    }
+
+    if(event.type == SDL_KEYDOWN &&
+       event.key.repeat == 0 &&
+       (event.key.keysym.mod & KMOD_CTRL) != 0 &&
+       (event.key.keysym.mod & KMOD_SHIFT) == 0 &&
+       event.key.keysym.sym == SDLK_e &&
+       !(terminal_visible_ && terminal_.hasFocus()))
+    {
+      request_open_note_switcher_ = true;
       request_close_search_ = true;
       continue;
+    }
+
+    // The switcher's input remains focused while the result highlight moves, so
+    // consume navigation keys before ImGui turns them into text-cursor motion.
+    if(note_switcher_window_visible_ && note_switcher_has_keyboard_focus() &&
+       !(terminal_visible_ && terminal_.hasFocus()) &&
+       event.type == SDL_KEYDOWN)
+    {
+      if(event.key.keysym.sym == SDLK_UP)
+      {
+        --note_switcher_navigation_delta_;
+        continue;
+      }
+      if(event.key.keysym.sym == SDLK_DOWN)
+      {
+        ++note_switcher_navigation_delta_;
+        continue;
+      }
+      if(event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER)
+      {
+        request_note_switcher_activate_ = true;
+        continue;
+      }
     }
 
     // While editing a note, swallow editor control shortcuts before ImGui sees them
@@ -5073,6 +5148,26 @@ void App::frame_ui()
     SearchScope last_scope = SearchScope::CurrentPageNotes;
   };
   static SearchDialogState search_dialog;
+  struct NoteSwitcherResult
+  {
+    std::string note_id;
+    int folder_idx = -1;
+    int note_idx = -1;
+    std::string note_title;
+    std::string folder_name;
+    std::string note_path;
+    std::string heading_path;
+  };
+  struct NoteSwitcherState
+  {
+    bool visible = false;
+    bool focus_input = false;
+    bool just_opened = false;
+    char query[256] = {};
+    std::vector<NoteSwitcherResult> results;
+    std::string last_query;
+  };
+  static NoteSwitcherState note_switcher;
   static std::string deferred_sidebar_snapshot_before;
 
   if(reset_sidebar_state_)
@@ -5127,6 +5222,13 @@ void App::frame_ui()
     drag_hover_folder_idx = -1;
     sidebar_flashes.clear();
     search_dialog = {};
+    note_switcher = {};
+    note_switcher_selected_idx_ = -1;
+    note_switcher_navigation_delta_ = 0;
+    request_open_note_switcher_ = false;
+    request_note_switcher_activate_ = false;
+    note_switcher_window_visible_ = false;
+    request_close_note_switcher_ = false;
     deferred_sidebar_snapshot_before.clear();
     open_restore_bak_popup = false;
     bak_candidates.clear();
@@ -5485,6 +5587,292 @@ void App::frame_ui()
     if(ImGui::Button("Close")) search_dialog.visible = false;
     ImGui::End();
     search_window_visible_ = search_dialog.visible;
+  };
+  auto navigate_to_note_switcher_result = [&](const NoteSwitcherResult &result) {
+    int folder_idx = result.folder_idx;
+    int note_idx = result.note_idx;
+    if(!result.note_id.empty())
+    {
+      folder_idx = -1;
+      note_idx = -1;
+      for(int candidate_folder = 0; candidate_folder < (int)folders_.size(); ++candidate_folder)
+      {
+        const auto &notes = folders_[(size_t)candidate_folder].notes;
+        for(int candidate_note = 0; candidate_note < (int)notes.size(); ++candidate_note)
+        {
+          if(notes[(size_t)candidate_note].id != result.note_id) continue;
+          folder_idx = candidate_folder;
+          note_idx = candidate_note;
+          break;
+        }
+        if(folder_idx >= 0) break;
+      }
+    }
+    if(folder_idx < 0 || folder_idx >= (int)folders_.size()) return;
+    FolderMeta &folder = folders_[(size_t)folder_idx];
+    if(note_idx < 0 || note_idx >= (int)folder.notes.size()) return;
+
+    folder.notes[(size_t)note_idx].hidden = false;
+    if(!result.heading_path.empty()) request_preview_heading(result.note_path, result.heading_path);
+    set_active_note(folder_idx, note_idx);
+    selected_note_indices.clear();
+    selected_note_indices.insert(note_idx);
+    selected_stroke_indices.clear();
+    pending_focus_note_idx = note_idx;
+    force_open_folder_idx = folder_idx;
+    editing_mode_ = false;
+    request_exit_edit_mode_ = false;
+    request_cancel_draw_tools_ = true;
+    sidebar_last_selected_was_folder = false;
+  };
+  auto refresh_note_switcher_results = [&]() {
+    const int previous_selected_idx = note_switcher_selected_idx_;
+    std::string selected_note_id;
+    std::string selected_heading_path;
+    if(previous_selected_idx >= 0 &&
+       previous_selected_idx < static_cast<int>(note_switcher.results.size()))
+    {
+      const NoteSwitcherResult &selected =
+          note_switcher.results[static_cast<std::size_t>(previous_selected_idx)];
+      selected_note_id = selected.note_id;
+      selected_heading_path = selected.heading_path;
+    }
+
+    note_switcher.results.clear();
+    static constexpr std::size_t kMaxResults = 400U;
+    bool results_full = false;
+    const auto append_result = [&](NoteSwitcherResult result) {
+      if(note_switcher.results.size() >= kMaxResults)
+      {
+        results_full = true;
+        return;
+      }
+      note_switcher.results.push_back(std::move(result));
+    };
+    const std::string query = std::string(StringUtils::trim(note_switcher.query));
+    const std::string query_lower = to_lower_ascii(query);
+    const size_t dot = query.find('.');
+    const bool heading_query = dot != std::string::npos && dot > 0;
+    bool malformed_heading_query = false;
+    std::vector<std::string> heading_query_parts;
+    if(heading_query)
+    {
+      size_t start = dot + 1;
+      while(start < query.size())
+      {
+        const size_t end = query.find('.', start);
+        const size_t length = (end == std::string::npos) ? query.size() - start : end - start;
+        if(length == 0)
+        {
+          malformed_heading_query = true;
+          heading_query_parts.clear();
+          break;
+        }
+        heading_query_parts.push_back(to_lower_ascii(query.substr(start, length)));
+        if(end == std::string::npos) break;
+        start = end + 1;
+      }
+    }
+    const bool valid_heading_query = heading_query && !malformed_heading_query;
+    const std::string note_query = heading_query ? query.substr(0, dot) : query;
+    const std::string note_query_lower = to_lower_ascii(note_query);
+
+    auto append_heading_results = [&](auto &&self,
+                                      const std::vector<MdSection> &sections,
+                                      const std::vector<std::string> &parent_path,
+                                      const NoteMeta &note,
+                                      int folder_idx,
+                                      int note_idx,
+                                      const FolderMeta &folder) -> void {
+      for(const MdSection &section : sections)
+      {
+        if(results_full) return;
+        std::vector<std::string> path = parent_path;
+        path.push_back(section.title);
+        bool matches = path.size() >= heading_query_parts.size();
+        for(std::size_t part = 0; matches && part < heading_query_parts.size(); ++part)
+          matches = to_lower_ascii(path[part]).find(heading_query_parts[part]) != std::string::npos;
+        if(matches)
+        {
+          std::string display_path = note.title;
+          for(const std::string &part : path) display_path += "." + part;
+          append_result(
+              {note.id, folder_idx, note_idx, note.title, folder.name, note.path, display_path});
+        }
+        self(self, section.kids, path, note, folder_idx, note_idx, folder);
+        if(results_full) return;
+      }
+    };
+
+    for(int folder_idx = 0; folder_idx < (int)folders_.size() && !results_full; ++folder_idx)
+    {
+      const FolderMeta &folder = folders_[(size_t)folder_idx];
+      for(int note_idx = 0; note_idx < (int)folder.notes.size() && !results_full; ++note_idx)
+      {
+        const NoteMeta &note = folder.notes[(size_t)note_idx];
+        const std::string note_title_lower = to_lower_ascii(note.title);
+        const bool note_matches = query_lower.empty() ||
+                                  note_title_lower.find(note_query_lower) != std::string::npos;
+        if(!valid_heading_query)
+        {
+          if(note_matches)
+            append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}});
+          continue;
+        }
+        if(!note_matches) continue;
+
+        const std::size_t result_count_before_headings = note_switcher.results.size();
+        const std::string content = (note.path == state_file_path_)
+                                        ? markdown_text_
+                                        : read_text_file(note.path);
+        const MdSection sections = parse_sections(content);
+        append_heading_results(append_heading_results, sections.kids, {}, note, folder_idx, note_idx, folder);
+        // A dotted note title remains searchable when it is not also a heading path.
+        if(note_switcher.results.size() == result_count_before_headings &&
+           note_title_lower.find(query_lower) != std::string::npos)
+          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}});
+      }
+    }
+
+    if(note_switcher.results.empty())
+    {
+      note_switcher_selected_idx_ = -1;
+      return;
+    }
+    note_switcher_selected_idx_ = clamp_to_range(
+        previous_selected_idx, 0, static_cast<int>(note_switcher.results.size()) - 1);
+    if(!selected_note_id.empty())
+    {
+      for(std::size_t i = 0; i < note_switcher.results.size(); ++i)
+      {
+        if(note_switcher.results[i].note_id == selected_note_id &&
+           note_switcher.results[i].heading_path == selected_heading_path)
+        {
+          note_switcher_selected_idx_ = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+  };
+  auto open_note_switcher = [&]() {
+    if(!request_open_note_switcher_) return;
+    note_switcher.visible = true;
+    note_switcher.focus_input = true;
+    note_switcher.just_opened = true;
+    note_switcher.query[0] = '\0';
+    note_switcher.last_query.clear();
+    note_switcher.results.clear();
+    note_switcher_selected_idx_ = -1;
+    note_switcher_navigation_delta_ = 0;
+    request_note_switcher_activate_ = false;
+    search_dialog.visible = false;
+    search_window_visible_ = false;
+    request_open_note_switcher_ = false;
+  };
+  auto render_note_switcher = [&]() {
+    open_note_switcher();
+    if(request_close_note_switcher_)
+    {
+      note_switcher.visible = false;
+      request_close_note_switcher_ = false;
+      request_note_switcher_activate_ = false;
+      note_switcher_navigation_delta_ = 0;
+    }
+    note_switcher_window_visible_ = note_switcher.visible;
+    if(!note_switcher.visible) return;
+
+    const bool just_opened = note_switcher.just_opened;
+    const ImGuiCond placement_cond = just_opened ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 460.0f), placement_cond);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond,
+                            ImVec2(0.5f, 0.5f));
+    if(just_opened) ImGui::SetNextWindowFocus();
+    if(!ImGui::Begin("Quick Note Switcher", &note_switcher.visible,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoSavedSettings))
+    {
+      note_switcher.just_opened = false;
+      ImGui::End();
+      return;
+    }
+    note_switcher.just_opened = false;
+
+    if(note_switcher.focus_input)
+    {
+      ImGui::SetKeyboardFocusHere();
+      note_switcher.focus_input = false;
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    const bool query_changed = ImGui::InputText(
+        "Note name", note_switcher.query, sizeof(note_switcher.query),
+        ImGuiInputTextFlags_AutoSelectAll);
+    const std::string current_query(note_switcher.query);
+    if(query_changed || current_query != note_switcher.last_query || just_opened)
+    {
+      refresh_note_switcher_results();
+      note_switcher.last_query = current_query;
+    }
+
+    bool note_switcher_selection_moved = false;
+    if(!note_switcher.results.empty() && note_switcher_navigation_delta_ != 0)
+    {
+      const int previous_selected_idx = note_switcher_selected_idx_;
+      note_switcher_selected_idx_ = clamp_to_range(
+          note_switcher_selected_idx_ + note_switcher_navigation_delta_, 0,
+          static_cast<int>(note_switcher.results.size()) - 1);
+      note_switcher_selection_moved = note_switcher_selected_idx_ != previous_selected_idx;
+    }
+    note_switcher_navigation_delta_ = 0;
+
+    if(request_note_switcher_activate_)
+    {
+      request_note_switcher_activate_ = false;
+      if(note_switcher_selected_idx_ >= 0 &&
+         note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
+      {
+        navigate_to_note_switcher_result(
+            note_switcher.results[static_cast<std::size_t>(note_switcher_selected_idx_)]);
+        note_switcher.visible = false;
+      }
+    }
+
+    ImGui::TextDisabled("%zu result%s", note_switcher.results.size(),
+                        note_switcher.results.size() == 1 ? "" : "s");
+    ImGui::Separator();
+    if(ImGui::BeginChild("##note_switcher_results", ImVec2(0, 340.0f), true))
+    {
+      if(note_switcher.results.empty())
+      {
+        ImGui::TextDisabled("No matching results.");
+      }
+      else
+      {
+        for(size_t i = 0; i < note_switcher.results.size(); ++i)
+        {
+          const NoteSwitcherResult &result = note_switcher.results[i];
+          const std::string display_name = result.heading_path.empty() ? result.note_title : result.heading_path;
+          const std::string label = display_name + "  [" + result.folder_name + "]##note_switcher_" +
+                                    std::to_string(i);
+          const bool selected = static_cast<int>(i) == note_switcher_selected_idx_;
+          if(ImGui::Selectable(label.c_str(), selected))
+          {
+            note_switcher_selected_idx_ = static_cast<int>(i);
+            navigate_to_note_switcher_result(result);
+            note_switcher.visible = false;
+          }
+          if(selected)
+          {
+            ImGui::SetItemDefaultFocus();
+            if(note_switcher_selection_moved) ImGui::SetScrollHereY(0.5f);
+          }
+          if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s", result.note_path.c_str());
+        }
+      }
+      ImGui::EndChild();
+    }
+    if(ImGui::Button("Close")) note_switcher.visible = false;
+    ImGui::End();
+    note_switcher_window_visible_ = note_switcher.visible;
   };
   auto render_terminal = [&]() {
     const bool terminal_opened_this_frame = request_open_terminal_ && !terminal_visible_;
@@ -10174,6 +10562,7 @@ __CURSOR__)MD",
       if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     }
     render_search_dialog();
+    render_note_switcher();
     render_debug_history_window();
     render_terminal();
     if(git_disabled_for_frame) ImGui::EndDisabled();
@@ -10208,6 +10597,7 @@ __CURSOR__)MD",
       deferred_sidebar_snapshot_before.clear();
     }
     render_search_dialog();
+    render_note_switcher();
     render_debug_history_window();
     render_terminal();
     if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
@@ -10764,6 +11154,7 @@ __CURSOR__)MD",
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
   }
   render_search_dialog();
+  render_note_switcher();
   render_debug_history_window();
   render_terminal();
   if(git_disabled_for_frame) ImGui::EndDisabled();

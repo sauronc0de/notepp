@@ -232,13 +232,19 @@ private:
 
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
+  bool request_open_note_switcher_ = false;
   bool request_open_terminal_ = false;
 #if USE_PORTABLE_PATHS
   bool request_open_project_ = false;
 #endif
   bool reset_sidebar_state_ = false;
   bool request_close_search_ = false;
+  bool request_close_note_switcher_ = false;
+  bool request_note_switcher_activate_ = false;
+  int note_switcher_navigation_delta_ = 0;
+  int note_switcher_selected_idx_ = -1;
   bool search_window_visible_ = false;
+  bool note_switcher_window_visible_ = false;
   bool search_request_window_focus_ = false;
   bool layout_locked_ = false;
   bool detached_note_windows_enabled_ = false;

@@ -505,6 +505,14 @@ bool g_rendering_hover_preview = false;
 bool g_force_open_preview_headers = false;
 int g_hover_preview_drawn_frame = -1;
 
+struct PreviewHeadingRequest
+{
+  std::string document_key;
+  std::string heading_path;
+};
+
+std::optional<PreviewHeadingRequest> g_preview_heading_request;
+
 void open_table_cell_editor(
     const std::string &document_key,
     int table_id,
@@ -1914,6 +1922,19 @@ void set_preview_document_path(std::string_view path)
   MarkdownWidgets::set_widget_document_path(std::filesystem::path(path));
 }
 
+void request_preview_heading(std::string_view document_path, std::string_view heading_path)
+{
+  if(document_path.empty() || heading_path.empty())
+  {
+    g_preview_heading_request.reset();
+    return;
+  }
+
+  g_preview_heading_request = PreviewHeadingRequest{
+      portable_document_key(document_path),
+      std::string(heading_path)};
+}
+
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to)
 {
@@ -1979,6 +2000,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   {
     int level = 0;
     bool open = false;
+    std::string title;
     // True when no real ImGui::TreeNode was pushed for this header
     // (used in the hover preview, which renders headings as non-collapsible
     // text). Prevents a spurious ImGui::TreePop on cleanup.
@@ -1986,6 +2008,50 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   };
 
   std::vector<HeaderUi> header_stack;
+
+  const std::optional<PreviewHeadingRequest> heading_request = [&]() {
+    if(!g_preview_heading_request) return std::optional<PreviewHeadingRequest>{};
+    if(g_preview_heading_request->document_key != current_document_key())
+    {
+      g_preview_heading_request.reset();
+      return std::optional<PreviewHeadingRequest>{};
+    }
+    return g_preview_heading_request;
+  }();
+  auto heading_path_contains = [](std::string_view target, std::string_view path) {
+    if(target == path) return true;
+    if(path.empty() || target.size() <= path.size()) return false;
+    size_t pos = target.find(path);
+    while(pos != std::string_view::npos)
+    {
+      const bool starts_at_boundary = pos == 0 || target[pos - 1] == '.';
+      const size_t end = pos + path.size();
+      const bool ends_at_boundary = end == target.size() || target[end] == '.';
+      if(starts_at_boundary && ends_at_boundary) return true;
+      pos = target.find(path, pos + 1);
+    }
+    return false;
+  };
+
+  auto heading_path_is_target = [](std::string_view target, std::string_view path) {
+    if(target == path) return true;
+    if(target.size() <= path.size()) return false;
+    const size_t suffix_start = target.size() - path.size();
+    return target.compare(suffix_start, path.size(), path) == 0 &&
+           target[suffix_start - 1] == '.';
+  };
+
+  auto current_heading_path = [&](std::string_view title) {
+    std::string path;
+    for(const HeaderUi &header : header_stack)
+    {
+      if(!path.empty()) path.push_back('.');
+      path += header.title;
+    }
+    if(!path.empty()) path.push_back('.');
+    path.append(title.data(), title.size());
+    return path;
+  };
 
   auto flush_chunk = [&]() {
     if(normal_chunk.empty()) return;
@@ -2028,7 +2094,12 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(header_stack.back().open && !header_stack.back().skip_pop) ImGui::TreePop();
         header_stack.pop_back();
       }
-      if(!all_headers_open())
+      const std::string path = current_heading_path(heading_title);
+      const bool is_requested_heading = heading_request &&
+                                        heading_path_is_target(heading_request->heading_path, path);
+      const bool is_requested_ancestor = heading_request && !is_requested_heading &&
+                                         heading_path_contains(heading_request->heading_path, path);
+      if(!all_headers_open() && !is_requested_heading && !is_requested_ancestor)
       {
         pos = has_newline ? line_end + 1 : line_end;
         continue;
@@ -2043,23 +2114,32 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         // onto header_stack so the rest of the bookkeeping (and the cleanup
         // loop at the end) keeps working without a real TreeNode.
         ImGui::Text("%s", std::string(heading_title).c_str());
-        header_stack.push_back(HeaderUi{heading_level, true, true /* skip_pop */});
+        header_stack.push_back(HeaderUi{
+            heading_level, true, std::string(heading_title), true /* skip_pop */});
         pos = has_newline ? line_end + 1 : line_end;
         continue;
       }
-      if(has_saved_open)
+      if(is_requested_ancestor)
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      else if(has_saved_open)
         ImGui::SetNextItemOpen(saved_open, ImGuiCond_Always);
+      ImGuiTreeNodeFlags heading_flags = ImGuiTreeNodeFlags_SpanAvailWidth;
+      if(is_requested_heading) heading_flags |= ImGuiTreeNodeFlags_Selected;
       const bool open = ImGui::TreeNodeEx(
           reinterpret_cast<void *>(static_cast<intptr_t>(static_cast<int>(line_start) + 0x10000)),
-          ImGuiTreeNodeFlags_SpanAvailWidth,
+          heading_flags,
           "%s",
           std::string(heading_title).c_str());
-      if(!has_saved_open || saved_open != open)
+      if(is_requested_heading)
+      {
+        ImGui::SetScrollHereY(0.5f);
+      }
+      if(!is_requested_ancestor && (!has_saved_open || saved_open != open))
       {
         sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
         result.preview_state_changed = true;
       }
-      header_stack.push_back(HeaderUi{heading_level, open});
+      header_stack.push_back(HeaderUi{heading_level, open, std::string(heading_title)});
       pos = has_newline ? line_end + 1 : line_end;
       continue;
     }
@@ -2310,6 +2390,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
 
   result.markdown_changed = result.markdown_changed || checkbox_changed || !table_replacements.empty();
   if(result.preview_state_changed) save_preview_state_if_dirty();
+  if(heading_request) g_preview_heading_request.reset();
   render_link_hover_preview_popup();
 
   const auto img_ctx = MarkdownView::render_image_context_menu(markdown);
