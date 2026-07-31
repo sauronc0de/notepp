@@ -31,9 +31,11 @@ add_compile_options(
 add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wall>)
 add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wextra>)
 add_compile_options($<$<COMPILE_LANGUAGE:C>:-Werror>)
+add_compile_options($<$<COMPILE_LANGUAGE:C>:-Wno-empty-body>)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wextra>)
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-empty-body>)
 
 # ── Project options ───────────────────────────────────────────────────────
 option(ENABLE_LOG        "Enable logging"                 OFF)
