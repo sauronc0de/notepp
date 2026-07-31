@@ -59,9 +59,23 @@ void test_validation()
   bad_name["profiles"][0]["name"] = 4;
   Json bad_width = valid_profile;
   bad_width["profiles"][0]["window_w"] = 0;
+  const auto decoded_legacy = decode_document(valid_profile);
+  expect(decoded_legacy.has_value() &&
+             !decoded_legacy->profiles[0].note_layouts.at("n").always_on_top,
+         "legacy note layouts default always-on-top to false");
+  Json pinned_profile = valid_profile;
+  pinned_profile["profiles"][0]["note_layouts"][0]["always_on_top"] = true;
+  const auto decoded_pinned = decode_document(pinned_profile);
+  expect(decoded_pinned.has_value() &&
+             decoded_pinned->profiles[0].note_layouts.at("n").always_on_top,
+         "always-on-top layout state decodes");
+
   Json bad_hidden = valid_profile;
   bad_hidden["profiles"][0]["note_layouts"][0]["hidden"] = "false";
-  for(const Json &malformed : std::vector<Json>{bad_active, bad_name, bad_width, bad_hidden})
+  Json bad_always_on_top = valid_profile;
+  bad_always_on_top["profiles"][0]["note_layouts"][0]["always_on_top"] = "false";
+  for(const Json &malformed :
+      std::vector<Json>{bad_active, bad_name, bad_width, bad_hidden, bad_always_on_top})
     expect(validate_document(malformed, true) == DocumentState::malformed,
            "malformed known layout profile fields make the document read-only");
 }
@@ -93,6 +107,7 @@ void test_structured_decode_ignores_shadow_keys_in_extensions()
                                                           {"h", 300},
                                                           {"dock_id", 7},
                                                           {"hidden", true},
+                                                          {"always_on_top", true},
                                                           {"has_layout", true}}})}}})}};
 
   const Json merged = notepp::layout_profile_state::merge_unknown_fields(document, document);
@@ -117,7 +132,7 @@ void test_structured_decode_ignores_shadow_keys_in_extensions()
   expect(layout != decoded->profiles[0].note_layouts.end() &&
              layout->second.x == 30 && layout->second.width == 600 &&
              layout->second.dock_id == 7 && layout->second.hidden &&
-             layout->second.has_layout,
+             layout->second.always_on_top && layout->second.has_layout,
          "extension note layouts cannot shadow canonical layout state");
 }
 

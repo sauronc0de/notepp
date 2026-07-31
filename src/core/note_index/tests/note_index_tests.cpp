@@ -59,8 +59,8 @@ void test_schema_migration_never_downgrades_v2()
          "an invalid schema-v2 path cannot enable legacy fallback on the next launch");
   expect(notepp::note_index::schema_after_path_migration(1, true) == 1,
          "a partially migrated legacy index remains legacy until every path resolves");
-  expect(notepp::note_index::schema_after_path_migration(1, false) == 2,
-         "a complete legacy migration upgrades to portable schema v2");
+  expect(notepp::note_index::schema_after_path_migration(1, false) == 3,
+         "a complete legacy migration upgrades to workspace-separated schema v3");
 }
 
 void test_schema_reader_prefers_established_key_and_accepts_compatibility_key()
@@ -88,6 +88,9 @@ void test_document_validation_and_fingerprint()
              notepp::note_index::DocumentState::supported,
          "current indexes are writable");
   expect(notepp::note_index::validate_document(Json{{"schemaVersion", 3}, {"folders", Json::array()}}, true) ==
+             notepp::note_index::DocumentState::supported,
+         "workspace-separated indexes are writable");
+  expect(notepp::note_index::validate_document(Json{{"schemaVersion", 4}, {"folders", Json::array()}}, true) ==
              notepp::note_index::DocumentState::future_schema,
          "future indexes are read-only");
   expect(notepp::note_index::content_fingerprint("same") ==

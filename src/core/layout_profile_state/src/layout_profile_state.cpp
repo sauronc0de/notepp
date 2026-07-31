@@ -120,7 +120,7 @@ DocumentState validate_document(const nlohmann::json &document, bool existed) no
             return DocumentState::malformed;
         if(!optional_field(layout, "dock_id", nonnegative_int))
           return DocumentState::malformed;
-        for(const char *key : {"hidden", "has_layout"})
+        for(const char *key : {"hidden", "always_on_top", "has_layout"})
           if(!optional_field(layout, key, [](const Json &value) { return value.is_boolean(); }))
             return DocumentState::malformed;
       }
@@ -179,6 +179,7 @@ std::optional<Document> decode_document(const nlohmann::json &document) noexcept
           layout.height = layout_value.value("h", 260);
           layout.dock_id = layout_value.value("dock_id", 0);
           layout.hidden = layout_value.value("hidden", false);
+          layout.always_on_top = layout_value.value("always_on_top", false);
           layout.has_layout = layout_value.value("has_layout", false);
           profile.note_layouts.emplace(
               layout_value.at("note_id").get<std::string>(), layout);

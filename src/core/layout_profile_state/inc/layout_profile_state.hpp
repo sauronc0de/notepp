@@ -29,6 +29,7 @@ struct NoteLayoutRecord
   int height = 260;
   int dock_id = 0;
   bool hidden = false;
+  bool always_on_top = false;
   bool has_layout = false;
 };
 

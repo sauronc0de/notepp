@@ -81,6 +81,9 @@ void test_create_or_open_project_creates_layout()
   expect_true(fs::exists(info.notes), "notes dir created");
   expect_true(fs::exists(info.assets), "assets dir created");
   expect_true(fs::exists(info.config), "config dir created");
+  expect_true(fs::exists(info.workspace), "local workspace dir created");
+  expect_true(info.workspace == npp::get_appdata_dir() / "projects" / info.projectId,
+              "local workspace is keyed by the stable project id");
   expect_true(fs::exists(info.projectFile), "project file created");
   expect_true(!info.projectId.empty(), "project has a stable id");
   expect_eq_int(info.schemaVersion, 2, "project manifest uses current schema");
@@ -92,6 +95,7 @@ void test_create_or_open_project_creates_layout()
   const auto mtime2 = fs::last_write_time(info.projectFile);
   expect_eq_int(static_cast<long long>(mtime1 == mtime2), 1, "reopen does not rewrite project file");
   expect_eq_str(reopened.projectId, projectId, "reopen retains stable project id");
+  expect_true(reopened.workspace == info.workspace, "reopen uses the same local workspace");
 }
 
 void test_existing_manifest_is_upgraded_compatibly()
@@ -121,6 +125,24 @@ void test_existing_manifest_is_upgraded_compatibly()
 
   const npp::ProjectInfo second = npp::create_or_open_project(root);
   expect_eq_str(second.projectId, first.projectId, "upgraded manifest id remains stable");
+}
+
+void test_invalid_project_id_cannot_escape_workspace_root()
+{
+  ScopedXdgConfig env;
+  const fs::path root = env.base() / "unsafe-project-id";
+  fs::create_directories(root);
+  {
+    std::ofstream manifest(root / "notepp.project.json");
+    manifest << R"({"projectId":"../outside"})";
+  }
+
+  const npp::ProjectInfo project = npp::create_or_open_project(root);
+  expect_true(project.projectId != "../outside", "invalid project id is replaced");
+  expect_true(project.workspace.parent_path() == npp::get_appdata_dir() / "projects",
+              "workspace remains beneath the AppData projects directory");
+  expect_true(project.workspace.filename() == project.projectId,
+              "workspace uses the validated project id as one path component");
 }
 
 void test_select_initial_root_does_not_mutate_project()
@@ -285,6 +307,7 @@ int main()
 {
   test_create_or_open_project_creates_layout();
   test_existing_manifest_is_upgraded_compatibly();
+  test_invalid_project_id_cannot_escape_workspace_root();
   test_select_initial_root_does_not_mutate_project();
   test_save_and_load_last_project_path();
   test_project_open_preserves_git_sync_setting();

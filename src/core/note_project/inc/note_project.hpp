@@ -13,6 +13,7 @@ struct ProjectInfo
   std::filesystem::path notes;
   std::filesystem::path assets;
   std::filesystem::path config;
+  std::filesystem::path workspace;
   std::filesystem::path projectFile;
   std::string projectId;
   int schemaVersion = 0;

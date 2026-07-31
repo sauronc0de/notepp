@@ -4,8 +4,10 @@
 #include "atomic_file.hpp"
 
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <random>
+#include <string_view>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -25,6 +27,21 @@ namespace notepp::project
 namespace
 {
 constexpr int kProjectSchemaVersion = 2;
+
+bool valid_project_id(std::string_view value)
+{
+  if(value.size() != 36U) return false;
+  for(std::size_t index = 0; index < value.size(); ++index)
+  {
+    if(index == 8U || index == 13U || index == 18U || index == 23U)
+    {
+      if(value[index] != '-') return false;
+    }
+    else if(!std::isxdigit(static_cast<unsigned char>(value[index])))
+      return false;
+  }
+  return true;
+}
 
 std::string generate_project_id()
 {
@@ -78,8 +95,10 @@ void load_or_create_manifest(ProjectInfo &project, bool layout_ok)
 
   if(manifest.contains("projectId") && manifest["projectId"].is_string())
     project.projectId = manifest["projectId"].get<std::string>();
-  if(project.projectId.empty())
+  if(!valid_project_id(project.projectId))
   {
+    if(!project.projectId.empty())
+      LOG_WARNING("Replacing invalid project ID in '", project.projectFile.generic_string(), "'");
     project.projectId = generate_project_id();
     manifest["projectId"] = project.projectId;
     should_write = true;
@@ -247,6 +266,19 @@ ProjectInfo create_or_open_project(const fs::path &root)
   }
 
   load_or_create_manifest(project, layoutOk);
+  if(project.projectId.empty())
+  {
+    LOG_WARNING("Using an ephemeral workspace identity because the project manifest could not be loaded");
+    project.projectId = generate_project_id();
+  }
+  project.workspace = get_appdata_dir() / "projects" / project.projectId;
+  std::error_code workspace_error;
+  fs::create_directories(project.workspace, workspace_error);
+  if(workspace_error)
+  {
+    LOG_ERROR("Cannot create local workspace directory '",
+              project.workspace.generic_string(), "': ", workspace_error.message());
+  }
 
   save_last_project_path(root);
 

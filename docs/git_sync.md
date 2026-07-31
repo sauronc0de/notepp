@@ -18,7 +18,7 @@ When enabled:
 
 - Opening Notepp attempts a bounded `git pull --ff-only` before project state is loaded. The window may appear only after that bounded command completes or times out.
 - Switching projects saves the old project, attempts to commit and push it, then attempts a fast-forward pull of the new project before loading it.
-- Closing Notepp atomically saves all project files, including layout state, then runs commit/push on its serialized Git worker. The window remains responsive in its closing state until the bounded operation finishes.
+- Closing Notepp saves project metadata and notes, then runs commit/push on its serialized Git worker. Workspace state (profiles, window and ImGui layout, Markdown preview state, and clipboard) is saved under device-local AppData and is never staged automatically. The window remains responsive in its closing state until the bounded operation finishes.
 - Network, authentication, missing-Git, repository, upstream, dirty-tree, timeout and divergence failures are reported but never prevent local editing or exit.
 
 A failed push leaves the local commit intact for a later **Sync now** retry. A failed project save skips Git so incomplete canonical state is never committed.

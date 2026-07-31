@@ -27,6 +27,7 @@ struct AppConfig
   std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
+  std::filesystem::path workspacePath;
   bool hasInitialGitStatus = false;
   notepp::git_sync::Status initialGitStatus;
 };
@@ -172,6 +173,11 @@ private:
   void configure_frame_limiter(bool software_gl);
   void limit_frame_rate();
   bool save_note_clipboard();
+  bool save_workspace();
+  void load_workspace();
+  bool save_workspace_text(const std::filesystem::path &path, std::string_view content);
+  void configure_workspace_paths();
+  void migrate_legacy_workspace_files();
 #if USE_PORTABLE_PATHS
   bool switch_project(const std::filesystem::path &new_root);
 #endif
@@ -183,10 +189,14 @@ private:
   std::filesystem::path drawings_file_;
   std::filesystem::path g_clipboard_file;
   std::filesystem::path profiles_file_;
+  std::filesystem::path workspace_file_;
   std::string index_source_document_;
   std::string profiles_source_document_;
   bool index_writable_ = true;
   bool profiles_writable_ = true;
+  bool workspace_writable_ = true;
+  bool workspace_migration_complete_ = false;
+  bool legacy_workspace_migration_complete_ = true;
 
   SDL_Window *window_ = nullptr;
   void *gl_context_ = nullptr;
@@ -277,7 +287,7 @@ private:
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
   bool last_save_succeeded_ = false;
-  int index_schema_version_ = 2;
+  int index_schema_version_ = 3;
   bool index_paths_portable_ = true;
   NoteHistory::HistoryManager history_;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;

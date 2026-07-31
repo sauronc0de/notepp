@@ -9,7 +9,7 @@
 
 namespace notepp::note_index
 {
-constexpr int current_schema_version = 2;
+constexpr int current_schema_version = 3;
 
 enum class DocumentState
 {

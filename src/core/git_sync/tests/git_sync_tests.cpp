@@ -393,6 +393,7 @@ void test_real_repository_integration()
   fs::create_directories(project / "notes");
   fs::create_directories(project / "assets");
   fs::create_directories(project / "config");
+  std::ofstream(project / "config" / "notes_index.json") << "{}\n";
   std::ofstream(project / "notepp.project.json") << "{}\n";
   require_git(git({"add", "."}, project), "stage initial project");
   require_git(git({"commit", "-m", "initial"}, project), "commit initial project");
@@ -411,6 +412,7 @@ void test_real_repository_integration()
   std::ofstream(project / "notes" / "local.md") << "local note\n";
   std::ofstream(project / "notes" / "deleted.md.bak") << "undo backup\n";
   std::ofstream(project / "config" / "index.~npp-t-test.json") << "partial temporary\n";
+  std::ofstream(project / "config" / "layout_profiles.json") << "local workspace\n";
   const gs::OperationResult pushed = client.commit_and_push(project, "Notepp sync test");
   expect(pushed.success && pushed.status.state == gs::SyncState::clean,
          "local files are committed and pushed normally");
@@ -420,17 +422,19 @@ void test_real_repository_integration()
          "soft-delete backups are not committed");
   expect(git({"ls-files", "--error-unmatch", "config/index.~npp-t-test.json"}, project).exit_code != 0,
          "atomic temporary files are not committed");
+  expect(git({"ls-files", "--error-unmatch", "config/layout_profiles.json"}, project).exit_code != 0,
+         "workspace configuration is not committed");
 
   require_git(git({"clone", remote.string(), peer.string()}), "clone peer");
   require_git(git({"config", "user.name", "Notepp Tests"}, peer), "configure peer name");
   require_git(git({"config", "user.email", "notepp@example.test"}, peer), "configure peer email");
-  std::ofstream(peer / "remote.md") << "remote note\n";
+  std::ofstream(peer / "notes" / "remote.md") << "remote note\n";
   require_git(git({"add", "."}, peer), "stage peer change");
   require_git(git({"commit", "-m", "peer"}, peer), "commit peer change");
   require_git(git({"push"}, peer), "push peer change");
 
   const gs::OperationResult pulled = client.pull_on_open(project);
-  expect(pulled.success && pulled.changed_worktree && fs::exists(project / "remote.md"),
+  expect(pulled.success && pulled.changed_worktree && fs::exists(project / "notes" / "remote.md"),
          "open pull fast-forwards and reports changed worktree");
 
   fs::remove_all(base, cleanup_error);

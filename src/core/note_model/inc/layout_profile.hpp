@@ -17,6 +17,7 @@ struct NoteLayoutData
   float width = 520.0f;
   float height = 260.0f;
   bool hidden = false;
+  bool always_on_top = false;
   bool has_layout = false;
   ImGuiID dock_id = 0;
 };

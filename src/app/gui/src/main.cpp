@@ -18,6 +18,7 @@ int main(int, char **)
   std::filesystem::path projectRoot;
   std::filesystem::path dataPath;
   std::filesystem::path configPath;
+  std::filesystem::path workspacePath;
   const std::filesystem::path app_settings_path = notepp::project::get_config_file();
   notepp::app_settings::Store settings_store(app_settings_path);
   const auto settings = settings_store.load();
@@ -70,11 +71,14 @@ int main(int, char **)
   const auto project = notepp::project::create_or_open_project(projectRoot);
   dataPath = project.notes;
   configPath = project.config;
+  workspacePath = project.workspace;
 #else
   dataPath = DATA_PATH;
   projectRoot = std::filesystem::path(dataPath).parent_path();
   configPath = projectRoot / "config";
   std::filesystem::create_directories(configPath);
+  workspacePath = notepp::project::get_appdata_dir() / "projects" / "standalone";
+  std::filesystem::create_directories(workspacePath);
 #endif
 
   AppConfig config;
@@ -83,6 +87,7 @@ int main(int, char **)
   config.projectRoot = projectRoot;
   config.dataPath = dataPath;
   config.configPath = configPath;
+  config.workspacePath = workspacePath;
   config.hasInitialGitStatus = has_initial_git_status;
   config.initialGitStatus = std::move(initial_git_status);
 

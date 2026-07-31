@@ -406,8 +406,8 @@ int read_schema_version(const nlohmann::json &document,
 
 int schema_after_path_migration(int loaded_schema, bool migration_failed) noexcept
 {
-  if(loaded_schema >= 2 || migration_failed) return loaded_schema;
-  return 2;
+  if(migration_failed) return loaded_schema;
+  return std::max(loaded_schema, current_schema_version);
 }
 
 nlohmann::json merge_unknown_fields(const nlohmann::json &source,

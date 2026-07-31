@@ -384,15 +384,14 @@ process::Result push_upstream(const process::Runner &runner, const std::filesyst
 
 std::vector<std::string> project_pathspec()
 {
-  return {"notes", "assets", "config", "notepp.project.json",
+  return {"notes", "assets", ":(glob)config/notes_index.json", "notepp.project.json",
           ":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
           ":(exclude,glob)**/*.tmp"};
 }
 
 std::vector<std::string> status_pathspec()
 {
-  return {".", ":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
-          ":(exclude,glob)**/*.tmp"};
+  return project_pathspec();
 }
 
 bool synchronized(const Status &status)

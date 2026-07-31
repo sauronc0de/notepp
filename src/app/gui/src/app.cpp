@@ -1104,8 +1104,7 @@ void load_note_clipboard(const AppConfig &config)
   g_copied_note_content.clear();
   g_copied_notes_batch.clear();
 
-  const auto loaded = g_project_files.load(g_clipboard_file);
-  record_project_read(g_clipboard_file, loaded, true);
+  const auto loaded = atomic_file::read_text(g_clipboard_file);
   if(!loaded)
   {
     LOG_ERROR(loaded.message);
@@ -1120,10 +1119,9 @@ void load_note_clipboard(const AppConfig &config)
   const auto document_state = notepp::note_clipboard_state::validate_document(document, true);
   if(document_state != notepp::note_clipboard_state::DocumentState::supported)
   {
-    (void)record_project_save_error(
-        g_clipboard_file, document_state == notepp::note_clipboard_state::DocumentState::future_schema
-                              ? "note clipboard uses a newer unsupported schema"
-                              : "note clipboard is malformed");
+    LOG_ERROR(document_state == notepp::note_clipboard_state::DocumentState::future_schema
+                  ? "note clipboard uses a newer unsupported schema"
+                  : "note clipboard is malformed");
     return;
   }
 
@@ -1192,6 +1190,235 @@ void write_persistence_failure_report(const AppConfig &config)
   }
 }
 
+bool App::save_workspace_text(const std::filesystem::path &path, std::string_view content)
+{
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  if(error)
+  {
+    LOG_ERROR("Cannot create local workspace directory '", path.parent_path().generic_string(),
+              "': ", error.message());
+    return false;
+  }
+  const auto saved = atomic_file::save_text(path, content);
+  if(!saved)
+  {
+    LOG_ERROR("Cannot save local workspace file '", path.generic_string(), "': ", saved.message);
+    return false;
+  }
+  return true;
+}
+
+void App::configure_workspace_paths()
+{
+  std::error_code error;
+  std::filesystem::create_directories(config_.workspacePath, error);
+  if(error)
+    LOG_ERROR("Cannot create local workspace directory '",
+              config_.workspacePath.generic_string(), "': ", error.message());
+
+  default_state_file_ = config_.configPath / "note.md";
+  legacy_state_meta_file_ = config_.configPath / "current_note_path.txt";
+  index_file_ = config_.configPath / "notes_index.json";
+  drawings_file_ = config_.configPath / "drawings_state.txt";
+  imgui_ini_file_ = config_.workspacePath / "imgui_layout.ini";
+  profiles_file_ = config_.workspacePath / "layout_profiles.json";
+  workspace_file_ = config_.workspacePath / "workspace.json";
+  g_clipboard_file = notepp::project::get_appdata_dir() / "note_clipboard.json";
+  g_drawings_file = drawings_file_;
+  state_file_path_ = default_state_file_.string();
+  MarkdownSupport::set_preview_state_path(
+      config_.workspacePath / "markdown_preview_state.json");
+}
+
+void App::migrate_legacy_workspace_files()
+{
+  legacy_workspace_migration_complete_ = true;
+  const auto copy_if_missing = [](const std::filesystem::path &source,
+                                  const std::filesystem::path &destination) {
+    std::error_code destination_error;
+    if(std::filesystem::exists(destination, destination_error)) return true;
+    if(destination_error) return false;
+
+    const auto legacy = atomic_file::read_text(source);
+    if(!legacy) return false;
+    if(!legacy.snapshot.existed) return true;
+
+    std::error_code directory_error;
+    std::filesystem::create_directories(destination.parent_path(), directory_error);
+    if(directory_error) return false;
+
+    const auto copied = atomic_file::save_text(destination, legacy.snapshot.content);
+    return static_cast<bool>(copied);
+  };
+  const auto migrate = [this, &copy_if_missing](const std::filesystem::path &source,
+                                                const std::filesystem::path &destination) {
+    if(copy_if_missing(source, destination)) return;
+    legacy_workspace_migration_complete_ = false;
+    LOG_ERROR("Cannot migrate local workspace file '", source.generic_string(), "' to '",
+              destination.generic_string(), "'");
+  };
+
+  migrate(config_.configPath / "layout_profiles.json", profiles_file_);
+  migrate(config_.configPath / "markdown_preview_state.json",
+          config_.workspacePath / "markdown_preview_state.json");
+  migrate(config_.configPath / "imgui_layout.ini", imgui_ini_file_);
+  migrate(config_.configPath / "note_clipboard.json", g_clipboard_file);
+}
+void App::load_workspace()
+{
+  workspace_writable_ = true;
+  workspace_migration_complete_ = false;
+  const auto loaded = atomic_file::read_text(workspace_file_);
+  if(!loaded)
+  {
+    workspace_writable_ = false;
+    LOG_ERROR("Cannot read local workspace file: ", loaded.message);
+    return;
+  }
+  if(!loaded.snapshot.existed) return;
+
+  const Json workspace = Json::parse(loaded.snapshot.content, nullptr, false);
+  const auto invalid_workspace = [this] {
+    workspace_writable_ = false;
+    LOG_ERROR("Local workspace file is malformed and will not be overwritten: ",
+              workspace_file_.generic_string());
+  };
+  if(!workspace.is_object())
+  {
+    invalid_workspace();
+    return;
+  }
+
+  const auto has_invalid_type = [&workspace](const char *key,
+                                             const auto predicate) {
+    const auto found = workspace.find(key);
+    return found != workspace.end() && !predicate(*found);
+  };
+  const auto schema_version = workspace.find("schemaVersion");
+  if(schema_version == workspace.end() || !schema_version->is_number_integer() ||
+     *schema_version != 1 ||
+     has_invalid_type("activeFolder", [](const Json &value) { return value.is_string(); }) ||
+     has_invalid_type("activeNoteId", [](const Json &value) { return value.is_string(); }) ||
+     has_invalid_type("folderView", [](const Json &value) { return value.is_boolean(); }) ||
+     has_invalid_type("layoutLocked", [](const Json &value) { return value.is_boolean(); }) ||
+     has_invalid_type("detachedNoteWindows", [](const Json &value) {
+       return value.is_boolean();
+     }) ||
+     has_invalid_type("dockersEnabled", [](const Json &value) { return value.is_boolean(); }) || has_invalid_type("folders", [](const Json &value) { return value.is_object(); }))
+  {
+    invalid_workspace();
+    return;
+  }
+
+  const auto folders_found = workspace.find("folders");
+  if(folders_found != workspace.end())
+  {
+    for(auto it = folders_found->begin(); it != folders_found->end(); ++it)
+    {
+      if(!it.value().is_object())
+      {
+        invalid_workspace();
+        return;
+      }
+      for(const char *key : {"layoutLocked", "detachedNoteWindows", "dockersEnabled",
+                             "drawingsVisible", "gridVisible"})
+      {
+        const auto value = it.value().find(key);
+        if(value != it.value().end() && !value->is_boolean())
+        {
+          invalid_workspace();
+          return;
+        }
+      }
+    }
+  }
+
+  const auto active_folder_found = workspace.find("activeFolder");
+  if(active_folder_found != workspace.end())
+  {
+    const std::string &active_folder = active_folder_found->get_ref<const std::string &>();
+    for(std::size_t index = 0; index < folders_.size(); ++index)
+      if(folders_[index].name == active_folder)
+      {
+        active_folder_idx_ = static_cast<int>(index);
+        break;
+      }
+  }
+  const auto active_note_found = workspace.find("activeNoteId");
+  if(active_note_found != workspace.end() && active_folder_idx_ >= 0 &&
+     active_folder_idx_ < static_cast<int>(folders_.size()))
+  {
+    const std::string &active_note = active_note_found->get_ref<const std::string &>();
+    for(std::size_t index = 0;
+        index < folders_[static_cast<std::size_t>(active_folder_idx_)].notes.size(); ++index)
+      if(folders_[static_cast<std::size_t>(active_folder_idx_)].notes[index].id == active_note)
+      {
+        active_note_idx_ = static_cast<int>(index);
+        break;
+      }
+  }
+  if(const auto found = workspace.find("folderView"); found != workspace.end())
+    folder_overview_mode_ = found->get<bool>();
+  if(const auto found = workspace.find("layoutLocked"); found != workspace.end())
+    layout_locked_ = found->get<bool>();
+  if(const auto found = workspace.find("detachedNoteWindows"); found != workspace.end())
+    detached_note_windows_enabled_ = found->get<bool>();
+  if(const auto found = workspace.find("dockersEnabled"); found != workspace.end())
+    dockers_enabled_ = found->get<bool>();
+
+  if(folders_found == workspace.end()) return;
+  for(FolderMeta &folder : folders_)
+  {
+    const auto found = folders_found->find(folder.name);
+    if(found == folders_found->end()) continue;
+    const Json &settings = *found;
+    if(const auto value = settings.find("layoutLocked"); value != settings.end())
+      folder.layout_locked = value->get<bool>();
+    if(const auto value = settings.find("detachedNoteWindows"); value != settings.end())
+      folder.detached_note_windows = value->get<bool>();
+    if(const auto value = settings.find("dockersEnabled"); value != settings.end())
+      folder.dockers_enabled = value->get<bool>();
+    if(const auto value = settings.find("drawingsVisible"); value != settings.end())
+      folder.drawings_visible = value->get<bool>();
+    if(const auto value = settings.find("gridVisible"); value != settings.end())
+      folder.grid_visible = value->get<bool>();
+  }
+}
+bool App::save_workspace()
+{
+  if(!workspace_writable_)
+  {
+    LOG_ERROR("Local workspace is read-only until its load error is resolved");
+    return false;
+  }
+  sync_active_folder_settings();
+  Json workspace = Json::object();
+  workspace["schemaVersion"] = 1;
+  if(active_folder_idx_ >= 0 && active_folder_idx_ < static_cast<int>(folders_.size()))
+  {
+    const FolderMeta &folder = folders_[static_cast<std::size_t>(active_folder_idx_)];
+    workspace["activeFolder"] = folder.name;
+    if(active_note_idx_ >= 0 && active_note_idx_ < static_cast<int>(folder.notes.size()))
+      workspace["activeNoteId"] = folder.notes[static_cast<std::size_t>(active_note_idx_)].id;
+  }
+  workspace["folderView"] = folder_overview_mode_;
+  workspace["layoutLocked"] = layout_locked_;
+  workspace["detachedNoteWindows"] = detached_note_windows_enabled_;
+  workspace["dockersEnabled"] = dockers_enabled_;
+  Json folders = Json::object();
+  for(const FolderMeta &folder : folders_)
+    folders[folder.name] = {{"layoutLocked", folder.layout_locked},
+                            {"detachedNoteWindows", folder.detached_note_windows},
+                            {"dockersEnabled", folder.dockers_enabled},
+                            {"drawingsVisible", folder.drawings_visible},
+                            {"gridVisible", folder.grid_visible}};
+  workspace["folders"] = std::move(folders);
+  std::string serialized = workspace.dump(2);
+  serialized.push_back('\n');
+  return save_workspace_text(workspace_file_, serialized);
+}
+
 bool App::save_note_clipboard()
 {
   if(atomic_file::shared_writes_suspended()) return false;
@@ -1228,7 +1455,7 @@ bool App::save_note_clipboard()
   const Json root = notepp::note_clipboard_state::make_document(persisted_items);
   std::string serialized = root.dump(2);
   serialized.push_back('\n');
-  const bool saved = save_project_text(g_clipboard_file, serialized);
+  const bool saved = save_workspace_text(g_clipboard_file, serialized);
   if(saved) g_clipboard_dirty = false;
   return saved;
 }
@@ -1272,33 +1499,8 @@ App::App(AppConfig config)
   MarkdownWidgets::reset_persistence_state();
   std::filesystem::create_directories(config_.dataPath);
   std::filesystem::create_directories(config_.configPath);
-
-  default_state_file_ =
-      config_.configPath / "note.md";
-
-  legacy_state_meta_file_ =
-      config_.configPath / "current_note_path.txt";
-
-  index_file_ =
-      config_.configPath / "notes_index.json";
-
-  imgui_ini_file_ =
-      config_.configPath / "imgui_layout.ini";
-
-  drawings_file_ =
-      config_.configPath / "drawings_state.txt";
-
-  g_clipboard_file =
-      config_.configPath / "note_clipboard.json";
-
-  profiles_file_ =
-      config_.configPath / "layout_profiles.json";
-
-  g_drawings_file = drawings_file_;
-
-  state_file_path_ = default_state_file_.string();
-
-  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
+  configure_workspace_paths();
+  migrate_legacy_workspace_files();
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
   MarkdownWidgets::set_terminal_command_handler([this](std::string_view command) {
@@ -1347,8 +1549,8 @@ bool App::save_imgui_settings()
   if(!ImGui::GetCurrentContext()) return true;
   std::size_t ini_size = 0;
   const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
-  return save_project_text(imgui_ini_file_,
-                           std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
+  return save_workspace_text(
+      imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
 }
 
 void App::begin_git_operation(bool manual_sync)
@@ -1362,7 +1564,9 @@ void App::begin_git_operation(bool manual_sync)
     record_git_status(disabled);
     return;
   }
-  if(manual_sync && (!save_state() || !save_imgui_settings()))
+  if(manual_sync && !save_imgui_settings())
+    LOG_ERROR("Cannot save local ImGui workspace state before Git Sync");
+  if(manual_sync && !save_state())
   {
     notepp::git_sync::Status failed;
     failed.state = notepp::git_sync::SyncState::conflict;
@@ -1519,10 +1723,10 @@ void App::reload_project_after_git_pull()
   if(state_dirty_ || layout_dirty_ || g_drawings_dirty || g_clipboard_dirty)
     (void)save_state();
   MarkdownWidgets::reset_persistence_state();
-  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
+  MarkdownSupport::set_preview_state_path(
+      config_.workspacePath / "markdown_preview_state.json");
   load_state();
-  const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
-  record_project_read(imgui_ini_file_, ini_snapshot, true);
+  const auto ini_snapshot = atomic_file::read_text(imgui_ini_file_);
   if(ini_snapshot && ini_snapshot.snapshot.existed)
     ImGui::LoadIniSettingsFromMemory(ini_snapshot.snapshot.content.data(),
                                      ini_snapshot.snapshot.content.size());
@@ -1621,16 +1825,9 @@ void App::load_switched_project(const std::filesystem::path &new_root)
   config_.projectRoot = project.root;
   config_.dataPath = project.notes;
   config_.configPath = project.config;
-  default_state_file_ = config_.configPath / "note.md";
-  legacy_state_meta_file_ = config_.configPath / "current_note_path.txt";
-  index_file_ = config_.configPath / "notes_index.json";
-  imgui_ini_file_ = config_.configPath / "imgui_layout.ini";
-  drawings_file_ = config_.configPath / "drawings_state.txt";
-  g_clipboard_file = config_.configPath / "note_clipboard.json";
-  profiles_file_ = config_.configPath / "layout_profiles.json";
-  g_drawings_file = drawings_file_;
-  state_file_path_ = default_state_file_.string();
-  MarkdownSupport::set_preview_state_path(config_.configPath / "markdown_preview_state.json");
+  config_.workspacePath = project.workspace;
+  configure_workspace_paths();
+  migrate_legacy_workspace_files();
 
   g_folder_drawings.clear();
   g_draw_undo.clear();
@@ -1647,8 +1844,7 @@ void App::load_switched_project(const std::filesystem::path &new_root)
   reset_sidebar_state_ = true;
   load_state();
 
-  const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
-  record_project_read(imgui_ini_file_, ini_snapshot, true);
+  const auto ini_snapshot = atomic_file::read_text(imgui_ini_file_);
   if(ini_snapshot && ini_snapshot.snapshot.existed)
     ImGui::LoadIniSettingsFromMemory(ini_snapshot.snapshot.content.data(),
                                      ini_snapshot.snapshot.content.size());
@@ -1657,11 +1853,13 @@ void App::load_switched_project(const std::filesystem::path &new_root)
 bool App::switch_project(const std::filesystem::path &new_root)
 {
   if(git_sync_in_progress_) return false;
-  if(!save_state() || !save_imgui_settings())
+  if(!save_state())
   {
     LOG_ERROR("Project switch cancelled because project files could not be saved");
     return false;
   }
+  if(!save_imgui_settings())
+    LOG_ERROR("Cannot save local ImGui workspace state before project switch");
   if(!git_sync_enabled_)
   {
     load_switched_project(new_root);
@@ -1741,9 +1939,8 @@ bool App::persist_before_close()
   if(!layout_profiles_.empty()) capture_to_active_profile();
 
   bool saved = save_state();
-  if(!save_imgui_settings()) saved = false;
+  if(!save_imgui_settings()) LOG_ERROR("Cannot save local ImGui workspace state");
   saved = saved && g_unresolved_persistence_errors.empty() &&
-          MarkdownSupport::last_persistence_error().empty() &&
           MarkdownWidgets::last_persistence_error().empty();
   last_save_succeeded_ = saved;
 
@@ -1780,8 +1977,7 @@ int App::run()
     init_sdl_gl();
     init_imgui();
     load_state();
-    const auto ini_snapshot = g_project_files.load(imgui_ini_file_);
-    record_project_read(imgui_ini_file_, ini_snapshot, true);
+    const auto ini_snapshot = atomic_file::read_text(imgui_ini_file_);
     if(!ini_snapshot)
     {
       LOG_ERROR(ini_snapshot.message);
@@ -2189,13 +2385,21 @@ void App::load_state()
       open_or_create_readme();
   }
 
+  load_workspace();
   normalize_active_indices();
   apply_folder_settings(active_folder_idx_);
   load_drawings_state();
   load_note_clipboard(config_);
   load_note_content_for_active();
-  if(uuid_migrated || paths_migrated || fingerprints_migrated) save_index();
   load_profiles();
+  capture_to_active_profile();
+  const bool workspace_saved = save_workspace();
+  const bool profiles_saved = save_profiles();
+  workspace_migration_complete_ =
+      legacy_workspace_migration_complete_ && workspace_saved && profiles_saved;
+  if(!workspace_saved) LOG_ERROR("Cannot save local workspace state");
+  if(!profiles_saved) LOG_ERROR("Cannot save local layout profiles");
+  if(uuid_migrated || paths_migrated || fingerprints_migrated) save_index();
 }
 
 bool App::save_state()
@@ -2231,16 +2435,21 @@ bool App::save_state()
     else
       all_saved = false;
   }
+  capture_to_active_profile();
+  const bool workspace_saved = save_workspace();
+  const bool profiles_saved = save_profiles();
+  workspace_migration_complete_ =
+      legacy_workspace_migration_complete_ && workspace_saved && profiles_saved;
+  if(!workspace_saved) LOG_ERROR("Cannot save local workspace state");
+  if(g_clipboard_dirty && !save_note_clipboard())
+    LOG_ERROR("Cannot save local note clipboard");
+  if(!profiles_saved) LOG_ERROR("Cannot save local layout profiles");
   if(!save_index()) all_saved = false;
   if(g_drawings_dirty && !save_drawings_state()) all_saved = false;
-  if(g_clipboard_dirty && !save_note_clipboard()) all_saved = false;
-  capture_to_active_profile();
-  if(!save_profiles()) all_saved = false;
   if(!MarkdownSupport::flush_preview_state())
   {
-    all_saved = false;
     g_last_persistence_error = MarkdownSupport::last_persistence_error();
-    LOG_ERROR("Cannot save markdown preview state: ", g_last_persistence_error);
+    LOG_ERROR("Cannot save local markdown preview state: ", g_last_persistence_error);
   }
   if(const std::string widget_error = MarkdownWidgets::last_persistence_error();
      !widget_error.empty())
@@ -2296,8 +2505,6 @@ bool App::save_index()
   if(!index_writable_)
     return record_project_save_error(index_file_,
                                      "notes index is read-only until its load error is resolved");
-  sync_active_folder_settings();
-
   const std::string notes_top_level = project_notes_top_level(config_);
   const notepp::project_paths::ProjectPaths project_paths(config_.projectRoot);
   std::unordered_map<std::string, std::optional<std::string>> path_cache;
@@ -2364,12 +2571,6 @@ bool App::save_index()
   Json root = Json::object();
 
   root["schemaVersion"] = index_schema_version_;
-  root["active_folder"] = active_folder_idx_;
-  root["active_note"] = active_note_idx_;
-  root["folder_view"] = folder_overview_mode_;
-  root["layout_locked"] = layout_locked_;
-  root["detached_note_windows"] = detached_note_windows_enabled_;
-  root["dockers_enabled"] = dockers_enabled_;
   root["language"] = Lang::current_language_code();
 
   Json persisted_folders = Json::array();
@@ -2378,12 +2579,6 @@ bool App::save_index()
     const auto &folder = folders_[fi];
     Json persisted_folder = Json::object();
     persisted_folder["name"] = folder.name;
-    persisted_folder["layout_locked"] = folder.layout_locked;
-    persisted_folder["detached_note_windows"] = folder.detached_note_windows;
-    persisted_folder["dockers_enabled"] = folder.dockers_enabled;
-    persisted_folder["drawings_visible"] = folder.drawings_visible;
-    persisted_folder["grid_visible"] = folder.grid_visible;
-
     Json persisted_notes = Json::array();
     for(std::size_t ni = 0; ni < folder.notes.size(); ++ni)
     {
@@ -2396,14 +2591,6 @@ bool App::save_index()
                                    : note.unresolved_stored_path;
       if(!note.content_fingerprint.empty())
         persisted_note["content_fingerprint"] = note.content_fingerprint;
-      persisted_note["x"] = (int)std::lround(note.pos_x);
-      persisted_note["y"] = (int)std::lround(note.pos_y);
-      persisted_note["w"] = (int)std::lround(note.width);
-      persisted_note["h"] = (int)std::lround(note.height);
-      persisted_note["has_layout"] = note.has_layout;
-      persisted_note["hidden"] = note.hidden;
-      persisted_note["always_on_top"] = note.always_on_top;
-      persisted_note["dock_id"] = note.dock_id;
       persisted_note["use_custom_color"] = note.use_custom_color;
       persisted_note["color_r"] =
           (int)std::lround(std::clamp(note.color_r, 0.0f, 1.0f) * 255.0f);
@@ -2435,6 +2622,22 @@ bool App::save_index()
   }
   root["folders"] = std::move(persisted_folders);
   root = notepp::note_index::merge_unknown_fields(source_root, root);
+  if(workspace_migration_complete_)
+  {
+    for(const char *key : {"active_folder", "active_note", "folder_view", "layout_locked",
+                           "detached_note_windows", "dockers_enabled"})
+      root.erase(key);
+    for(Json &folder : root["folders"])
+    {
+      for(const char *key : {"layout_locked", "detached_note_windows", "dockers_enabled",
+                             "drawings_visible", "grid_visible"})
+        folder.erase(key);
+      for(Json &note : folder["notes"])
+        for(const char *key : {"x", "y", "w", "h", "has_layout", "hidden",
+                               "always_on_top", "dock_id"})
+          note.erase(key);
+    }
+  }
 
   std::string serialized = root.dump(2);
   serialized.push_back('\n');
@@ -2452,12 +2655,10 @@ void App::load_profiles()
   profiles_source_document_.clear();
   profiles_writable_ = true;
 
-  const auto loaded_profiles = g_project_files.load(profiles_file_);
-  record_project_read(profiles_file_, loaded_profiles, true);
+  const auto loaded_profiles = atomic_file::read_text(profiles_file_);
   if(!loaded_profiles)
   {
     profiles_writable_ = false;
-    (void)record_project_save_error(profiles_file_, loaded_profiles.message);
     LOG_ERROR(loaded_profiles.message);
     return;
   }
@@ -2474,7 +2675,7 @@ void App::load_profiles()
         profile_state == notepp::layout_profile_state::DocumentState::future_schema
             ? "layout profiles use a newer unsupported schema; opened read-only"
             : "layout profiles are malformed; canonical reconstruction is blocked";
-    (void)record_project_save_error(profiles_file_, message);
+    LOG_ERROR(message);
     return;
   }
   if(!loaded_profiles.snapshot.existed)
@@ -2502,8 +2703,7 @@ void App::load_profiles()
   if(!decoded_profiles)
   {
     profiles_writable_ = false;
-    (void)record_project_save_error(
-        profiles_file_, "layout profiles could not be decoded after validation; opened read-only");
+    LOG_ERROR("layout profiles could not be decoded after validation; opened read-only");
     return;
   }
 
@@ -2511,6 +2711,28 @@ void App::load_profiles()
   active_profile_id_ = decoded_profiles->active_profile_id;
   maximized_profile_id_ = decoded_profiles->maximized_profile_id;
   reduced_profile_id_ = decoded_profiles->reduced_profile_id;
+  const auto has_persisted_always_on_top = [&profile_document](const std::string &profile_id,
+                                                               const std::string &note_id) {
+    const auto profiles = profile_document.find("profiles");
+    if(profiles == profile_document.end() || !profiles->is_array()) return false;
+    for(const Json &profile : *profiles)
+    {
+      if(!profile.is_object() || profile.value("id", std::string{}) != profile_id) continue;
+      const auto layouts = profile.find("note_layouts");
+      if(layouts == profile.end() || !layouts->is_array()) return false;
+      for(const Json &layout : *layouts)
+        if(layout.is_object() && layout.value("note_id", std::string{}) == note_id)
+          return layout.contains("always_on_top");
+      return false;
+    }
+    return false;
+  };
+  const auto legacy_always_on_top = [this](const std::string &note_id) {
+    for(const FolderMeta &folder : folders_)
+      for(const NoteMeta &note : folder.notes)
+        if(note.id == note_id) return note.always_on_top;
+    return false;
+  };
   for(const auto &profile_record : decoded_profiles->profiles)
   {
     LayoutProfile profile;
@@ -2529,11 +2751,33 @@ void App::load_profiles()
       layout.width = static_cast<float>(layout_record.width);
       layout.height = static_cast<float>(layout_record.height);
       layout.hidden = layout_record.hidden;
+      layout.always_on_top = has_persisted_always_on_top(profile_record.id, note_id)
+                                 ? layout_record.always_on_top
+                                 : legacy_always_on_top(note_id);
       layout.has_layout = layout_record.has_layout;
       layout.dock_id = static_cast<ImGuiID>(layout_record.dock_id);
       profile.note_layouts.emplace(note_id, layout);
     }
     layout_profiles_.push_back(std::move(profile));
+  }
+
+  if(layout_profiles_.empty())
+  {
+    // A valid legacy document can contain no profiles. Create one before the
+    // caller captures and persists the legacy note layouts; otherwise the
+    // project index could be cleaned without a local replacement.
+    LayoutProfile profile;
+    profile.id = generate_uuid();
+    profile.name = "Default";
+    profile.window_maximized = true;
+    if(window_)
+    {
+      SDL_GetWindowSize(window_, &profile.window_w, &profile.window_h);
+      SDL_GetWindowPosition(window_, &profile.window_x, &profile.window_y);
+    }
+    layout_profiles_.push_back(std::move(profile));
+    active_profile_id_ = layout_profiles_.back().id;
+    maximized_profile_id_ = active_profile_id_;
   }
 
   // Restore last active profile (apply its window state so the window
@@ -2543,12 +2787,18 @@ void App::load_profiles()
     apply_profile(*last, true);
   else
   {
-    // Fallback for first run or if the saved ID is gone: match by current window.
+    // Fallback for an invalid or absent saved ID: first match the current
+    // window, then select the first profile so layout capture always has an
+    // owner before legacy index fields are removed.
     const LayoutProfile *match = find_matching_profile();
     if(match)
     {
       active_profile_id_ = match->id;
       apply_profile(*match, false);
+    }
+    else
+    {
+      active_profile_id_ = layout_profiles_.front().id;
     }
   }
 }
@@ -2557,8 +2807,10 @@ bool App::save_profiles()
 {
   if(atomic_file::shared_writes_suspended()) return false;
   if(!profiles_writable_)
-    return record_project_save_error(
-        profiles_file_, "layout profiles are read-only until their load error is resolved");
+  {
+    LOG_ERROR("layout profiles are read-only until their load error is resolved");
+    return false;
+  }
 
   Json root = Json::object();
   root["schemaVersion"] = notepp::layout_profile_state::current_schema_version;
@@ -2584,6 +2836,7 @@ bool App::save_profiles()
            {"w", (int)std::lround(layout.width)},
            {"h", (int)std::lround(layout.height)},
            {"hidden", layout.hidden},
+           {"always_on_top", layout.always_on_top},
            {"has_layout", layout.has_layout},
            {"dock_id", layout.dock_id}});
     root["profiles"].push_back(std::move(value));
@@ -2593,7 +2846,7 @@ bool App::save_profiles()
   root = notepp::layout_profile_state::merge_unknown_fields(source, root);
   std::string serialized = root.dump(2);
   serialized.push_back('\n');
-  if(!save_project_text(profiles_file_, serialized)) return false;
+  if(!save_workspace_text(profiles_file_, serialized)) return false;
   profiles_source_document_ = std::move(serialized);
   return true;
 }
@@ -2642,6 +2895,7 @@ void App::capture_to_active_profile()
       nd.width = n.width;
       nd.height = n.height;
       nd.hidden = n.hidden;
+      nd.always_on_top = n.always_on_top;
       nd.has_layout = n.has_layout;
       nd.dock_id = n.dock_id;
       profile.note_layouts[n.id] = nd;
@@ -2664,6 +2918,7 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
         n.width = nd.width;
         n.height = nd.height;
         n.hidden = nd.hidden;
+        n.always_on_top = nd.always_on_top;
         n.has_layout = nd.has_layout;
         n.dock_id = nd.dock_id;
       }
