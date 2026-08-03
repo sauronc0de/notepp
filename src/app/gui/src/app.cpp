@@ -85,6 +85,26 @@ static ImVec2 nonzero_invisible_button_size(float w, float h)
   return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
 }
 
+static void insert_default_ui_block_at_cursor(std::string &text, MdFormatState &fmt)
+{
+  static constexpr std::string_view kDefaultUiBlock = "```ui\ntext(\"Hello\")\n```\n";
+  int insert_pos = std::max(0, std::min(fmt.cursor_pos, static_cast<int>(text.size())));
+  std::string block(kDefaultUiBlock);
+  if(insert_pos > 0 && text[static_cast<std::size_t>(insert_pos) - 1] != '\n')
+  {
+    block.insert(block.begin(), '\n');
+  }
+  text.insert(static_cast<std::size_t>(insert_pos), block);
+  const int cursor_pos = insert_pos + static_cast<int>(block.size());
+  fmt.cursor_pos = cursor_pos;
+  fmt.sel_start = cursor_pos;
+  fmt.sel_end = cursor_pos;
+  fmt.selection_anchor = cursor_pos;
+  fmt.pending_select_range = true;
+  fmt.pending_sel_start = cursor_pos;
+  fmt.pending_sel_end = cursor_pos;
+}
+
 static ImGuiWindow *input_text_multiline_child(ImGuiID input_id)
 {
   if(GImGui == nullptr) return nullptr;
@@ -4768,6 +4788,56 @@ bool App::frame_begin()
     }
 
     if(event.type == SDL_KEYDOWN &&
+       terminal_visible_ && terminal_.hasFocus() &&
+       event.key.keysym.sym == SDLK_F6)
+    {
+      terminal_.releaseFocus();
+      request_focus_active_note_ = true;
+      continue;
+    }
+
+    // These dialogs own application shortcuts while they are visible. Forward
+    // unhandled keys to ImGui so their filter fields still accept text editing.
+    if(event.type == SDL_KEYDOWN &&
+       !(terminal_visible_ && terminal_.hasFocus()) &&
+       (command_finder_window_visible_ || editor_actions_window_visible_))
+    {
+      if(event.key.keysym.sym == SDLK_ESCAPE)
+      {
+        request_close_command_finder_ = command_finder_window_visible_;
+        request_close_editor_actions_ = editor_actions_window_visible_;
+        continue;
+      }
+      if(event.key.repeat == 0 && event.key.keysym.sym == SDLK_UP)
+      {
+        if(command_finder_window_visible_)
+          --command_finder_navigation_delta_;
+        else
+          --editor_actions_navigation_delta_;
+        continue;
+      }
+      if(event.key.repeat == 0 && event.key.keysym.sym == SDLK_DOWN)
+      {
+        if(command_finder_window_visible_)
+          ++command_finder_navigation_delta_;
+        else
+          ++editor_actions_navigation_delta_;
+        continue;
+      }
+      if(event.key.repeat == 0 &&
+         (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
+      {
+        if(command_finder_window_visible_)
+          request_activate_command_finder_ = true;
+        else
+          request_activate_editor_actions_ = true;
+        continue;
+      }
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      continue;
+    }
+
+    if(event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE &&
        (search_window_visible_ || note_switcher_window_visible_) &&
        !(terminal_visible_ && terminal_.hasFocus()))
@@ -4849,9 +4919,17 @@ bool App::frame_begin()
       const bool edit_find_project_shortcut = edit_ctrl_down && edit_shift_down && edit_key_sym == SDLK_f;
       const bool edit_undo_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_z;
       const bool edit_redo_shortcut = edit_ctrl_down && (edit_key_sym == SDLK_y || (edit_shift_down && edit_key_sym == SDLK_z));
+      const bool edit_editor_actions_shortcut =
+          edit_ctrl_down && !edit_shift_down &&
+          (edit_key_sym == SDLK_RETURN || edit_key_sym == SDLK_KP_ENTER);
       if(edit_key_sym == SDLK_ESCAPE)
       {
         request_exit_edit_mode_ = true;
+        continue;
+      }
+      if(edit_editor_actions_shortcut)
+      {
+        if(event.key.repeat == 0) request_open_editor_actions_ = true;
         continue;
       }
       if(edit_find_project_shortcut)
@@ -4920,21 +4998,57 @@ bool App::frame_begin()
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
     const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
-    // Ctrl+Shift+P toggles the embedded terminal. Works whether or not
-    // the editor is focused — the terminal is a workspace-level tool.
+    // Ctrl+Shift+P opens the workspace command finder. A focused terminal
+    // remains an isolated input surface and receives this chord normally.
     if(event.type == SDL_KEYDOWN &&
        event.key.repeat == 0 &&
        ctrl_down &&
        shift_down &&
-       event.key.keysym.sym == SDLK_p)
+       event.key.keysym.sym == SDLK_p &&
+       !(terminal_visible_ && terminal_.hasFocus()))
     {
-      request_open_terminal_ = true;
+      request_open_command_finder_ = true;
       continue;
     }
     // The focused terminal owns all other key presses, including controls
     // that are also workspace shortcuts (for example Ctrl+F and Ctrl+L).
     if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_.hasFocus())
       continue;
+    if(event.type == SDL_KEYDOWN && (command_finder_window_visible_ || editor_actions_window_visible_))
+      continue;
+    if(event.type == SDL_KEYDOWN && event.key.repeat == 0 && ctrl_down && !shift_down && key_sym == SDLK_n)
+    {
+      request_new_note_ = true;
+      continue;
+    }
+    if(event.type == SDL_KEYDOWN && event.key.repeat == 0 && ctrl_down && !shift_down && key_sym == SDLK_w)
+    {
+      request_hide_focused_note_ = true;
+      continue;
+    }
+    if(event.type == SDL_KEYDOWN && event.key.repeat == 0 && ctrl_down && shift_down && key_sym == SDLK_w)
+    {
+      request_hide_folder_notes_ = true;
+      continue;
+    }
+    if(event.type == SDL_KEYDOWN && event.key.repeat == 0 && ctrl_down && key_sym == SDLK_TAB)
+    {
+      request_cycle_visible_notes_ = shift_down ? -1 : 1;
+      continue;
+    }
+    if(!editing_mode_ &&
+       has_active_note() &&
+       event.type == SDL_KEYDOWN &&
+       event.key.repeat == 0 &&
+       ctrl_down &&
+       !shift_down &&
+       (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
+    {
+      editing_mode_ = true;
+      request_focus_active_note_ = true;
+      request_focus_editor_ = true;
+      continue;
+    }
     if(!editing_mode_ &&
        event.type == SDL_KEYDOWN &&
        ctrl_down &&
@@ -5128,6 +5242,11 @@ void App::frame_ui()
   ImGui::SetNextWindowPos(vp->Pos, ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(explorer_w, vp->Size.y), ImGuiCond_Always);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, explorer_bg);
+  if(request_focus_sidebar_)
+  {
+    ImGui::SetNextWindowFocus();
+    request_focus_sidebar_ = false;
+  }
   ImGui::Begin(
       "Explorer",
       nullptr,
@@ -5332,6 +5451,25 @@ void App::frame_ui()
     std::string last_query;
   };
   static NoteSwitcherState note_switcher;
+  enum class CommandFinderCommand
+  {
+    terminal,
+    focus_active_note,
+    new_note,
+    hide_focused_note,
+    hide_folder_notes,
+    quick_open,
+    find_current_note,
+    find_in_project
+  };
+  struct CommandFinderState
+  {
+    bool visible = false;
+    bool focus_input = false;
+    char query[128] = {};
+    int selected = 0;
+  };
+  static CommandFinderState command_finder;
   static std::string deferred_sidebar_snapshot_before;
 
   if(reset_sidebar_state_)
@@ -5396,6 +5534,17 @@ void App::frame_ui()
     request_note_switcher_activate_ = false;
     note_switcher_window_visible_ = false;
     request_close_note_switcher_ = false;
+    command_finder = {};
+    command_finder_window_visible_ = false;
+    request_open_command_finder_ = false;
+    request_close_command_finder_ = false;
+    request_activate_command_finder_ = false;
+    command_finder_navigation_delta_ = 0;
+    editor_actions_window_visible_ = false;
+    request_open_editor_actions_ = false;
+    request_close_editor_actions_ = false;
+    request_activate_editor_actions_ = false;
+    editor_actions_navigation_delta_ = 0;
     deferred_sidebar_snapshot_before.clear();
     open_restore_bak_popup = false;
     bak_candidates.clear();
@@ -5493,7 +5642,7 @@ void App::frame_ui()
     switch(scope)
     {
     case SearchScope::CurrentEditorNote:
-      return std::string("Current note (edit mode)");
+      return std::string("Current note");
     case SearchScope::SelectedPreviewNotes:
       return std::string("Selected notes");
     case SearchScope::CurrentPageNotes:
@@ -5699,12 +5848,7 @@ void App::frame_ui()
     if(request_open_search_)
     {
       SearchScope scope = SearchScope::CurrentPageNotes;
-      if(editing_mode_ && has_active_note())
-        scope = SearchScope::CurrentEditorNote;
-      else if(folder_overview_mode_ && (!selected_note_indices.empty() || has_active_note()))
-        scope = SearchScope::SelectedPreviewNotes;
-      else if(!folder_overview_mode_ && has_active_note())
-        scope = SearchScope::CurrentPageNotes;
+      if(has_active_note()) scope = SearchScope::CurrentEditorNote;
       open_search_dialog(scope);
       request_open_search_ = false;
     }
@@ -6368,6 +6512,230 @@ void App::frame_ui()
     if(!terminal_visible_) terminal_.releaseFocus();
     pending_terminal_text_.clear();
   };
+  auto render_command_finder = [&]() {
+    if(request_open_command_finder_)
+    {
+      command_finder.visible = true;
+      command_finder.focus_input = true;
+      command_finder.query[0] = '\0';
+      command_finder.selected = 0;
+      command_finder_navigation_delta_ = 0;
+      request_open_command_finder_ = false;
+    }
+    if(request_close_command_finder_)
+    {
+      command_finder.visible = false;
+      request_close_command_finder_ = false;
+      request_activate_command_finder_ = false;
+      command_finder_navigation_delta_ = 0;
+    }
+    command_finder_window_visible_ = command_finder.visible;
+    if(!command_finder.visible) return;
+
+    struct Command
+    {
+      CommandFinderCommand id;
+      const char *label;
+    };
+    static constexpr Command commands[] = {
+        {CommandFinderCommand::terminal, "Open / Hide Terminal"},
+        {CommandFinderCommand::focus_active_note, "Focus Active Note"},
+        {CommandFinderCommand::new_note, "Create New Note"},
+        {CommandFinderCommand::hide_focused_note, "Hide Focused Note"},
+        {CommandFinderCommand::hide_folder_notes, "Hide Visible Notes in Active Folder"},
+        {CommandFinderCommand::quick_open, "Quick Open"},
+        {CommandFinderCommand::find_current_note, "Find Current Note"},
+        {CommandFinderCommand::find_in_project, "Find in Project"}};
+    const std::string query_lower = to_lower_ascii(command_finder.query);
+    std::vector<const Command *> matches;
+    matches.reserve(8);
+    for(const Command &command : commands)
+    {
+      if(query_lower.empty() || to_lower_ascii(command.label).find(query_lower) != std::string::npos)
+        matches.push_back(&command);
+    }
+    if(matches.empty())
+    {
+      command_finder.selected = -1;
+      command_finder_navigation_delta_ = 0;
+    }
+    else
+      command_finder.selected = std::max(0, std::min(command_finder.selected, static_cast<int>(matches.size()) - 1));
+    if(command_finder_navigation_delta_ != 0 && !matches.empty())
+    {
+      command_finder.selected = std::max(0, std::min(command_finder.selected + command_finder_navigation_delta_, static_cast<int>(matches.size()) - 1));
+      command_finder_navigation_delta_ = 0;
+    }
+    ImGui::SetNextWindowSize(ImVec2(560.0f, 420.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if(!ImGui::Begin("Command Finder", &command_finder.visible,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+    {
+      ImGui::End();
+      return;
+    }
+    if(command_finder.focus_input)
+    {
+      ImGui::SetKeyboardFocusHere();
+      command_finder.focus_input = false;
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if(ImGui::InputTextWithHint("##command_filter", "Search commands...", command_finder.query, sizeof(command_finder.query)))
+    {
+      command_finder.selected = 0;
+      command_finder_navigation_delta_ = 0;
+    }
+    ImGui::Separator();
+    for(std::size_t i = 0; i < matches.size(); ++i)
+    {
+      const bool selected = static_cast<int>(i) == command_finder.selected;
+      if(ImGui::Selectable(matches[i]->label, selected))
+      {
+        command_finder.selected = static_cast<int>(i);
+        request_activate_command_finder_ = true;
+      }
+      if(selected) ImGui::SetItemDefaultFocus();
+    }
+    if(request_activate_command_finder_ && command_finder.selected >= 0 && command_finder.selected < static_cast<int>(matches.size()))
+    {
+      switch(matches[static_cast<std::size_t>(command_finder.selected)]->id)
+      {
+      case CommandFinderCommand::terminal:
+        request_open_terminal_ = true;
+        break;
+      case CommandFinderCommand::focus_active_note:
+        request_focus_active_note_ = true;
+        break;
+      case CommandFinderCommand::new_note:
+        request_new_note_ = true;
+        break;
+      case CommandFinderCommand::hide_focused_note:
+        request_hide_focused_note_ = true;
+        break;
+      case CommandFinderCommand::hide_folder_notes:
+        request_hide_folder_notes_ = true;
+        break;
+      case CommandFinderCommand::quick_open:
+        request_open_note_switcher_ = true;
+        break;
+      case CommandFinderCommand::find_current_note:
+        request_open_search_ = true;
+        break;
+      case CommandFinderCommand::find_in_project:
+        request_open_project_search_ = true;
+        break;
+      }
+      command_finder.visible = false;
+      request_activate_command_finder_ = false;
+    }
+    ImGui::End();
+    command_finder_window_visible_ = command_finder.visible;
+  };
+  auto render_editor_actions = [&]() {
+    const bool just_opened = request_open_editor_actions_;
+    if(just_opened)
+    {
+      request_open_editor_actions_ = false;
+      editor_actions_window_visible_ = true;
+      editor_actions_navigation_delta_ = 0;
+    }
+    if(request_close_editor_actions_)
+    {
+      editor_actions_window_visible_ = false;
+      request_close_editor_actions_ = false;
+      request_activate_editor_actions_ = false;
+    }
+    if(!editor_actions_window_visible_) return;
+
+    struct Action
+    {
+      EditorAction id;
+      const char *label;
+      bool needs_selection;
+    };
+    static constexpr Action actions[] = {
+        {EditorAction::task_list, "Insert task list", false},
+        {EditorAction::table, "Insert table", false},
+        {EditorAction::bold, "Bold", true},
+        {EditorAction::italic, "Italic", true},
+        {EditorAction::strikethrough, "Strikethrough", true},
+        {EditorAction::quote, "Insert quote", true},
+        {EditorAction::color, "Text color", true},
+        {EditorAction::ui_block, "Insert UI block", false}};
+    static char query[128] = {};
+    static int selected = 0;
+    static bool focus_input = false;
+    if(just_opened)
+    {
+      query[0] = '\0';
+      selected = 0;
+      focus_input = true;
+    }
+    const std::string query_lower = to_lower_ascii(query);
+    std::vector<const Action *> matches;
+    matches.reserve(8);
+    for(const Action &action : actions)
+    {
+      if(query_lower.empty() || to_lower_ascii(action.label).find(query_lower) != std::string::npos)
+        matches.push_back(&action);
+    }
+    if(matches.empty())
+    {
+      selected = -1;
+      editor_actions_navigation_delta_ = 0;
+    }
+    else
+      selected = std::max(0, std::min(selected, static_cast<int>(matches.size()) - 1));
+    if(editor_actions_navigation_delta_ != 0 && !matches.empty())
+    {
+      selected = std::max(0, std::min(selected + editor_actions_navigation_delta_, static_cast<int>(matches.size()) - 1));
+      editor_actions_navigation_delta_ = 0;
+    }
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 380.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if(!ImGui::Begin("Editor Actions", &editor_actions_window_visible_,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
+    {
+      ImGui::End();
+      return;
+    }
+    if(focus_input)
+    {
+      ImGui::SetKeyboardFocusHere();
+      focus_input = false;
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if(ImGui::InputTextWithHint("##editor_action_filter", "Search editor actions...", query, sizeof(query)))
+    {
+      selected = 0;
+      editor_actions_navigation_delta_ = 0;
+    }
+    ImGui::Separator();
+    for(std::size_t i = 0; i < matches.size(); ++i)
+    {
+      const bool available = !matches[i]->needs_selection || editor_action_selection_available_;
+      if(!available) ImGui::BeginDisabled();
+      const bool is_selected = static_cast<int>(i) == selected;
+      if(ImGui::Selectable(matches[i]->label, is_selected) && available)
+      {
+        selected = static_cast<int>(i);
+        request_activate_editor_actions_ = true;
+      }
+      if(is_selected) ImGui::SetItemDefaultFocus();
+      if(!available) ImGui::EndDisabled();
+    }
+    if(request_activate_editor_actions_ && selected >= 0 && selected < static_cast<int>(matches.size()))
+    {
+      const Action &action = *matches[static_cast<std::size_t>(selected)];
+      if(!action.needs_selection || editor_action_selection_available_)
+      {
+        request_editor_action_ = action.id;
+        editor_actions_window_visible_ = false;
+      }
+      request_activate_editor_actions_ = false;
+    }
+    ImGui::End();
+  };
   auto queue_pending_delete_path = [&](const std::string &path) {
     if(path.empty()) return;
     if(std::find(pending_fs_delete_paths_.begin(), pending_fs_delete_paths_.end(), path) == pending_fs_delete_paths_.end())
@@ -6390,6 +6758,114 @@ void App::frame_ui()
   };
   auto apply_sidebar_undo = [&]() -> bool { return apply_global_undo(); };
   auto apply_sidebar_redo = [&]() -> bool { return apply_global_redo(); };
+
+  auto focus_visible_note = [&](int preferred_idx, int direction) {
+    if(active_folder_idx_ < 0 || active_folder_idx_ >= static_cast<int>(folders_.size())) return false;
+    const auto &notes = folders_[static_cast<std::size_t>(active_folder_idx_)].notes;
+    if(notes.empty()) return false;
+    const int count = static_cast<int>(notes.size());
+    for(int step = 0; step < count; ++step)
+    {
+      const int idx = (preferred_idx + direction * step + count * 2) % count;
+      if(notes[static_cast<std::size_t>(idx)].hidden) continue;
+      if(editing_mode_ && idx != active_note_idx_)
+      {
+        normalize_input_text_buffer(markdown_text_);
+        state_dirty_ = true;
+        editing_mode_ = false;
+      }
+      active_note_idx_ = idx;
+      selected_note_indices.clear();
+      selected_note_indices.insert(idx);
+      selected_stroke_indices.clear();
+      folder_overview_mode_ = true;
+      load_note_content_for_active();
+      pending_focus_note_idx = idx;
+      save_index();
+      return true;
+    }
+    return false;
+  };
+
+  if(request_new_note_)
+  {
+    open_new_note_popup = true;
+    new_note_target_folder_idx = active_folder_idx_;
+    request_new_note_ = false;
+  }
+  if(request_hide_focused_note_)
+  {
+    if(has_active_note())
+    {
+      const int hidden_idx = active_note_idx_;
+      push_sidebar_snapshot();
+      FolderMeta &folder = folders_[static_cast<std::size_t>(active_folder_idx_)];
+      folder.notes[static_cast<std::size_t>(hidden_idx)].hidden = true;
+      if(editing_mode_)
+      {
+        normalize_input_text_buffer(markdown_text_);
+        state_dirty_ = true;
+        editing_mode_ = false;
+      }
+      if(!focus_visible_note((hidden_idx + 1) % std::max(1, static_cast<int>(folder.notes.size())), 1))
+      {
+        active_note_idx_ = -1;
+        selected_note_indices.clear();
+        folder_overview_mode_ = true;
+        load_note_content_for_active();
+        request_focus_sidebar_ = true;
+        save_index();
+      }
+    }
+    request_hide_focused_note_ = false;
+  }
+  if(request_hide_folder_notes_)
+  {
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < static_cast<int>(folders_.size()))
+    {
+      push_sidebar_snapshot();
+      FolderMeta &folder = folders_[static_cast<std::size_t>(active_folder_idx_)];
+      for(NoteMeta &note : folder.notes) note.hidden = true;
+      if(editing_mode_)
+      {
+        normalize_input_text_buffer(markdown_text_);
+        state_dirty_ = true;
+        editing_mode_ = false;
+      }
+      active_note_idx_ = -1;
+      selected_note_indices.clear();
+      folder_overview_mode_ = true;
+      load_note_content_for_active();
+      request_focus_sidebar_ = true;
+      save_index();
+    }
+    request_hide_folder_notes_ = false;
+  }
+  if(request_cycle_visible_notes_ != 0)
+  {
+    if(has_active_note())
+    {
+      const int count = static_cast<int>(folders_[static_cast<std::size_t>(active_folder_idx_)].notes.size());
+      const int next = (active_note_idx_ + request_cycle_visible_notes_ + count) % count;
+      focus_visible_note(next, request_cycle_visible_notes_);
+    }
+    request_cycle_visible_notes_ = 0;
+  }
+  if(request_focus_active_note_)
+  {
+    if(has_active_note() && !folders_[static_cast<std::size_t>(active_folder_idx_)].notes[static_cast<std::size_t>(active_note_idx_)].hidden)
+    {
+      if(folder_overview_mode_)
+        pending_focus_note_idx = active_note_idx_;
+      else
+        search_request_window_focus_ = true;
+    }
+    else
+    {
+      request_focus_sidebar_ = true;
+    }
+    request_focus_active_note_ = false;
+  }
 
   if(request_clear_selection_)
   {
@@ -8449,6 +8925,11 @@ void App::frame_ui()
   if(folder_overview_mode_)
   {
     static bool refocus_folder_editor = false;
+    if(request_focus_editor_)
+    {
+      refocus_folder_editor = true;
+      request_focus_editor_ = false;
+    }
     static int rename_win_folder_idx = -1;
     static int rename_win_note_idx = -1;
     static char rename_win_buf[256] = {};
@@ -8803,6 +9284,71 @@ void App::frame_ui()
           if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) topbar_tooltip_text = tooltip;
           return pressed;
         };
+        if(request_editor_action_ != EditorAction::none)
+        {
+          const bool selection_action =
+              request_editor_action_ == EditorAction::bold ||
+              request_editor_action_ == EditorAction::italic ||
+              request_editor_action_ == EditorAction::strikethrough ||
+              request_editor_action_ == EditorAction::quote ||
+              request_editor_action_ == EditorAction::color;
+          if(!selection_action || has_anchor_selection)
+          {
+            switch(request_editor_action_)
+            {
+            case EditorAction::task_list:
+              push_undo_snapshot();
+              insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
+              break;
+            case EditorAction::table:
+              ImGui::OpenPopup("##tb_table_builder_popup");
+              break;
+            case EditorAction::bold:
+              push_undo_snapshot();
+              apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
+              break;
+            case EditorAction::italic:
+              push_undo_snapshot();
+              apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
+              break;
+            case EditorAction::strikethrough:
+              push_undo_snapshot();
+              apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
+              break;
+            case EditorAction::quote:
+              push_undo_snapshot();
+              apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
+              break;
+            case EditorAction::color:
+              push_undo_snapshot();
+              apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt_folder.color));
+              break;
+            case EditorAction::ui_block:
+              push_undo_snapshot();
+              insert_default_ui_block_at_cursor(markdown_text_, fmt_folder);
+              break;
+            case EditorAction::none:
+              break;
+            }
+            if(selection_action)
+            {
+              fmt_folder.sel_start = anchor_sel_start;
+              fmt_folder.sel_end = anchor_sel_end;
+              fmt_folder.cursor_pos = anchor_sel_end;
+              fmt_folder.selection_anchor = anchor_sel_start;
+              fmt_folder.pending_select_range = true;
+              fmt_folder.pending_sel_start = anchor_sel_start;
+              fmt_folder.pending_sel_end = anchor_sel_end;
+            }
+            if(request_editor_action_ != EditorAction::table)
+            {
+              normalize_input_text_buffer(markdown_text_);
+              state_dirty_ = true;
+              refocus_folder_editor = true;
+            }
+          }
+          request_editor_action_ = EditorAction::none;
+        }
         ImGui::BeginDisabled(!has_anchor_selection);
         if(tool_button("##tb_italic", ic_italic, sz_italic, "Italic", Lang::t("Italic")))
         {
@@ -10624,6 +11170,7 @@ __CURSOR__)MD",
         const int a = fmt_folder.sel_start;
         const int b = fmt_folder.sel_end;
         const bool has_selection = (a != b);
+        editor_action_selection_available_ = has_selection;
         const int sel_min = (a < b) ? a : b;
         const int sel_max = (a < b) ? b : a;
         if(has_selection)
@@ -11073,6 +11620,8 @@ __CURSOR__)MD",
     render_note_switcher();
     render_debug_history_window();
     render_terminal();
+    render_command_finder();
+    render_editor_actions();
     if(git_disabled_for_frame) ImGui::EndDisabled();
     return;
   }
@@ -11108,6 +11657,8 @@ __CURSOR__)MD",
     render_note_switcher();
     render_debug_history_window();
     render_terminal();
+    render_command_finder();
+    render_editor_actions();
     if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
     {
       if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
@@ -11258,6 +11809,11 @@ __CURSOR__)MD",
 
   static bool show_palette = false;
   static bool refocus_editor = false;
+  if(request_focus_editor_)
+  {
+    refocus_editor = true;
+    request_focus_editor_ = false;
+  }
   static MdFormatState fmt;
   static MdEditorUserData ud{&markdown_text_, &fmt};
   ud.text = &markdown_text_;
@@ -11526,6 +12082,7 @@ __CURSOR__)MD",
 
     const int a = fmt.sel_start, b = fmt.sel_end;
     const bool has_selection = (a != b);
+    editor_action_selection_available_ = has_selection;
     const int sel_min = (a < b) ? a : b;
     const int sel_max = (a < b) ? b : a;
     static int anchor_sel_start = 0;
@@ -11542,6 +12099,73 @@ __CURSOR__)MD",
     }
 
     const bool has_anchor_selection = (anchor_sel_start != anchor_sel_end);
+
+    if(request_editor_action_ != EditorAction::none)
+    {
+      const bool selection_action =
+          request_editor_action_ == EditorAction::bold ||
+          request_editor_action_ == EditorAction::italic ||
+          request_editor_action_ == EditorAction::strikethrough ||
+          request_editor_action_ == EditorAction::quote ||
+          request_editor_action_ == EditorAction::color;
+      if(!selection_action || has_anchor_selection)
+      {
+        switch(request_editor_action_)
+        {
+        case EditorAction::task_list:
+          push_undo_snapshot();
+          insert_checklist_item_at_cursor(markdown_text_, fmt);
+          break;
+        case EditorAction::table:
+          push_undo_snapshot();
+          insert_markdown_table_at_cursor(markdown_text_, fmt, 2, 2);
+          fmt.pending_select_range = true;
+          fmt.pending_sel_start = fmt.sel_start;
+          fmt.pending_sel_end = fmt.sel_end;
+          break;
+        case EditorAction::bold:
+          push_undo_snapshot();
+          apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "**", "**");
+          break;
+        case EditorAction::italic:
+          push_undo_snapshot();
+          apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "*", "*");
+          break;
+        case EditorAction::strikethrough:
+          push_undo_snapshot();
+          apply_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, "~~", "~~");
+          break;
+        case EditorAction::quote:
+          push_undo_snapshot();
+          apply_note_quote(markdown_text_, anchor_sel_start, anchor_sel_end);
+          break;
+        case EditorAction::color:
+          push_undo_snapshot();
+          apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt.color));
+          break;
+        case EditorAction::ui_block:
+          push_undo_snapshot();
+          insert_default_ui_block_at_cursor(markdown_text_, fmt);
+          break;
+        case EditorAction::none:
+          break;
+        }
+        if(selection_action)
+        {
+          fmt.sel_start = anchor_sel_start;
+          fmt.sel_end = anchor_sel_end;
+          fmt.cursor_pos = anchor_sel_end;
+          fmt.selection_anchor = anchor_sel_start;
+          fmt.pending_select_range = true;
+          fmt.pending_sel_start = anchor_sel_start;
+          fmt.pending_sel_end = anchor_sel_end;
+        }
+        normalize_input_text_buffer(markdown_text_);
+        state_dirty_ = true;
+        refocus_editor = true;
+      }
+      request_editor_action_ = EditorAction::none;
+    }
 
     // Open palette only with right-click while editing and text is selected.
     if(editor_hovered &&
@@ -11704,5 +12328,7 @@ __CURSOR__)MD",
   render_note_switcher();
   render_debug_history_window();
   render_terminal();
+  render_command_finder();
+  render_editor_actions();
   if(git_disabled_for_frame) ImGui::EndDisabled();
 }

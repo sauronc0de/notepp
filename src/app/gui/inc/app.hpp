@@ -230,10 +230,42 @@ private:
   std::string pending_emoji_insert_;
   EmojiPicker emoji_picker_;
 
+  enum class EditorAction
+  {
+    none,
+    task_list,
+    table,
+    bold,
+    italic,
+    strikethrough,
+    quote,
+    color,
+    ui_block
+  };
+
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
   bool request_open_note_switcher_ = false;
   bool request_open_terminal_ = false;
+  bool request_open_command_finder_ = false;
+  bool request_close_command_finder_ = false;
+  bool request_activate_command_finder_ = false;
+  int command_finder_navigation_delta_ = 0;
+  bool command_finder_window_visible_ = false;
+  bool request_open_editor_actions_ = false;
+  bool request_close_editor_actions_ = false;
+  bool request_activate_editor_actions_ = false;
+  int editor_actions_navigation_delta_ = 0;
+  bool editor_actions_window_visible_ = false;
+  EditorAction request_editor_action_ = EditorAction::none;
+  bool editor_action_selection_available_ = false;
+  bool request_new_note_ = false;
+  bool request_hide_focused_note_ = false;
+  bool request_hide_folder_notes_ = false;
+  int request_cycle_visible_notes_ = 0;
+  bool request_focus_active_note_ = false;
+  bool request_focus_editor_ = false;
+  bool request_focus_sidebar_ = false;
 #if USE_PORTABLE_PATHS
   bool request_open_project_ = false;
 #endif

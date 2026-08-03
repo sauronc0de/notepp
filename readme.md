@@ -337,12 +337,12 @@ Right-clicking any rendered image opens a context menu with two actions:
 
 ## 9. Search
 
-Open with **Ctrl+F** or the ![find](assets/icons/find.png) toolbar button.
+Open current-note search with **Ctrl+F** or the ![find](assets/icons/find.png) toolbar button. Use **Ctrl+Shift+F** to search the full project.
 
-- Searches **note titles**, **file paths**, and **full note content**
+- **Ctrl+F** searches the active note's content
+- **Ctrl+Shift+F** searches note titles, file paths, and full note content across the project
 - Results show the matching line with a snippet preview
 - Click a result to jump directly to that note
-- Search scope spans the entire project
 
 ---
 
@@ -380,8 +380,17 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 |----------|--------|
 | Ctrl+Z | Undo |
 | Ctrl+Y / Ctrl+Shift+Z | Redo |
-| Ctrl+F | Open Find / Search |
-| Ctrl+Shift+P | Toggle embedded terminal |
+| Ctrl+N | Create a new note in the active folder |
+| Ctrl+W | Hide the focused note |
+| Ctrl+Shift+W | Hide visible notes in the active folder |
+| Ctrl+Tab / Ctrl+Shift+Tab | Focus next / previous visible note |
+| Ctrl+E | Quick Open note or heading |
+| Ctrl+F | Search the active note |
+| Ctrl+Shift+F | Search the full project |
+| Ctrl+Shift+P | Open Command Finder |
+| Ctrl+Enter | Preview: edit active note; Edit: open Editor Actions |
+| Esc | Return from Edit mode to Preview |
+| F6 | Leave terminal focus and return to the active note or sidebar |
 | Ctrl+. | Open emoji picker (Linux) / native emoji panel (Windows) |
 | Ctrl+Scroll | Change font size (hover over note) |
 | Ctrl+Click | Multi-select notes in sidebar |
@@ -1788,8 +1797,9 @@ See [`docs/git_sync.md`](docs/git_sync.md) for setup, safety guarantees, statuse
 
 ## 16. Embedded Terminal
 
-Press **Ctrl+Shift+P** to toggle a real, full-featured terminal inside the
-application. The shell starts in the project notes root, so `ls`, `git
+Open the Command Finder with **Ctrl+Shift+P**, then run **Open / Hide Terminal**
+to show a real, full-featured terminal inside the application. The shell starts
+in the project notes root, so `ls`, `git
 status`, `grep`, and any other tool you launch operate on the same files
 the app edits.
 
@@ -1817,14 +1827,15 @@ That means anything that works in a normal terminal works here: `pi`,
 **Behavior:**
 
 - The shell is **not** sandboxed — full access by design.
-- Closing the window (Esc) hides the panel; the shell is kept alive so it
-  reappears instantly. Closing the app terminates the shell cleanly.
+- Hiding the panel from Command Finder keeps the shell alive so it reappears
+  instantly. Closing the app terminates the shell cleanly.
 - The window resizes as you drag it: rows × cols are recomputed from
   the font metrics and pushed to the PTY.
 - Standard shortcuts (Ctrl+C, Ctrl+D, Ctrl+L, arrows, Tab, Enter,
   Backspace) all flow through to the shell as expected.
-- While the terminal window is focused, app-wide shortcuts (Ctrl+F,
-  Ctrl+Z, …) are delivered to the terminal instead of the app.
+- While the terminal window is focused, app shortcuts are delivered to the
+  terminal instead of the app. Press **F6** to leave terminal focus, then use
+  Command Finder or another app shortcut.
 
 This is the surface used to run coding agents like `pi` from inside the
 app, so the agent can read and write notes with full knowledge of the
