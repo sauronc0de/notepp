@@ -6988,16 +6988,56 @@ void App::frame_ui()
       if(query_lower.empty() || to_lower_ascii(action.label).find(query_lower) != std::string::npos)
         matches.push_back(&action);
     }
+    const auto action_available = [&](std::size_t index) {
+      return !matches[index]->needs_selection || editor_action_selection_available_;
+    };
     if(matches.empty())
     {
       selected = -1;
       editor_actions_navigation_delta_ = 0;
     }
     else
+    {
       selected = std::max(0, std::min(selected, static_cast<int>(matches.size()) - 1));
+      if(!action_available(static_cast<std::size_t>(selected)))
+      {
+        const auto first_available = std::find_if(matches.begin(), matches.end(), [&](const Action *action) {
+          return !action->needs_selection || editor_action_selection_available_;
+        });
+        selected = first_available == matches.end() ? -1 : static_cast<int>(std::distance(matches.begin(), first_available));
+      }
+    }
     if(editor_actions_navigation_delta_ != 0 && !matches.empty())
     {
-      selected = std::max(0, std::min(selected + editor_actions_navigation_delta_, static_cast<int>(matches.size()) - 1));
+      const int direction = editor_actions_navigation_delta_ > 0 ? 1 : -1;
+      int steps = std::abs(editor_actions_navigation_delta_);
+      if(selected < 0)
+      {
+        if(direction > 0)
+        {
+          const auto first_available = std::find_if(matches.begin(), matches.end(), [&](const Action *action) {
+            return !action->needs_selection || editor_action_selection_available_;
+          });
+          selected = first_available == matches.end() ? -1 : static_cast<int>(std::distance(matches.begin(), first_available));
+        }
+        else
+        {
+          const auto first_available = std::find_if(matches.rbegin(), matches.rend(), [&](const Action *action) {
+            return !action->needs_selection || editor_action_selection_available_;
+          });
+          selected = first_available == matches.rend() ? -1 : static_cast<int>(std::distance(matches.begin(), first_available.base()) - 1);
+        }
+        if(selected >= 0) --steps;
+      }
+      while(steps-- > 0 && selected >= 0)
+      {
+        int candidate = selected;
+        do
+        {
+          candidate = (candidate + direction + static_cast<int>(matches.size())) % static_cast<int>(matches.size());
+        } while(candidate != selected && !action_available(static_cast<std::size_t>(candidate)));
+        selected = candidate;
+      }
       editor_actions_navigation_delta_ = 0;
     }
     ImGui::SetNextWindowSize(ImVec2(520.0f, 380.0f), ImGuiCond_Appearing);
@@ -7033,14 +7073,19 @@ void App::frame_ui()
       if(is_selected) ImGui::SetItemDefaultFocus();
       if(!available) ImGui::EndDisabled();
     }
-    if(request_activate_editor_actions_ && selected >= 0 && selected < static_cast<int>(matches.size()))
+    if(request_activate_editor_actions_)
     {
-      const Action &action = *matches[static_cast<std::size_t>(selected)];
-      if(!action.needs_selection || editor_action_selection_available_)
+      if(selected >= 0 && selected < static_cast<int>(matches.size()))
       {
-        request_editor_action_ = action.id;
-        editor_actions_window_visible_ = false;
+        const Action &action = *matches[static_cast<std::size_t>(selected)];
+        if(!action.needs_selection || editor_action_selection_available_)
+        {
+          request_editor_action_ = action.id;
+          editor_actions_window_visible_ = false;
+        }
       }
+      // Consume Enter even when no executable action is selected. Otherwise a
+      // later filter change could activate an action without another Enter.
       request_activate_editor_actions_ = false;
     }
     ImGui::End();
