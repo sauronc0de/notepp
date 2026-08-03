@@ -243,6 +243,13 @@ private:
     ui_block
   };
 
+  enum class UiWidgetChooserState
+  {
+    closed,
+    open_requested,
+    open
+  };
+
   bool request_open_search_ = false;
   bool request_open_project_search_ = false;
   bool request_open_note_switcher_ = false;
@@ -259,6 +266,10 @@ private:
   bool editor_actions_window_visible_ = false;
   EditorAction request_editor_action_ = EditorAction::none;
   bool editor_action_selection_available_ = false;
+  UiWidgetChooserState editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+  bool request_close_editor_action_ui_widget_chooser_ = false;
+  std::string preview_edit_cursor_note_path_;
+  int preview_edit_cursor_pos_ = -1;
   bool request_new_note_ = false;
   bool request_hide_focused_note_ = false;
   bool request_hide_folder_notes_ = false;

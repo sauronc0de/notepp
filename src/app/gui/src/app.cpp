@@ -85,24 +85,277 @@ static ImVec2 nonzero_invisible_button_size(float w, float h)
   return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
 }
 
-static void insert_default_ui_block_at_cursor(std::string &text, MdFormatState &fmt)
+static constexpr char kToolbarUiWidgetChooserPopup[] = "##tb_ui_widgets_popup";
+static constexpr char kEditorActionsUiWidgetChooserPopup[] =
+    "Insert UI Block###editor_actions_ui_widget_chooser_popup";
+
+static bool cursor_is_inside_ui_block(const std::string &text, int cursor)
 {
-  static constexpr std::string_view kDefaultUiBlock = "```ui\ntext(\"Hello\")\n```\n";
-  int insert_pos = std::max(0, std::min(fmt.cursor_pos, static_cast<int>(text.size())));
-  std::string block(kDefaultUiBlock);
-  if(insert_pos > 0 && text[static_cast<std::size_t>(insert_pos) - 1] != '\n')
+  if(text.empty() || cursor <= 0) return false;
+
+  const std::size_t cursor_pos = static_cast<std::size_t>(
+      std::min(cursor, static_cast<int>(text.size())));
+  bool inside = false;
+  std::size_t pos = 0;
+  while(pos < text.size())
   {
-    block.insert(block.begin(), '\n');
+    const std::size_t newline = text.find('\n', pos);
+    const std::size_t line_end = newline == std::string::npos ? text.size() : newline;
+    std::string_view line(text.data() + pos, line_end - pos);
+    StringUtils::trim(line);
+    if(line == "```ui")
+    {
+      if(!inside && pos <= cursor_pos && cursor_pos <= line_end) return true;
+      inside = true;
+    }
+    else if(line == "```" && inside)
+    {
+      if(cursor_pos <= line_end) return true;
+      inside = false;
+    }
+    if(newline == std::string::npos) break;
+    pos = newline + 1;
   }
-  text.insert(static_cast<std::size_t>(insert_pos), block);
-  const int cursor_pos = insert_pos + static_cast<int>(block.size());
-  fmt.cursor_pos = cursor_pos;
-  fmt.sel_start = cursor_pos;
-  fmt.sel_end = cursor_pos;
-  fmt.selection_anchor = cursor_pos;
-  fmt.pending_select_range = true;
-  fmt.pending_sel_start = cursor_pos;
-  fmt.pending_sel_end = cursor_pos;
+  return inside && cursor_pos >= pos;
+}
+
+static std::string trim_ui_label(std::string text)
+{
+  const std::size_t first = text.find_first_not_of(" \t\n\r");
+  if(first == std::string::npos) return {};
+  const std::size_t last = text.find_last_not_of(" \t\n\r");
+  return text.substr(first, last - first + 1);
+}
+
+static std::string escape_ui_string(const std::string &text)
+{
+  std::string out;
+  out.reserve(text.size() + 8);
+  for(const char c : text)
+  {
+    switch(c)
+    {
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    default:
+      out.push_back(c);
+      break;
+    }
+  }
+  return out;
+}
+
+static std::string make_ui_identifier(const std::string &label)
+{
+  std::string out;
+  out.reserve(label.size() + 4);
+  for(const char c : label)
+  {
+    const bool is_lower = c >= 'a' && c <= 'z';
+    const bool is_upper = c >= 'A' && c <= 'Z';
+    const bool is_digit = c >= '0' && c <= '9';
+    if(is_lower || is_upper || is_digit)
+      out.push_back(is_upper ? static_cast<char>(c - 'A' + 'a') : c);
+    else if((c == ' ' || c == '-' || c == '_') && !out.empty() && out.back() != '_')
+      out.push_back('_');
+  }
+  while(!out.empty() && out.back() == '_') out.pop_back();
+  if(out.empty()) out = "inventory";
+  if(out.front() >= '0' && out.front() <= '9') out.insert(out.begin(), 'i');
+  return out;
+}
+
+static std::string build_inventory_snippet(const char *raw_title, int rows, int cols)
+{
+  const int safe_rows = std::max(1, rows);
+  const int safe_cols = std::max(1, cols);
+  std::string label = trim_ui_label(raw_title ? std::string(raw_title) : std::string());
+  if(label.empty()) label = "Inventory";
+  const std::string variable_name = make_ui_identifier(label) + "_data";
+  const int width = std::max(220, safe_cols * 58 + 12);
+  std::ostringstream out;
+  out << variable_name << "({\n";
+  out << "  items:[\n";
+  out << "    {name:\"Potion\", image:\"potion.png\", tooltip:\"Consumable item\", quantity:3, color:\"#57A7FF\"}";
+  if(safe_rows * safe_cols > 1)
+    out << ",\n    {tooltip:\"Disabled example cell\", color:\"#FFB347\", enabled:false}\n";
+  else
+    out << "\n";
+  out << "  ]\n";
+  out << "})\n";
+  out << "inventory(" << variable_name << ", \"" << escape_ui_string(label) << "\", " << width << ", " << safe_rows << ", " << safe_cols << ")\n";
+  out << "__CURSOR__";
+  return out.str();
+}
+
+template <typename InsertSnippet, typename CreateGlobals>
+static bool render_ui_widget_chooser(
+    const char *popup_id,
+    bool modal,
+    bool close_requested,
+    InsertSnippet &&insert_snippet,
+    CreateGlobals &&create_globals)
+{
+  static char inventory_builder_title[128] = "Inventory";
+  static int inventory_builder_rows = 2;
+  static int inventory_builder_cols = 2;
+  bool open_inventory_builder = false;
+  const bool chooser_open = modal
+                                ? ImGui::BeginPopupModal(
+                                      popup_id,
+                                      nullptr,
+                                      ImGuiWindowFlags_AlwaysAutoResize |
+                                          ImGuiWindowFlags_NoSavedSettings)
+                                : ImGui::BeginPopup(popup_id);
+  if(chooser_open)
+  {
+    if(close_requested)
+    {
+      ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+      return false;
+    }
+    ImGui::TextDisabled("UI Blocks");
+    if(ImGui::MenuItem("Full UI example"))
+    {
+      insert_snippet(R"MD(count(10)
+name("Sauron")
+enabled(true)
+mode("Home")
+tags(["daily", "important"])
+total(count*2)
+text("Count: ") int(count, "Count", 90, true)
+text(" Name: ") text(name, "Name", 150, "Edit the name")
+checkbox(enabled, "Enabled")
+enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
+multicheck(tags, "Tags", 180, ["daily", "important", "later"])
+if(enabled){
+  text("Visible total: ") text(total)
+}
+button("Reset count", 110, count=0)
+__CURSOR__)MD",
+                     true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(modal) ImGui::SetItemDefaultFocus();
+    ImGui::Separator();
+    ImGui::TextDisabled("Variables");
+    if(ImGui::MenuItem("Variable example"))
+    {
+      insert_snippet("valueA(10)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Computed variable example"))
+    {
+      insert_snippet("valueA(10)\nvalueB(valueA+5)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Global variable"))
+    {
+      create_globals();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Widgets");
+    if(ImGui::MenuItem("Text output"))
+    {
+      insert_snippet("valueA(10)\ntext(\"Value: \") text(valueA)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Text input"))
+    {
+      insert_snippet("name(\"Sauron\")\ntext(name, \"Name\", 150, \"Edit the name\")\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Integer input"))
+    {
+      insert_snippet("count(10)\nint(count, \"Count\", 90, true)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Slider"))
+    {
+      insert_snippet("volume(50)\nslider(volume, \"Volume\", 160, 0, 100)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Checkbox"))
+    {
+      insert_snippet("enabled(true)\ncheckbox(enabled, \"Enabled\")\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Enum"))
+    {
+      insert_snippet("mode(\"Home\")\nenum(mode, \"Mode\", 140, [\"Home\", \"Work\", \"Ideas\"])\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Multicheck"))
+    {
+      insert_snippet("tags([\"daily\"])\nmulticheck(tags, \"Tags\", 180, [\"daily\", \"important\", \"later\"])\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("List"))
+    {
+      insert_snippet(R"MD(items([
+  {name:"Sword", tooltip:"Basic weapon"},
+  {name:"Shield", tooltip:"Blocks attacks"},
+  {name:"Potion", tooltip:"Restores health"}
+])
+list(items, "Inventory items", 220, true)
+__CURSOR__)MD",
+                     true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Inventory..."))
+    {
+      open_inventory_builder = true;
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Button action"))
+    {
+      insert_snippet("count(10)\nbutton(\"Reset count\", 110, count=0)\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Command button"))
+    {
+      insert_snippet("button(\"List files\", 110, command(\"ls\"))\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    if(ImGui::MenuItem("Conditional if block"))
+    {
+      insert_snippet("enabled(true)\ncheckbox(enabled, \"Enabled\")\nif(enabled){\n  text(\"Visible when enabled\")\n}\n__CURSOR__\n", true);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+  if(open_inventory_builder) ImGui::OpenPopup("##tb_inventory_builder_popup");
+  if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+  {
+    ImGui::TextDisabled("%s", Lang::t("Insert Inventory Widget"));
+    ImGui::SetNextItemWidth(260.0f);
+    ImGui::InputText(Lang::t("Title"), inventory_builder_title, sizeof(inventory_builder_title));
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt(Lang::t("Rows"), &inventory_builder_rows);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt(Lang::t("Cols"), &inventory_builder_cols);
+    inventory_builder_rows = std::max(1, inventory_builder_rows);
+    inventory_builder_cols = std::max(1, inventory_builder_cols);
+    ImGui::TextDisabled("Slots: %d", inventory_builder_rows * inventory_builder_cols);
+    if(ImGui::Button(Lang::t("Insert")))
+    {
+      insert_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols), true);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if(ImGui::Button(Lang::t("Cancel"))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+  return chooser_open;
 }
 
 static ImGuiWindow *input_text_multiline_child(ImGuiID input_id)
@@ -3719,6 +3972,13 @@ void App::load_note_content_for_active()
     search_editor_match_note_path_.clear();
     search_editor_match_offset_ = -1;
     search_editor_match_length_ = 0;
+    if(preview_edit_cursor_note_path_ != state_file_path_)
+    {
+      preview_edit_cursor_note_path_.clear();
+      preview_edit_cursor_pos_ = -1;
+      request_preview_heading({}, {}, 0);
+      request_preview_source_offset({}, 0);
+    }
   };
 
   ensure_default_index();
@@ -4898,7 +5158,8 @@ bool App::frame_begin()
         ++note_switcher_navigation_delta_;
         continue;
       }
-      if(event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER)
+      if((event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) &&
+         (event.key.keysym.mod & KMOD_CTRL) == 0)
       {
         request_note_switcher_activate_ = true;
         continue;
@@ -4924,12 +5185,28 @@ bool App::frame_begin()
           (edit_key_sym == SDLK_RETURN || edit_key_sym == SDLK_KP_ENTER);
       if(edit_key_sym == SDLK_ESCAPE)
       {
-        request_exit_edit_mode_ = true;
+        if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
+        {
+          editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+          request_close_editor_action_ui_widget_chooser_ = false;
+        }
+        else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open)
+        {
+          request_close_editor_action_ui_widget_chooser_ = true;
+        }
+        else
+        {
+          request_exit_edit_mode_ = true;
+        }
         continue;
       }
       if(edit_editor_actions_shortcut)
       {
-        if(event.key.repeat == 0) request_open_editor_actions_ = true;
+        if(event.key.repeat == 0)
+        {
+          request_open_editor_actions_ = true;
+          request_close_note_switcher_ = true;
+        }
         continue;
       }
       if(edit_find_project_shortcut)
@@ -5045,6 +5322,7 @@ bool App::frame_begin()
        (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
     {
       editing_mode_ = true;
+      request_close_note_switcher_ = true;
       request_focus_active_note_ = true;
       request_focus_editor_ = true;
       continue;
@@ -6073,9 +6351,40 @@ void App::frame_ui()
     if(note_idx < 0 || note_idx >= (int)folder.notes.size()) return;
 
     folder.notes[(size_t)note_idx].hidden = false;
+    preview_edit_cursor_note_path_.clear();
+    preview_edit_cursor_pos_ = -1;
+    request_preview_heading({}, {}, 0);
+    request_preview_source_offset({}, 0);
     if(!result.heading_path.empty())
+    {
       request_preview_heading(
           result.note_path, result.heading_path, result.heading_occurrence_index);
+
+      const std::string &content = result.note_path == state_file_path_
+                                       ? markdown_text_
+                                       : read_text_file(result.note_path);
+      std::size_t heading_index = 0;
+      std::size_t line_start = 0;
+      while(line_start < content.size())
+      {
+        const std::size_t line_end = content.find('\n', line_start);
+        const std::size_t end = line_end == std::string::npos ? content.size() : line_end;
+        int level = 0;
+        std::string_view title;
+        if(parse_heading_line(std::string_view(content).substr(line_start, end - line_start), level, title))
+        {
+          if(heading_index == result.heading_occurrence_index)
+          {
+            preview_edit_cursor_note_path_ = result.note_path;
+            preview_edit_cursor_pos_ = static_cast<int>(line_start);
+            break;
+          }
+          ++heading_index;
+        }
+        if(line_end == std::string::npos) break;
+        line_start = line_end + 1;
+      }
+    }
     set_active_note(folder_idx, note_idx);
     selected_note_indices.clear();
     selected_note_indices.insert(note_idx);
@@ -9103,37 +9412,6 @@ void App::frame_ui()
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.30f, 0.32f, 0.36f, 1.0f));
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.94f, 0.96f, 1.0f));
 
-      auto is_cursor_inside_ui_block = [&](const std::string &text, int cursor) -> bool {
-        if(text.empty() || cursor <= 0) return false;
-        const size_t cursor_pos = static_cast<size_t>(std::min(cursor, static_cast<int>(text.size())));
-        // Track whether the cursor is currently inside an open ```ui ... ``` block.
-        bool inside = false;
-        size_t pos = 0;
-        while(pos < text.size())
-        {
-          size_t nl = text.find('\n', pos);
-          const size_t line_end = (nl == std::string::npos) ? text.size() : nl;
-          std::string_view line(text.data() + pos, line_end - pos);
-          StringUtils::trim(line);
-          if(line == "```ui")
-          {
-            if(!inside && pos <= cursor_pos && cursor_pos <= line_end) return true;
-            inside = true;
-          }
-          else if(line == "```" && inside)
-          {
-            // The closing fence ends at line_end; cursor inside if it sits within the block body.
-            if(cursor_pos <= line_end) return true;
-            inside = false;
-          }
-          if(nl == std::string::npos) break;
-          pos = nl + 1;
-        }
-        // Unclosed ```ui block — treat the entire remaining text as inside.
-        if(inside) return cursor_pos >= pos;
-        return false;
-      };
-
       auto insert_topbar_snippet = [&](std::string snippet, bool wrap_in_ui_fences = false) {
         static constexpr const char *kCursorMarker = "__CURSOR__";
         int cursor_offset = static_cast<int>(snippet.size());
@@ -9144,7 +9422,7 @@ void App::frame_ui()
           snippet.erase(marker_pos, std::strlen(kCursorMarker));
         }
         const int cursor_pos = std::max(0, std::min(fmt_folder.cursor_pos, static_cast<int>(markdown_text_.size())));
-        if(wrap_in_ui_fences && !is_cursor_inside_ui_block(markdown_text_, cursor_pos))
+        if(wrap_in_ui_fences && !cursor_is_inside_ui_block(markdown_text_, cursor_pos))
         {
           std::string wrapped = "```ui\n";
           cursor_offset += static_cast<int>(wrapped.size());
@@ -9174,83 +9452,8 @@ void App::frame_ui()
         state_dirty_ = true;
       };
 
-      static char inventory_builder_title[128] = "Inventory";
-      static int inventory_builder_rows = 2;
-      static int inventory_builder_cols = 2;
       static int table_builder_rows = 2;
       static int table_builder_cols = 2;
-      auto trim_simple = [](std::string text) {
-        const size_t first = text.find_first_not_of(" \t\n\r");
-        if(first == std::string::npos) return std::string();
-        const size_t last = text.find_last_not_of(" \t\n\r");
-        return text.substr(first, last - first + 1);
-      };
-      auto escape_ui_string = [](const std::string &text) {
-        std::string out;
-        out.reserve(text.size() + 8);
-        for(char c : text)
-        {
-          switch(c)
-          {
-          case '\\':
-            out += "\\\\";
-            break;
-          case '"':
-            out += "\\\"";
-            break;
-          case '\n':
-            out += "\\n";
-            break;
-          default:
-            out.push_back(c);
-            break;
-          }
-        }
-        return out;
-      };
-      auto make_ui_identifier = [&](const std::string &label) {
-        std::string out;
-        out.reserve(label.size() + 4);
-        for(char c : label)
-        {
-          const bool is_lower = c >= 'a' && c <= 'z';
-          const bool is_upper = c >= 'A' && c <= 'Z';
-          const bool is_digit = c >= '0' && c <= '9';
-          if(is_lower || is_upper || is_digit)
-          {
-            out.push_back(is_upper ? static_cast<char>(c - 'A' + 'a') : c);
-          }
-          else if((c == ' ' || c == '-' || c == '_') && !out.empty() && out.back() != '_')
-          {
-            out.push_back('_');
-          }
-        }
-        while(!out.empty() && out.back() == '_') out.pop_back();
-        if(out.empty()) out = "inventory";
-        if(out.front() >= '0' && out.front() <= '9') out.insert(out.begin(), 'i');
-        return out;
-      };
-      auto build_inventory_snippet = [&](const char *raw_title, int rows, int cols) {
-        const int safe_rows = std::max(1, rows);
-        const int safe_cols = std::max(1, cols);
-        std::string label = trim_simple(raw_title ? std::string(raw_title) : std::string());
-        if(label.empty()) label = "Inventory";
-        const std::string variable_name = make_ui_identifier(label) + "_data";
-        const int width = std::max(220, safe_cols * 58 + 12);
-        std::ostringstream out;
-        out << variable_name << "({\n";
-        out << "  items:[\n";
-        out << "    {name:\"Potion\", image:\"potion.png\", tooltip:\"Consumable item\", quantity:3, color:\"#57A7FF\"}";
-        if(safe_rows * safe_cols > 1)
-          out << ",\n    {tooltip:\"Disabled example cell\", color:\"#FFB347\", enabled:false}\n";
-        else
-          out << "\n";
-        out << "  ]\n";
-        out << "})\n";
-        out << "inventory(" << variable_name << ", \"" << escape_ui_string(label) << "\", " << width << ", " << safe_rows << ", " << safe_cols << ")\n";
-        out << "__CURSOR__";
-        return out.str();
-      };
 
       constexpr float kIconH = 22.0f;
       auto icon_sz = [](const char *name) -> ImVec2 {
@@ -9299,6 +9502,12 @@ void App::frame_ui()
             case EditorAction::task_list:
               push_undo_snapshot();
               insert_checklist_item_at_cursor(markdown_text_, fmt_folder);
+              fmt_folder.sel_start = fmt_folder.cursor_pos;
+              fmt_folder.sel_end = fmt_folder.cursor_pos;
+              fmt_folder.selection_anchor = fmt_folder.cursor_pos;
+              fmt_folder.pending_select_range = true;
+              fmt_folder.pending_sel_start = fmt_folder.cursor_pos;
+              fmt_folder.pending_sel_end = fmt_folder.cursor_pos;
               break;
             case EditorAction::table:
               ImGui::OpenPopup("##tb_table_builder_popup");
@@ -9324,8 +9533,7 @@ void App::frame_ui()
               apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt_folder.color));
               break;
             case EditorAction::ui_block:
-              push_undo_snapshot();
-              insert_default_ui_block_at_cursor(markdown_text_, fmt_folder);
+              editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open_requested;
               break;
             case EditorAction::none:
               break;
@@ -9340,7 +9548,8 @@ void App::frame_ui()
               fmt_folder.pending_sel_start = anchor_sel_start;
               fmt_folder.pending_sel_end = anchor_sel_end;
             }
-            if(request_editor_action_ != EditorAction::table)
+            if(request_editor_action_ != EditorAction::table &&
+               request_editor_action_ != EditorAction::ui_block)
             {
               normalize_input_text_buffer(markdown_text_);
               state_dirty_ = true;
@@ -9448,195 +9657,69 @@ void App::frame_ui()
         ImGui::SameLine();
         if(tool_button("##tb_ui_widgets", ic_widget, sz_widget, "Widgets", Lang::t("Insert UI widget")))
         {
-          ImGui::OpenPopup("##tb_ui_widgets_popup");
+          ImGui::OpenPopup(kToolbarUiWidgetChooserPopup);
         }
-        bool request_open_inventory_builder = false;
-        if(ImGui::BeginPopup("##tb_ui_widgets_popup"))
+        const bool render_editor_action_ui_widget_chooser =
+            editor_action_ui_widget_chooser_state_ != UiWidgetChooserState::closed;
+        if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
         {
-          ImGui::TextDisabled("UI Blocks");
-          if(ImGui::MenuItem("Full UI example"))
-          {
-            insert_topbar_snippet(
-                R"MD(count(10)
-name("Sauron")
-enabled(true)
-mode("Home")
-tags(["daily", "important"])
-total(count*2)
-text("Count: ") int(count, "Count", 90, true)
-text(" Name: ") text(name, "Name", 150, "Edit the name")
-checkbox(enabled, "Enabled")
-enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
-multicheck(tags, "Tags", 180, ["daily", "important", "later"])
-if(enabled){
-  text("Visible total: ") text(total)
-}
-button("Reset count", 110, count=0)
-__CURSOR__)MD",
-                true);
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::Separator();
-          ImGui::TextDisabled("Variables");
-          if(ImGui::MenuItem("Variable example"))
-          {
-            insert_topbar_snippet(R"MD(valueA(10)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Computed variable example"))
-          {
-            insert_topbar_snippet(R"MD(valueA(10)
-valueB(valueA+5)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Global variable"))
-          {
-            if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
-            {
+          ImGui::SetNextWindowFocus();
+          ImGui::OpenPopup(kEditorActionsUiWidgetChooserPopup);
+        }
+        const char *const ui_widget_chooser_popup = render_editor_action_ui_widget_chooser
+                                                        ? kEditorActionsUiWidgetChooserPopup
+                                                        : kToolbarUiWidgetChooserPopup;
+        const bool ui_widget_chooser_open = render_ui_widget_chooser(
+            ui_widget_chooser_popup,
+            render_editor_action_ui_widget_chooser,
+            request_close_editor_action_ui_widget_chooser_,
+            insert_topbar_snippet,
+            [&]() {
+              if(active_folder_idx_ < 0 || active_folder_idx_ >= (int)folders_.size()) return;
               perform_workspace_change("Create .globals.md", [&]() {
                 FolderMeta &gf = folders_[(size_t)active_folder_idx_];
                 const std::string globals_title = ".globals";
                 const std::string globals_path = make_note_path(gf.name, globals_title);
-
-                const bool already_in_index = std::any_of(gf.notes.begin(), gf.notes.end(),
-                                                          [&](const NoteMeta &nm) { return nm.path == globals_path; });
-
-                if(!already_in_index)
+                const auto found = std::find_if(
+                    gf.notes.begin(), gf.notes.end(),
+                    [&](const NoteMeta &note) { return note.path == globals_path; });
+                if(found == gf.notes.end())
                 {
-                  NoteMeta gn;
-                  gn.id = generate_uuid();
-                  gn.title = globals_title;
-                  gn.path = globals_path;
+                  NoteMeta globals;
+                  globals.id = generate_uuid();
+                  globals.title = globals_title;
+                  globals.path = globals_path;
                   if(!std::filesystem::exists(globals_path))
                     write_text_file(globals_path,
                                     "```ui\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n");
-                  gf.notes.push_back(std::move(gn));
+                  gf.notes.push_back(std::move(globals));
                   flash_mark_note(gf.notes.back().path, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
                   flash_mark_folder(gf.name, ImVec4(0.25f, 0.80f, 0.42f, 1.0f));
-                  active_note_idx_ = (int)gf.notes.size() - 1;
+                  active_note_idx_ = static_cast<int>(gf.notes.size()) - 1;
                   load_note_content_for_active();
                   save_index();
+                  return;
                 }
-                else
-                {
-                  const auto it = std::find_if(gf.notes.begin(), gf.notes.end(),
-                                               [&](const NoteMeta &nm) { return nm.path == globals_path; });
-                  active_note_idx_ = (int)(it - gf.notes.begin());
-                  load_note_content_for_active();
-                  show_history_indicator("Opened", ".globals.md", ImVec4(0.26f, 0.59f, 0.98f, 1.0f));
-                }
+                active_note_idx_ = static_cast<int>(std::distance(gf.notes.begin(), found));
+                load_note_content_for_active();
+                show_history_indicator("Opened", ".globals.md", ImVec4(0.26f, 0.59f, 0.98f, 1.0f));
               });
-            }
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::Separator();
-          ImGui::TextDisabled("Widgets");
-          if(ImGui::MenuItem("Text output"))
-          {
-            insert_topbar_snippet(R"MD(valueA(10)
-text("Value: ") text(valueA)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Text input"))
-          {
-            insert_topbar_snippet(R"MD(name("Sauron")
-text(name, "Name", 150, "Edit the name")
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Integer input"))
-          {
-            insert_topbar_snippet(R"MD(count(10)
-int(count, "Count", 90, true)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Slider"))
-          {
-            insert_topbar_snippet(R"MD(volume(50)
-slider(volume, "Volume", 160, 0, 100)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Checkbox"))
-          {
-            insert_topbar_snippet(R"MD(enabled(true)
-checkbox(enabled, "Enabled")
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Enum"))
-          {
-            insert_topbar_snippet(R"MD(mode("Home")
-enum(mode, "Mode", 140, ["Home", "Work", "Ideas"])
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Multicheck"))
-          {
-            insert_topbar_snippet(R"MD(tags(["daily"])
-multicheck(tags, "Tags", 180, ["daily", "important", "later"])
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("List"))
-          {
-            insert_topbar_snippet(R"MD(items([
-  {name:"Sword", tooltip:"Basic weapon"},
-  {name:"Shield", tooltip:"Blocks attacks"},
-  {name:"Potion", tooltip:"Restores health"}
-])
-list(items, "Inventory items", 220, true)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Inventory..."))
-          {
-            request_open_inventory_builder = true;
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Button action"))
-          {
-            insert_topbar_snippet(R"MD(count(10)
-button("Reset count", 110, count=0)
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Command button"))
-          {
-            insert_topbar_snippet(R"MD(button("List files", 110, command("ls"))
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          if(ImGui::MenuItem("Conditional if block"))
-          {
-            insert_topbar_snippet(R"MD(enabled(true)
-checkbox(enabled, "Enabled")
-if(enabled){
-  text("Visible when enabled")
-}
-__CURSOR__)MD",
-                                  true);
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::EndPopup();
+            });
+        if(request_close_editor_action_ui_widget_chooser_)
+        {
+          editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+          request_close_editor_action_ui_widget_chooser_ = false;
         }
-        if(request_open_inventory_builder) ImGui::OpenPopup("##tb_inventory_builder_popup");
+        else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested &&
+                ui_widget_chooser_open)
+        {
+          editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open;
+        }
+        else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open &&
+                !ui_widget_chooser_open)
+        {
+          editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+        }
         if(ImGui::BeginPopupModal("##tb_table_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
         {
           ImGui::TextDisabled("%s", Lang::t("Insert Markdown Table"));
@@ -9657,31 +9740,6 @@ __CURSOR__)MD",
             fmt_folder.pending_sel_start = fmt_folder.sel_start;
             fmt_folder.pending_sel_end = fmt_folder.sel_end;
             refocus_folder_editor = true;
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::SameLine();
-          if(ImGui::Button(Lang::t("Cancel")))
-          {
-            refocus_folder_editor = true;
-            ImGui::CloseCurrentPopup();
-          }
-          ImGui::EndPopup();
-        }
-        if(ImGui::BeginPopupModal("##tb_inventory_builder_popup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-        {
-          ImGui::TextDisabled("%s", Lang::t("Insert Inventory Widget"));
-          ImGui::SetNextItemWidth(260.0f);
-          ImGui::InputText(Lang::t("Title"), inventory_builder_title, sizeof(inventory_builder_title));
-          ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt(Lang::t("Rows"), &inventory_builder_rows);
-          ImGui::SetNextItemWidth(120.0f);
-          ImGui::InputInt(Lang::t("Cols"), &inventory_builder_cols);
-          inventory_builder_rows = std::max(1, inventory_builder_rows);
-          inventory_builder_cols = std::max(1, inventory_builder_cols);
-          ImGui::TextDisabled("Slots: %d", inventory_builder_rows * inventory_builder_cols);
-          if(ImGui::Button(Lang::t("Insert")))
-          {
-            insert_topbar_snippet(build_inventory_snippet(inventory_builder_title, inventory_builder_rows, inventory_builder_cols), true);
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
@@ -11078,6 +11136,22 @@ __CURSOR__)MD",
           search_jump_len_ = 0;
           search_jump_force_edit_ = false;
         }
+        if(preview_edit_cursor_pos_ >= 0 &&
+           preview_edit_cursor_note_path_ == state_file_path_)
+        {
+          const int cursor = std::clamp(
+              preview_edit_cursor_pos_, 0, static_cast<int>(markdown_text_.size()));
+          fmt_folder.cursor_pos = cursor;
+          fmt_folder.sel_start = cursor;
+          fmt_folder.sel_end = cursor;
+          fmt_folder.selection_anchor = cursor;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = cursor;
+          fmt_folder.pending_sel_end = cursor;
+          refocus_folder_editor = true;
+          preview_edit_cursor_note_path_.clear();
+          preview_edit_cursor_pos_ = -1;
+        }
 
         if(refocus_folder_editor)
         {
@@ -11585,6 +11659,8 @@ __CURSOR__)MD",
       state_dirty_ = true;
       editing_mode_ = false;
       request_exit_edit_mode_ = false;
+      editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+      request_close_editor_action_ui_widget_chooser_ = false;
     }
 
     if(!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !deferred_selection_snapshot_before.empty())
@@ -11852,6 +11928,22 @@ __CURSOR__)MD",
     search_jump_len_ = 0;
     search_jump_force_edit_ = false;
   }
+  if(editing_mode_ && preview_edit_cursor_pos_ >= 0 &&
+     preview_edit_cursor_note_path_ == state_file_path_)
+  {
+    const int cursor = std::clamp(
+        preview_edit_cursor_pos_, 0, static_cast<int>(markdown_text_.size()));
+    fmt.cursor_pos = cursor;
+    fmt.sel_start = cursor;
+    fmt.sel_end = cursor;
+    fmt.selection_anchor = cursor;
+    fmt.pending_select_range = true;
+    fmt.pending_sel_start = cursor;
+    fmt.pending_sel_end = cursor;
+    refocus_editor = true;
+    preview_edit_cursor_note_path_.clear();
+    preview_edit_cursor_pos_ = -1;
+  }
 
   if(!editing_mode_)
   {
@@ -12099,6 +12191,46 @@ __CURSOR__)MD",
     }
 
     const bool has_anchor_selection = (anchor_sel_start != anchor_sel_end);
+    auto insert_note_snippet = [&](std::string snippet, bool wrap_in_ui_fences) {
+      static constexpr const char *kCursorMarker = "__CURSOR__";
+      int cursor_offset = static_cast<int>(snippet.size());
+      const std::size_t marker_pos = snippet.find(kCursorMarker);
+      if(marker_pos != std::string::npos)
+      {
+        cursor_offset = static_cast<int>(marker_pos);
+        snippet.erase(marker_pos, std::strlen(kCursorMarker));
+      }
+      const int cursor_pos = std::clamp(fmt.cursor_pos, 0, static_cast<int>(markdown_text_.size()));
+      if(wrap_in_ui_fences && !cursor_is_inside_ui_block(markdown_text_, cursor_pos))
+      {
+        std::string wrapped = "```ui\n";
+        cursor_offset += static_cast<int>(wrapped.size());
+        wrapped += snippet;
+        if(!snippet.empty() && snippet.back() != '\n') wrapped += '\n';
+        wrapped += "```\n";
+        snippet = std::move(wrapped);
+      }
+      if(cursor_pos > 0 && !snippet.empty() &&
+         markdown_text_[static_cast<std::size_t>(cursor_pos) - 1] != '\n' &&
+         snippet.front() != '\n')
+      {
+        snippet.insert(snippet.begin(), '\n');
+        ++cursor_offset;
+      }
+      push_undo_snapshot();
+      markdown_text_.insert(static_cast<std::size_t>(cursor_pos), snippet);
+      const int new_cursor = cursor_pos + std::max(0, cursor_offset);
+      fmt.cursor_pos = new_cursor;
+      fmt.sel_start = new_cursor;
+      fmt.sel_end = new_cursor;
+      fmt.selection_anchor = new_cursor;
+      fmt.pending_select_range = true;
+      fmt.pending_sel_start = new_cursor;
+      fmt.pending_sel_end = new_cursor;
+      normalize_input_text_buffer(markdown_text_);
+      state_dirty_ = true;
+      refocus_editor = true;
+    };
 
     if(request_editor_action_ != EditorAction::none)
     {
@@ -12115,6 +12247,12 @@ __CURSOR__)MD",
         case EditorAction::task_list:
           push_undo_snapshot();
           insert_checklist_item_at_cursor(markdown_text_, fmt);
+          fmt.sel_start = fmt.cursor_pos;
+          fmt.sel_end = fmt.cursor_pos;
+          fmt.selection_anchor = fmt.cursor_pos;
+          fmt.pending_select_range = true;
+          fmt.pending_sel_start = fmt.cursor_pos;
+          fmt.pending_sel_end = fmt.cursor_pos;
           break;
         case EditorAction::table:
           push_undo_snapshot();
@@ -12144,8 +12282,7 @@ __CURSOR__)MD",
           apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt.color));
           break;
         case EditorAction::ui_block:
-          push_undo_snapshot();
-          insert_default_ui_block_at_cursor(markdown_text_, fmt);
+          editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open_requested;
           break;
         case EditorAction::none:
           break;
@@ -12160,11 +12297,71 @@ __CURSOR__)MD",
           fmt.pending_sel_start = anchor_sel_start;
           fmt.pending_sel_end = anchor_sel_end;
         }
-        normalize_input_text_buffer(markdown_text_);
-        state_dirty_ = true;
-        refocus_editor = true;
+        if(request_editor_action_ != EditorAction::ui_block)
+        {
+          normalize_input_text_buffer(markdown_text_);
+          state_dirty_ = true;
+          refocus_editor = true;
+        }
       }
       request_editor_action_ = EditorAction::none;
+    }
+
+    if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
+    {
+      ImGui::SetNextWindowFocus();
+      ImGui::OpenPopup(kEditorActionsUiWidgetChooserPopup);
+    }
+    const bool ui_widget_chooser_open =
+        editor_action_ui_widget_chooser_state_ != UiWidgetChooserState::closed &&
+        render_ui_widget_chooser(
+            kEditorActionsUiWidgetChooserPopup,
+            true,
+            request_close_editor_action_ui_widget_chooser_,
+            insert_note_snippet,
+            [&]() {
+              if(active_folder_idx_ < 0 || active_folder_idx_ >= (int)folders_.size()) return;
+              perform_workspace_change("Create .globals.md", [&]() {
+                FolderMeta &folder = folders_[(size_t)active_folder_idx_];
+                const std::string globals_title = ".globals";
+                const std::string globals_path = make_note_path(folder.name, globals_title);
+                const auto found = std::find_if(
+                    folder.notes.begin(), folder.notes.end(),
+                    [&](const NoteMeta &note) { return note.path == globals_path; });
+                if(found == folder.notes.end())
+                {
+                  NoteMeta globals;
+                  globals.id = generate_uuid();
+                  globals.title = globals_title;
+                  globals.path = globals_path;
+                  if(!std::filesystem::exists(globals_path))
+                    write_text_file(globals_path,
+                                    "```ui\ncampaign(\"My Campaign\")\nparty_level(1)\ngold(0)\n```\n");
+                  folder.notes.push_back(std::move(globals));
+                  active_note_idx_ = static_cast<int>(folder.notes.size()) - 1;
+                  load_note_content_for_active();
+                  save_index();
+                  return;
+                }
+                active_note_idx_ = static_cast<int>(std::distance(folder.notes.begin(), found));
+                load_note_content_for_active();
+                show_history_indicator("Opened", ".globals.md", ImVec4(0.26f, 0.59f, 0.98f, 1.0f));
+              });
+            });
+    if(request_close_editor_action_ui_widget_chooser_)
+    {
+      editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+      request_close_editor_action_ui_widget_chooser_ = false;
+    }
+    else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested &&
+            ui_widget_chooser_open)
+    {
+      editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open;
+    }
+    else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open &&
+            !ui_widget_chooser_open)
+    {
+      editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
     }
 
     // Open palette only with right-click while editing and text is selected.
@@ -12273,6 +12470,8 @@ __CURSOR__)MD",
     state_dirty_ = true;
     editing_mode_ = false;
     request_exit_edit_mode_ = false;
+    editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
+    request_close_editor_action_ui_widget_chooser_ = false;
     show_palette = false;
     refocus_editor = false;
   }
