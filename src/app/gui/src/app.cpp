@@ -77,11 +77,120 @@ using MarkdownSupport::normalize_input_text_buffer;
 using MarkdownSupport::render_preview_with_task_checkboxes;
 using MarkdownSupport::render_preview_with_task_checkboxes_ex;
 using MarkdownSupport::request_preview_heading;
+using MarkdownSupport::request_preview_source_offset;
 using MarkdownSupport::rgba_to_hex;
 
 static ImVec2 nonzero_invisible_button_size(float w, float h)
 {
   return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
+static ImGuiWindow *input_text_multiline_child(ImGuiID input_id)
+{
+  if(GImGui == nullptr) return nullptr;
+
+  // InputTextMultiline's child window has a generated window ID; ChildId retains
+  // the input widget ID after the child has been ended.
+  ImGuiWindow *const parent = ImGui::GetCurrentWindowRead();
+  for(ImGuiWindow *child : parent->DC.ChildWindows)
+  {
+    if(child->ChildId == input_id) return child;
+  }
+  return nullptr;
+}
+
+static int line_index_at_offset(std::string_view text, int offset)
+{
+  const int target = std::clamp(offset, 0, static_cast<int>(text.size()));
+  return static_cast<int>(std::count(text.begin(), text.begin() + target, '\n'));
+}
+
+static bool scroll_input_text_multiline_to_offset(
+    ImGuiID input_id, std::string_view text, int offset)
+{
+  ImGuiWindow *const child = input_text_multiline_child(input_id);
+  if(child == nullptr) return false;
+
+  const int target = std::clamp(offset, 0, static_cast<int>(text.size()));
+  const std::size_t target_offset = static_cast<std::size_t>(target);
+  const std::size_t line_break_before =
+      target_offset == 0 ? std::string_view::npos : text.rfind('\n', target_offset - 1);
+  const std::size_t line_start =
+      line_break_before == std::string_view::npos ? 0 : line_break_before + 1;
+  const float line_y = child->DC.CursorStartPos.y - child->Pos.y +
+                       ImGui::GetStyle().FramePadding.y +
+                       static_cast<float>(line_index_at_offset(text, target)) * ImGui::GetFontSize();
+  const float line_x = child->DC.CursorStartPos.x - child->Pos.x +
+                       ImGui::GetStyle().FramePadding.x +
+                       ImGui::CalcTextSize(
+                           text.data() + line_start, text.data() + target_offset)
+                           .x;
+  ImGui::SetScrollFromPosX(child, line_x, 0.5f);
+  ImGui::SetScrollFromPosY(child, line_y, 0.5f);
+  return true;
+}
+
+static void draw_input_text_multiline_match_indicator(
+    ImGuiID input_id, std::string_view text, int offset, int length)
+{
+  ImGuiWindow *const child = input_text_multiline_child(input_id);
+  if(child == nullptr || text.empty() || length <= 0) return;
+
+  const int text_length = static_cast<int>(text.size());
+  const int match_start = std::clamp(offset, 0, text_length);
+  const int match_length = std::clamp(length, 0, text_length - match_start);
+  const int match_end = match_start + match_length;
+  if(match_start == match_end) return;
+
+  const std::size_t start = static_cast<std::size_t>(match_start);
+  const std::size_t line_break_before =
+      start == 0 ? std::string_view::npos : text.rfind('\n', start - 1);
+  const std::size_t line_start =
+      line_break_before == std::string_view::npos ? 0 : line_break_before + 1;
+  const std::size_t line_end = text.find_first_of("\r\n", start);
+  const std::size_t first_segment_end = std::min(
+      static_cast<std::size_t>(match_end),
+      line_end == std::string_view::npos ? text.size() : line_end);
+
+  const char *const text_begin = text.data();
+  const char *const match_begin = text_begin + match_start;
+  const char *const segment_end = text_begin + first_segment_end;
+  const float prefix_width =
+      ImGui::CalcTextSize(text_begin + line_start, match_begin).x;
+  const float segment_width =
+      std::max(1.0f, ImGui::CalcTextSize(match_begin, segment_end).x);
+
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float line_height = ImGui::GetFontSize();
+  // CursorStartPos already includes the child scroll offset. Match
+  // InputTextMultiline's padded text origin without applying it again.
+  const ImVec2 text_origin(
+      child->DC.CursorStartPos.x + style.FramePadding.x,
+      child->DC.CursorStartPos.y + style.FramePadding.y);
+  const float y0 = text_origin.y +
+                   static_cast<float>(line_index_at_offset(text, match_start)) * line_height;
+  const float x0 = text_origin.x + prefix_width;
+  const float x1 = x0 + segment_width;
+  const ImRect clip_rect = child->InnerClipRect;
+  const float gutter_x1 = std::min(clip_rect.Min.x + 2.0f, clip_rect.Max.x);
+  if(gutter_x1 <= clip_rect.Min.x) return;
+
+  const ImU32 background = ImGui::GetColorU32(ImGuiCol_NavHighlight, 0.28f);
+  const ImU32 accent = ImGui::GetColorU32(ImGuiCol_NavHighlight, 0.95f);
+  const float underline_y = y0 + line_height - 1.0f;
+  const float bracket_height = std::min(4.0f, line_height * 0.35f);
+  child->DrawList->PushClipRect(clip_rect.Min, clip_rect.Max, true);
+  // Keep the existing line marker while drawing a range-specific overlay.
+  child->DrawList->AddRectFilled(
+      ImVec2(clip_rect.Min.x, y0), ImVec2(gutter_x1, y0 + line_height), accent);
+  child->DrawList->AddRectFilled(
+      ImVec2(x0, y0), ImVec2(x1, y0 + line_height), background);
+  child->DrawList->AddLine(ImVec2(x0, underline_y), ImVec2(x1, underline_y), accent, 1.5f);
+  child->DrawList->AddLine(
+      ImVec2(x0, underline_y), ImVec2(x0, underline_y - bracket_height), accent, 1.5f);
+  child->DrawList->AddLine(
+      ImVec2(x1, underline_y), ImVec2(x1, underline_y - bracket_height), accent, 1.5f);
+  child->DrawList->PopClipRect();
 }
 using MarkdownSupport::set_all_preview_headers_open;
 using MarkdownSupport::set_preview_document_path;
@@ -3578,6 +3687,20 @@ void App::load_note_content_for_active()
 {
   if(!history_replay_in_progress_) flush_pending_text_history();
 
+  const std::string previous_note_path = state_file_path_;
+  const auto clear_search_match_state_if_note_changed = [&]() {
+    if(state_file_path_ == previous_note_path) return;
+    search_editor_scroll_note_path_.clear();
+    search_editor_scroll_pos_ = -1;
+    search_editor_selection_note_path_.clear();
+    search_editor_selection_start_ = -1;
+    search_editor_selection_end_ = -1;
+    search_editor_selection_focus_pending_ = false;
+    search_editor_match_note_path_.clear();
+    search_editor_match_offset_ = -1;
+    search_editor_match_length_ = 0;
+  };
+
   ensure_default_index();
   if(!has_active_note())
   {
@@ -3587,6 +3710,7 @@ void App::load_note_content_for_active()
     discard_pending_text_history();
     request_undo_edit_ = false;
     request_redo_edit_ = false;
+    clear_search_match_state_if_note_changed();
     return;
   }
 
@@ -3600,6 +3724,7 @@ void App::load_note_content_for_active()
     discard_pending_text_history();
     request_undo_edit_ = false;
     request_redo_edit_ = false;
+    clear_search_match_state_if_note_changed();
     return;
   }
 
@@ -3634,6 +3759,7 @@ void App::load_note_content_for_active()
   discard_pending_text_history();
   request_undo_edit_ = false;
   request_redo_edit_ = false;
+  clear_search_match_state_if_note_changed();
 }
 
 void App::set_active_note(int folder_idx, int note_idx)
@@ -4530,9 +4656,20 @@ bool App::frame_begin()
   pinned_topmost_viewports_.clear();
 
   // frame_begin runs before NewFrame applies mouse clicks; track the clicked window
-  // so a click away from the non-modal switcher immediately releases its shortcuts.
+  // so a click away from either non-modal dialog immediately releases its shortcuts.
+  bool search_dialog_mouse_focus_override_valid = false;
+  bool search_dialog_mouse_focus_override = false;
   bool note_switcher_mouse_focus_override_valid = false;
   bool note_switcher_mouse_focus_override = false;
+  const auto search_dialog_contains_window = [](ImGuiWindow *window) {
+    if(window == nullptr || ImGui::GetCurrentContext() == nullptr) return false;
+    ImGuiWindow *search_dialog = ImGui::FindWindowByName(Lang::t("Search"));
+    return search_dialog != nullptr && ImGui::IsWindowWithinBeginStackOf(window, search_dialog);
+  };
+  const auto search_dialog_has_keyboard_focus = [&]() {
+    if(search_dialog_mouse_focus_override_valid) return search_dialog_mouse_focus_override;
+    return GImGui != nullptr && search_dialog_contains_window(GImGui->NavWindow);
+  };
   const auto note_switcher_contains_window = [](ImGuiWindow *window) {
     if(window == nullptr || ImGui::GetCurrentContext() == nullptr) return false;
     ImGuiWindow *switcher = ImGui::FindWindowByName("Quick Note Switcher");
@@ -4623,6 +4760,8 @@ bool App::frame_begin()
       ImGuiWindow *hovered_window_under_moving_window = nullptr;
       ImGui::FindHoveredWindowEx(mouse_pos, true, &hovered_window,
                                  &hovered_window_under_moving_window);
+      search_dialog_mouse_focus_override_valid = true;
+      search_dialog_mouse_focus_override = search_dialog_contains_window(hovered_window);
       note_switcher_mouse_focus_override_valid = true;
       note_switcher_mouse_focus_override = note_switcher_contains_window(hovered_window);
       continue;
@@ -4648,6 +4787,29 @@ bool App::frame_begin()
       request_open_note_switcher_ = true;
       request_close_search_ = true;
       continue;
+    }
+
+    // The search input remains focused while the result highlight moves, so
+    // consume navigation keys before ImGui turns them into text-cursor motion.
+    if(search_window_visible_ && search_dialog_has_keyboard_focus() &&
+       !(terminal_visible_ && terminal_.hasFocus()) &&
+       event.type == SDL_KEYDOWN)
+    {
+      if(event.key.keysym.sym == SDLK_UP)
+      {
+        --search_navigation_delta_;
+        continue;
+      }
+      if(event.key.keysym.sym == SDLK_DOWN)
+      {
+        ++search_navigation_delta_;
+        continue;
+      }
+      if(event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER)
+      {
+        request_search_activate_ = true;
+        continue;
+      }
     }
 
     // The switcher's input remains focused while the result highlight moves, so
@@ -5224,6 +5386,9 @@ void App::frame_ui()
     drag_hover_folder_idx = -1;
     sidebar_flashes.clear();
     search_dialog = {};
+    search_selected_idx_ = -1;
+    search_navigation_delta_ = 0;
+    request_search_activate_ = false;
     note_switcher = {};
     note_switcher_selected_idx_ = -1;
     note_switcher_navigation_delta_ = 0;
@@ -5285,18 +5450,25 @@ void App::frame_ui()
     return out;
   };
   auto make_search_preview = [](std::string_view text, size_t match_pos, size_t match_len) {
-    if(match_pos > text.size()) match_pos = text.size();
-    const size_t context_before = 36;
-    const size_t context_after = 56;
-    const size_t start = (match_pos > context_before) ? (match_pos - context_before) : 0;
-    const size_t end = std::min(text.size(), match_pos + std::max<size_t>(match_len, 1) + context_after);
+    match_pos = std::min(match_pos, text.size());
+    const size_t previous_line_break = match_pos == 0 ? std::string_view::npos : text.find_last_of("\r\n", match_pos - 1);
+    const size_t line_start = previous_line_break == std::string_view::npos ? 0 : previous_line_break + 1;
+    const size_t next_line_break = text.find_first_of("\r\n", match_pos);
+    const size_t line_end = next_line_break == std::string_view::npos ? text.size() : next_line_break;
+
+    constexpr size_t kContextBefore = 36;
+    constexpr size_t kContextAfter = 56;
+    const size_t start = std::max(line_start, match_pos > kContextBefore ? match_pos - kContextBefore : 0);
+    const size_t match_end = std::min(line_end, match_pos + std::max<size_t>(match_len, 1));
+    const size_t end = std::min(line_end, match_end + std::min(kContextAfter, line_end - match_end));
+
     std::string out;
-    if(start > 0) out += "...";
+    if(start > line_start) out += "...";
     out.append(text.substr(start, end - start));
-    if(end < text.size()) out += "...";
+    if(end < line_end) out += "...";
     for(char &c : out)
     {
-      if(c == '\n' || c == '\r' || c == '\t') c = ' ';
+      if(c == '\t') c = ' ';
     }
     return out;
   };
@@ -5362,7 +5534,27 @@ void App::frame_ui()
     search_jump_pos_ = result.offset;
     search_jump_len_ = result.length;
     search_jump_force_edit_ = prefer_edit && result.content_match && result.offset >= 0;
+    if(!prefer_edit && result.content_match && result.offset >= 0)
+      request_preview_source_offset(result.note_path, static_cast<std::size_t>(result.offset));
     search_request_window_focus_ = prefer_edit;
+  };
+  auto highlight_current_editor_match = [&](const SearchResult &result) {
+    if(!result.content_match || result.offset < 0 || result.note_path != state_file_path_) return;
+    // Scroll the inactive multiline child directly. Activating the editor here
+    // would steal the keyboard focus needed for repeated search navigation.
+    const int start = std::min(result.offset, static_cast<int>(markdown_text_.size()));
+    const int end = std::min(start + std::max(1, result.length), static_cast<int>(markdown_text_.size()));
+    search_editor_scroll_note_path_ = result.note_path;
+    search_editor_scroll_pos_ = start;
+    search_editor_selection_note_path_ = result.note_path;
+    search_editor_selection_start_ = start;
+    search_editor_selection_end_ = end;
+    search_editor_match_note_path_ = result.note_path;
+    search_editor_match_offset_ = start;
+    search_editor_match_length_ = end - start;
+    search_editor_selection_focus_pending_ = true;
+    search_request_window_focus_ = false;
+    search_dialog.focus_input = true;
   };
   auto refresh_search_results = [&]() {
     search_dialog.results.clear();
@@ -5372,6 +5564,15 @@ void App::frame_ui()
 
     const std::string query_text(search_dialog.query);
     const std::string query_trim = std::string(StringUtils::trim(query_text));
+    search_editor_scroll_note_path_.clear();
+    search_editor_scroll_pos_ = -1;
+    search_editor_selection_note_path_.clear();
+    search_editor_selection_start_ = -1;
+    search_editor_selection_end_ = -1;
+    search_editor_selection_focus_pending_ = false;
+    search_editor_match_note_path_.clear();
+    search_editor_match_offset_ = -1;
+    search_editor_match_length_ = 0;
     if(query_trim.empty()) return;
 
     const std::string query_lower = to_lower_ascii(query_trim);
@@ -5485,6 +5686,9 @@ void App::frame_ui()
     search_dialog.visible = true;
     search_dialog.focus_input = true;
     search_dialog.just_opened = true;
+    search_selected_idx_ = -1;
+    search_navigation_delta_ = 0;
+    request_search_activate_ = false;
   };
   auto open_default_search_dialog = [&]() {
     if(request_open_project_search_)
@@ -5509,20 +5713,35 @@ void App::frame_ui()
     open_default_search_dialog();
     if(request_close_search_)
     {
+      if(search_dialog.scope == SearchScope::CurrentEditorNote)
+        search_request_window_focus_ = true;
       search_dialog.visible = false;
       request_close_search_ = false;
+      search_selected_idx_ = -1;
+      search_navigation_delta_ = 0;
+      request_search_activate_ = false;
     }
     search_window_visible_ = search_dialog.visible;
     if(!search_dialog.visible) return;
 
-    const ImGuiCond placement_cond = search_dialog.just_opened ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
-    ImGui::SetNextWindowSize(ImVec2(680.0f, 480.0f), placement_cond);
+    const bool just_opened = search_dialog.just_opened;
+    const bool editor_search = search_dialog.scope == SearchScope::CurrentEditorNote;
+    const ImGuiCond placement_cond = just_opened ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+    ImGui::SetNextWindowSize(editor_search ? ImVec2(500.0f, 150.0f) : ImVec2(680.0f, 480.0f),
+                             editor_search ? ImGuiCond_Always : placement_cond);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond, ImVec2(0.5f, 0.5f));
-    if(search_dialog.just_opened) ImGui::SetNextWindowFocus();
+    if(just_opened) ImGui::SetNextWindowFocus();
     if(!ImGui::Begin(Lang::t("Search"), &search_dialog.visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
     {
       search_dialog.just_opened = false;
       ImGui::End();
+      search_window_visible_ = search_dialog.visible;
+      if(!search_dialog.visible)
+      {
+        search_selected_idx_ = -1;
+        search_navigation_delta_ = 0;
+        request_search_activate_ = false;
+      }
       return;
     }
     search_dialog.just_opened = false;
@@ -5533,7 +5752,7 @@ void App::frame_ui()
       search_dialog.focus_input = false;
     }
 
-    ImGui::SetNextItemWidth(420.0f);
+    ImGui::SetNextItemWidth(editor_search ? 360.0f : 420.0f);
     const bool query_changed = ImGui::InputText(
         "Query",
         search_dialog.query,
@@ -5541,12 +5760,95 @@ void App::frame_ui()
         ImGuiInputTextFlags_AutoSelectAll);
 
     const std::string current_query(search_dialog.query);
-    if(query_changed || current_query != search_dialog.last_query || search_dialog.scope != search_dialog.last_scope)
+    bool search_selection_moved = false;
+    const bool search_results_refreshed =
+        query_changed || current_query != search_dialog.last_query ||
+        search_dialog.scope != search_dialog.last_scope || just_opened;
+    if(search_results_refreshed)
     {
+      search_selected_idx_ = -1;
       search_dialog.scope_label = scope_label_for(search_dialog.scope);
       refresh_search_results();
+      if(!search_dialog.results.empty())
+      {
+        search_selected_idx_ = 0;
+        search_selection_moved = true;
+        if(editor_search)
+          highlight_current_editor_match(search_dialog.results.front());
+      }
       search_dialog.last_query = current_query;
       search_dialog.last_scope = search_dialog.scope;
+    }
+
+    if(!search_dialog.results.empty() && search_navigation_delta_ != 0)
+    {
+      const int previous_selected_idx = search_selected_idx_;
+      const int result_count = static_cast<int>(search_dialog.results.size());
+      if(editor_search)
+      {
+        search_selected_idx_ = (search_selected_idx_ + search_navigation_delta_) % result_count;
+        if(search_selected_idx_ < 0) search_selected_idx_ += result_count;
+      }
+      else
+      {
+        search_selected_idx_ = clamp_to_range(
+            search_selected_idx_ + search_navigation_delta_, 0, result_count - 1);
+      }
+      search_selection_moved = search_selection_moved ||
+                               search_selected_idx_ != previous_selected_idx;
+      if(search_selection_moved)
+      {
+        const SearchResult &selected_result = search_dialog.results[static_cast<std::size_t>(search_selected_idx_)];
+        if(editor_search)
+          highlight_current_editor_match(selected_result);
+      }
+    }
+    search_navigation_delta_ = 0;
+
+    if(request_search_activate_)
+    {
+      request_search_activate_ = false;
+      if(!search_results_refreshed && search_selected_idx_ >= 0 &&
+         search_selected_idx_ < static_cast<int>(search_dialog.results.size()))
+      {
+        if(editor_search)
+        {
+          search_selected_idx_ = (search_selected_idx_ + 1) % static_cast<int>(search_dialog.results.size());
+          highlight_current_editor_match(search_dialog.results[static_cast<std::size_t>(search_selected_idx_)]);
+        }
+        else
+        {
+          navigate_to_search_result(
+              search_dialog.results[static_cast<std::size_t>(search_selected_idx_)], false);
+          search_dialog.visible = false;
+        }
+      }
+    }
+
+    if(editor_search)
+    {
+      const std::string_view query = StringUtils::trim(current_query);
+      if(query.empty())
+        ImGui::TextDisabled("%s", Lang::t("Type to search."));
+      else if(search_dialog.results.empty())
+        ImGui::TextDisabled("Match 0 / 0 — %s", Lang::t("No matches found."));
+      else
+        ImGui::TextDisabled("Match %d / %d — Enter: next",
+                            search_selected_idx_ + 1,
+                            search_dialog.total_matches);
+
+      ImGui::SameLine();
+      if(ImGui::Button("Close")) search_dialog.visible = false;
+      ImGui::End();
+      search_window_visible_ = search_dialog.visible;
+      if(!search_dialog.visible)
+      {
+        search_request_window_focus_ = true;
+        search_selected_idx_ = -1;
+        search_navigation_delta_ = 0;
+        request_search_activate_ = false;
+      }
+      return;
     }
 
     ImGui::TextDisabled("Scope: %s", search_dialog.scope_label.c_str());
@@ -5574,10 +5876,16 @@ void App::frame_ui()
             result.note_title +
             "  [" + result.field_label + "]" +
             (result.content_match ? "  " + std::to_string(result.line) + ":" + std::to_string(result.column) : "");
-        if(ImGui::Selectable((header + "##search_result_" + std::to_string(i)).c_str(), false))
+        const bool selected = static_cast<int>(i) == search_selected_idx_;
+        if(ImGui::Selectable((header + "##search_result_" + std::to_string(i)).c_str(), selected))
         {
+          search_selected_idx_ = static_cast<int>(i);
           navigate_to_search_result(result, search_dialog.scope == SearchScope::CurrentEditorNote);
           search_dialog.visible = false;
+        }
+        if(selected)
+        {
+          if(search_selection_moved) ImGui::SetScrollHereY(0.5f);
         }
         ImGui::TextDisabled("%s", result.note_path.c_str());
         if(!result.preview.empty()) ImGui::TextWrapped("%s", result.preview.c_str());
@@ -5589,6 +5897,12 @@ void App::frame_ui()
     if(ImGui::Button("Close")) search_dialog.visible = false;
     ImGui::End();
     search_window_visible_ = search_dialog.visible;
+    if(!search_dialog.visible)
+    {
+      search_selected_idx_ = -1;
+      search_navigation_delta_ = 0;
+      request_search_activate_ = false;
+    }
   };
   auto navigate_to_note_switcher_result = [&](const NoteSwitcherResult &result) {
     int folder_idx = result.folder_idx;
@@ -5916,6 +6230,9 @@ void App::frame_ui()
     note_switcher_navigation_delta_ = 0;
     request_note_switcher_activate_ = false;
     search_dialog.visible = false;
+    search_selected_idx_ = -1;
+    search_navigation_delta_ = 0;
+    request_search_activate_ = false;
     search_window_visible_ = false;
     request_open_note_switcher_ = false;
   };
@@ -10182,6 +10499,22 @@ __CURSOR__)MD",
         static MdEditorUserData ud_folder{&markdown_text_, &fmt_folder};
         ud_folder.text = &markdown_text_;
 
+        const bool apply_search_selection =
+            search_editor_selection_start_ >= 0 &&
+            search_editor_selection_note_path_ == state_file_path_;
+        if(apply_search_selection)
+        {
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = search_editor_selection_start_;
+          fmt_folder.pending_sel_end = search_editor_selection_end_;
+          fmt_folder.selection_anchor = search_editor_selection_start_;
+          if(!search_window_visible_ && search_editor_selection_focus_pending_)
+          {
+            refocus_folder_editor = true;
+            search_editor_selection_focus_pending_ = false;
+          }
+        }
+
         if(search_jump_force_edit_ &&
            !search_jump_note_path_.empty() &&
            search_jump_note_path_ == state_file_path_ &&
@@ -10231,6 +10564,29 @@ __CURSOR__)MD",
               return md_editor_cb(data);
             },
             &ud_folder);
+        if(search_editor_scroll_pos_ >= 0 && search_editor_scroll_note_path_ == state_file_path_ &&
+           scroll_input_text_multiline_to_offset(
+               ImGui::GetID("##md_folder"), markdown_text_, search_editor_scroll_pos_))
+        {
+          search_editor_scroll_note_path_.clear();
+          search_editor_scroll_pos_ = -1;
+        }
+        if(search_editor_match_offset_ >= 0 &&
+           search_editor_match_note_path_ == state_file_path_)
+        {
+          draw_input_text_multiline_match_indicator(
+              ImGui::GetID("##md_folder"),
+              markdown_text_,
+              search_editor_match_offset_,
+              search_editor_match_length_);
+        }
+        if(apply_search_selection && ImGui::IsItemActive() && !fmt_folder.pending_select_range)
+        {
+          search_editor_selection_note_path_.clear();
+          search_editor_selection_start_ = -1;
+          search_editor_selection_end_ = -1;
+          search_editor_selection_focus_pending_ = false;
+        }
         normalize_input_text_buffer(markdown_text_);
         if(changed)
         {
@@ -10906,6 +11262,22 @@ __CURSOR__)MD",
   static MdEditorUserData ud{&markdown_text_, &fmt};
   ud.text = &markdown_text_;
 
+  const bool apply_search_selection =
+      search_editor_selection_start_ >= 0 &&
+      search_editor_selection_note_path_ == state_file_path_;
+  if(apply_search_selection)
+  {
+    fmt.pending_select_range = true;
+    fmt.pending_sel_start = search_editor_selection_start_;
+    fmt.pending_sel_end = search_editor_selection_end_;
+    fmt.selection_anchor = search_editor_selection_start_;
+    if(!search_window_visible_ && search_editor_selection_focus_pending_)
+    {
+      refocus_editor = true;
+      search_editor_selection_focus_pending_ = false;
+    }
+  }
+
   if(search_jump_force_edit_ &&
      !search_jump_note_path_.empty() &&
      search_jump_note_path_ == state_file_path_ &&
@@ -11058,6 +11430,29 @@ __CURSOR__)MD",
           return md_editor_cb(data);
         },
         &ud);
+    if(search_editor_scroll_pos_ >= 0 && search_editor_scroll_note_path_ == state_file_path_ &&
+       scroll_input_text_multiline_to_offset(
+           ImGui::GetID("##md"), markdown_text_, search_editor_scroll_pos_))
+    {
+      search_editor_scroll_note_path_.clear();
+      search_editor_scroll_pos_ = -1;
+    }
+    if(search_editor_match_offset_ >= 0 &&
+       search_editor_match_note_path_ == state_file_path_)
+    {
+      draw_input_text_multiline_match_indicator(
+          ImGui::GetID("##md"),
+          markdown_text_,
+          search_editor_match_offset_,
+          search_editor_match_length_);
+    }
+    if(apply_search_selection && ImGui::IsItemActive() && !fmt.pending_select_range)
+    {
+      search_editor_selection_note_path_.clear();
+      search_editor_selection_start_ = -1;
+      search_editor_selection_end_ = -1;
+      search_editor_selection_focus_pending_ = false;
+    }
     normalize_input_text_buffer(markdown_text_);
     if(text_changed)
     {

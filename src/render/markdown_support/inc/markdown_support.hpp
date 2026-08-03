@@ -61,6 +61,8 @@ void set_preview_document_path(std::string_view path);
 void request_preview_heading(std::string_view document_path,
                              std::string_view heading_path,
                              std::size_t heading_occurrence_index);
+// Scroll the matching preview document to a byte offset in its markdown source.
+void request_preview_source_offset(std::string_view document_path, std::size_t offset);
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);

@@ -240,7 +240,10 @@ private:
   bool reset_sidebar_state_ = false;
   bool request_close_search_ = false;
   bool request_close_note_switcher_ = false;
+  bool request_search_activate_ = false;
   bool request_note_switcher_activate_ = false;
+  int search_navigation_delta_ = 0;
+  int search_selected_idx_ = -1;
   int note_switcher_navigation_delta_ = 0;
   int note_switcher_selected_idx_ = -1;
   bool search_window_visible_ = false;
@@ -257,6 +260,15 @@ private:
   int search_jump_pos_ = -1;
   int search_jump_len_ = 0;
   bool search_jump_force_edit_ = false;
+  std::string search_editor_scroll_note_path_;
+  int search_editor_scroll_pos_ = -1;
+  std::string search_editor_selection_note_path_;
+  int search_editor_selection_start_ = -1;
+  int search_editor_selection_end_ = -1;
+  bool search_editor_selection_focus_pending_ = false;
+  std::string search_editor_match_note_path_;
+  int search_editor_match_offset_ = -1;
+  int search_editor_match_length_ = 0;
   std::string note_title_ = "Note";
   std::string state_file_path_;
   using NoteMeta = notepp::note_model::NoteMeta;

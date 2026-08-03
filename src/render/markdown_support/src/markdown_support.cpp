@@ -512,7 +512,14 @@ struct PreviewHeadingRequest
   std::size_t heading_occurrence_index = 0;
 };
 
+struct PreviewSourceOffsetRequest
+{
+  std::string document_key;
+  std::size_t offset = 0;
+};
+
 std::optional<PreviewHeadingRequest> g_preview_heading_request;
+std::optional<PreviewSourceOffsetRequest> g_preview_source_offset_request;
 
 void open_table_cell_editor(
     const std::string &document_key,
@@ -1939,6 +1946,18 @@ void request_preview_heading(std::string_view document_path,
       heading_occurrence_index};
 }
 
+void request_preview_source_offset(std::string_view document_path, std::size_t offset)
+{
+  if(document_path.empty())
+  {
+    g_preview_source_offset_request.reset();
+    return;
+  }
+
+  g_preview_source_offset_request = PreviewSourceOffsetRequest{
+      portable_document_key(document_path), offset};
+}
+
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to)
 {
@@ -2019,6 +2038,40 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       return std::optional<PreviewHeadingRequest>{};
     return g_preview_heading_request;
   }();
+  const std::optional<PreviewSourceOffsetRequest> source_offset_request = [&]() {
+    if(!g_preview_source_offset_request) return std::optional<PreviewSourceOffsetRequest>{};
+    if(g_preview_source_offset_request->document_key != current_document_key())
+      return std::optional<PreviewSourceOffsetRequest>{};
+    return g_preview_source_offset_request;
+  }();
+
+  // Keep the ancestor headings of an arbitrary source match open so its actual
+  // rendered line can become a scroll anchor, rather than approximating it by
+  // the nearest heading.
+  std::vector<std::size_t> source_offset_ancestor_lines;
+  if(source_offset_request)
+  {
+    std::vector<std::pair<int, std::size_t>> ancestors;
+    for(std::size_t scan = 0; scan < markdown.size() && scan <= source_offset_request->offset;)
+    {
+      const std::size_t end = markdown.find('\n', scan);
+      const std::size_t line_end = end == std::string::npos ? markdown.size() : end;
+      int level = 0;
+      std::string_view title;
+      if(parse_heading_line(std::string_view(markdown.data() + scan, line_end - scan), level, title))
+      {
+        while(!ancestors.empty() && ancestors.back().first >= level) ancestors.pop_back();
+        ancestors.emplace_back(level, scan);
+      }
+      if(end == std::string::npos) break;
+      scan = end + 1;
+    }
+    for(const auto &[level, line] : ancestors)
+    {
+      static_cast<void>(level);
+      source_offset_ancestor_lines.push_back(line);
+    }
+  }
 
   std::vector<std::size_t> requested_ancestor_occurrences;
   if(heading_request)
@@ -2087,6 +2140,14 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     }
     return true;
   };
+  auto source_offset_in_range = [&](std::size_t start, std::size_t end) {
+    return source_offset_request &&
+           source_offset_request->offset >= start && source_offset_request->offset <= end;
+  };
+  auto consume_source_offset_reveal = [&]() {
+    ImGui::SetScrollHereY(0.5f);
+    g_preview_source_offset_request.reset();
+  };
 
   size_t pos = 0;
   std::size_t heading_occurrence_index = 0;
@@ -2121,7 +2182,12 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
           std::find(requested_ancestor_occurrences.begin(),
                     requested_ancestor_occurrences.end(),
                     current_occurrence_index) != requested_ancestor_occurrences.end();
-      if(!all_headers_open() && !is_requested_heading && !is_requested_ancestor)
+      const bool is_source_offset_ancestor =
+          std::find(source_offset_ancestor_lines.begin(),
+                    source_offset_ancestor_lines.end(),
+                    line_start) != source_offset_ancestor_lines.end();
+      const bool is_source_offset_target = source_offset_in_range(line_start, line_end);
+      if(!all_headers_open() && !is_requested_heading && !is_requested_ancestor && !is_source_offset_ancestor)
       {
         pos = has_newline ? line_end + 1 : line_end;
         continue;
@@ -2144,7 +2210,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         pos = has_newline ? line_end + 1 : line_end;
         continue;
       }
-      if(is_requested_heading || is_requested_ancestor)
+      if(is_requested_heading || is_requested_ancestor || is_source_offset_ancestor)
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
       else if(has_saved_open)
         ImGui::SetNextItemOpen(saved_open, ImGuiCond_Always);
@@ -2159,6 +2225,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       {
         ImGui::SetScrollHereY(0.5f);
       }
+      if(is_source_offset_target) consume_source_offset_reveal();
       if(!has_saved_open || saved_open != open)
       {
         sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
@@ -2205,6 +2272,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
         result.preview_state_changed = result.preview_state_changed || ui_result.preview_state_changed;
         result.consumed_right_click = result.consumed_right_click || ui_result.consumed_right_click;
+        if(source_offset_in_range(line_start, block_end)) consume_source_offset_reveal();
         pos = block_end;
         continue;
       }
@@ -2245,6 +2313,11 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
           render_mermaid_block(mermaid_type, resolved, static_cast<int>(line_start));
         else
           normal_chunk.append(markdown.data() + line_start, block_end - line_start);
+        if(source_offset_in_range(line_start, block_end))
+        {
+          flush_chunk();
+          consume_source_offset_reveal();
+        }
         pos = block_end;
         continue;
       }
@@ -2288,6 +2361,11 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         {
           normal_chunk.append(markdown.data() + line_start, block_end - line_start);
         }
+        if(source_offset_in_range(line_start, block_end))
+        {
+          flush_chunk();
+          consume_source_offset_reveal();
+        }
         pos = block_end;
         continue;
       }
@@ -2327,6 +2405,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         {
           flush_chunk();
           render_mermaid_block(mermaid_type, body, static_cast<int>(line_start));
+          if(source_offset_in_range(line_start, block_end)) consume_source_offset_reveal();
           pos = block_end;
           continue;
         }
@@ -2344,6 +2423,8 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       result.preview_state_changed = result.preview_state_changed || table_out.preview_state_changed;
       result.consumed_right_click = result.consumed_right_click || table_out.consumed_right_click;
       result.consumed_double_click = result.consumed_double_click || table_out.consumed_double_click;
+      if(source_offset_in_range(parsed_table.block_start, parsed_table.block_end))
+        consume_source_offset_reveal();
 
       if(table_out.has_replacement)
       {
@@ -2390,6 +2471,15 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       ImGui::PopID();
       ImGui::PopStyleVar(2);
       ImGui::NewLine();
+      if(source_offset_in_range(line_start, line_end)) consume_source_offset_reveal();
+    }
+    else if(source_offset_in_range(line_start, line_end))
+    {
+      flush_chunk();
+      normal_chunk.append(line.data(), line.size());
+      if(has_newline) normal_chunk.push_back('\n');
+      flush_chunk();
+      consume_source_offset_reveal();
     }
     else
     {
