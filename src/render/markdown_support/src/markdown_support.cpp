@@ -509,6 +509,7 @@ struct PreviewHeadingRequest
 {
   std::string document_key;
   std::string heading_path;
+  std::size_t heading_occurrence_index = 0;
 };
 
 std::optional<PreviewHeadingRequest> g_preview_heading_request;
@@ -1922,7 +1923,9 @@ void set_preview_document_path(std::string_view path)
   MarkdownWidgets::set_widget_document_path(std::filesystem::path(path));
 }
 
-void request_preview_heading(std::string_view document_path, std::string_view heading_path)
+void request_preview_heading(std::string_view document_path,
+                             std::string_view heading_path,
+                             std::size_t heading_occurrence_index)
 {
   if(document_path.empty() || heading_path.empty())
   {
@@ -1932,7 +1935,8 @@ void request_preview_heading(std::string_view document_path, std::string_view he
 
   g_preview_heading_request = PreviewHeadingRequest{
       portable_document_key(document_path),
-      std::string(heading_path)};
+      std::string(heading_path),
+      heading_occurrence_index};
 }
 
 void notify_document_moved(const std::filesystem::path &from,
@@ -2012,34 +2016,45 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   const std::optional<PreviewHeadingRequest> heading_request = [&]() {
     if(!g_preview_heading_request) return std::optional<PreviewHeadingRequest>{};
     if(g_preview_heading_request->document_key != current_document_key())
-    {
-      g_preview_heading_request.reset();
       return std::optional<PreviewHeadingRequest>{};
-    }
     return g_preview_heading_request;
   }();
-  auto heading_path_contains = [](std::string_view target, std::string_view path) {
-    if(target == path) return true;
-    if(path.empty() || target.size() <= path.size()) return false;
-    size_t pos = target.find(path);
-    while(pos != std::string_view::npos)
-    {
-      const bool starts_at_boundary = pos == 0 || target[pos - 1] == '.';
-      const size_t end = pos + path.size();
-      const bool ends_at_boundary = end == target.size() || target[end] == '.';
-      if(starts_at_boundary && ends_at_boundary) return true;
-      pos = target.find(path, pos + 1);
-    }
-    return false;
-  };
 
-  auto heading_path_is_target = [](std::string_view target, std::string_view path) {
-    if(target == path) return true;
-    if(target.size() <= path.size()) return false;
-    const size_t suffix_start = target.size() - path.size();
-    return target.compare(suffix_start, path.size(), path) == 0 &&
-           target[suffix_start - 1] == '.';
-  };
+  std::vector<std::size_t> requested_ancestor_occurrences;
+  if(heading_request)
+  {
+    const MdSection sections = parse_sections(markdown);
+    std::size_t occurrence_index = 0;
+    std::vector<std::size_t> ancestor_occurrences;
+    auto find_requested_heading = [&](auto &&self,
+                                      const std::vector<MdSection> &children,
+                                      const std::vector<std::string> &parent_path) -> bool {
+      for(const MdSection &section : children)
+      {
+        const std::size_t current_occurrence = occurrence_index++;
+        std::vector<std::string> path = parent_path;
+        path.push_back(section.title);
+        std::string path_text;
+        for(const std::string &part : path)
+        {
+          if(!path_text.empty()) path_text.push_back('.');
+          path_text += part;
+        }
+        if(current_occurrence == heading_request->heading_occurrence_index &&
+           path_text == heading_request->heading_path)
+        {
+          requested_ancestor_occurrences = ancestor_occurrences;
+          return true;
+        }
+
+        ancestor_occurrences.push_back(current_occurrence);
+        if(self(self, section.kids, path)) return true;
+        ancestor_occurrences.pop_back();
+      }
+      return false;
+    };
+    find_requested_heading(find_requested_heading, sections.kids, {});
+  }
 
   auto current_heading_path = [&](std::string_view title) {
     std::string path;
@@ -2074,6 +2089,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   };
 
   size_t pos = 0;
+  std::size_t heading_occurrence_index = 0;
   while(pos < markdown.size())
   {
     const size_t line_start = pos;
@@ -2088,6 +2104,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     std::string_view heading_title;
     if(parse_heading_line(line, heading_level, heading_title))
     {
+      const std::size_t current_occurrence_index = heading_occurrence_index++;
       flush_chunk();
       while(!header_stack.empty() && header_stack.back().level >= heading_level)
       {
@@ -2095,10 +2112,15 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         header_stack.pop_back();
       }
       const std::string path = current_heading_path(heading_title);
-      const bool is_requested_heading = heading_request &&
-                                        heading_path_is_target(heading_request->heading_path, path);
-      const bool is_requested_ancestor = heading_request && !is_requested_heading &&
-                                         heading_path_contains(heading_request->heading_path, path);
+      const bool is_requested_heading =
+          heading_request &&
+          heading_request->heading_occurrence_index == current_occurrence_index &&
+          heading_request->heading_path == path;
+      const bool is_requested_ancestor =
+          heading_request &&
+          std::find(requested_ancestor_occurrences.begin(),
+                    requested_ancestor_occurrences.end(),
+                    current_occurrence_index) != requested_ancestor_occurrences.end();
       if(!all_headers_open() && !is_requested_heading && !is_requested_ancestor)
       {
         pos = has_newline ? line_end + 1 : line_end;
@@ -2115,11 +2137,14 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         // loop at the end) keeps working without a real TreeNode.
         ImGui::Text("%s", std::string(heading_title).c_str());
         header_stack.push_back(HeaderUi{
-            heading_level, true, std::string(heading_title), true /* skip_pop */});
+            heading_level,
+            true,
+            std::string(heading_title),
+            true /* skip_pop */});
         pos = has_newline ? line_end + 1 : line_end;
         continue;
       }
-      if(is_requested_ancestor)
+      if(is_requested_heading || is_requested_ancestor)
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
       else if(has_saved_open)
         ImGui::SetNextItemOpen(saved_open, ImGuiCond_Always);
@@ -2134,7 +2159,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       {
         ImGui::SetScrollHereY(0.5f);
       }
-      if(!is_requested_ancestor && (!has_saved_open || saved_open != open))
+      if(!has_saved_open || saved_open != open)
       {
         sync_header_open_state_to_json(doc_key, static_cast<int>(line_start), open);
         result.preview_state_changed = true;

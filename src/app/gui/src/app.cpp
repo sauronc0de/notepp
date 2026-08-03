@@ -5157,6 +5157,8 @@ void App::frame_ui()
     std::string folder_name;
     std::string note_path;
     std::string heading_path;
+    std::size_t heading_occurrence_index = 0;
+    int score = 0;
   };
   struct NoteSwitcherState
   {
@@ -5613,7 +5615,9 @@ void App::frame_ui()
     if(note_idx < 0 || note_idx >= (int)folder.notes.size()) return;
 
     folder.notes[(size_t)note_idx].hidden = false;
-    if(!result.heading_path.empty()) request_preview_heading(result.note_path, result.heading_path);
+    if(!result.heading_path.empty())
+      request_preview_heading(
+          result.note_path, result.heading_path, result.heading_occurrence_index);
     set_active_note(folder_idx, note_idx);
     selected_note_indices.clear();
     selected_note_indices.insert(note_idx);
@@ -5629,6 +5633,7 @@ void App::frame_ui()
     const int previous_selected_idx = note_switcher_selected_idx_;
     std::string selected_note_id;
     std::string selected_heading_path;
+    std::size_t selected_heading_occurrence_index = 0;
     if(previous_selected_idx >= 0 &&
        previous_selected_idx < static_cast<int>(note_switcher.results.size()))
     {
@@ -5636,46 +5641,158 @@ void App::frame_ui()
           note_switcher.results[static_cast<std::size_t>(previous_selected_idx)];
       selected_note_id = selected.note_id;
       selected_heading_path = selected.heading_path;
+      selected_heading_occurrence_index = selected.heading_occurrence_index;
     }
 
     note_switcher.results.clear();
     static constexpr std::size_t kMaxResults = 400U;
-    bool results_full = false;
-    const auto append_result = [&](NoteSwitcherResult result) {
-      if(note_switcher.results.size() >= kMaxResults)
+    const std::string query = std::string(StringUtils::trim(note_switcher.query));
+    const auto compact_text = [](std::string_view text) {
+      std::string compact;
+      compact.reserve(text.size());
+      for(const char raw : text)
       {
-        results_full = true;
+        const unsigned char c = static_cast<unsigned char>(raw);
+        if((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+          compact.push_back(static_cast<char>(c));
+        else if(c >= 'A' && c <= 'Z')
+          compact.push_back(static_cast<char>(c - 'A' + 'a'));
+      }
+      return compact;
+    };
+    const auto lowercase_text = [](std::string_view text) {
+      std::string lowercase;
+      lowercase.reserve(text.size());
+      for(const char raw : text)
+      {
+        const unsigned char c = static_cast<unsigned char>(raw);
+        lowercase.push_back(
+            c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : raw);
+      }
+      return lowercase;
+    };
+    const auto split_words = [&](std::string_view text) {
+      std::vector<std::string> words;
+      std::string word;
+      word.reserve(text.size());
+      for(const char raw : text)
+      {
+        const unsigned char c = static_cast<unsigned char>(raw);
+        if((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9'))
+        {
+          word.push_back(
+              c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : raw);
+        }
+        else if(!word.empty())
+        {
+          words.push_back(std::move(word));
+          word.clear();
+        }
+      }
+      if(!word.empty()) words.push_back(std::move(word));
+      return words;
+    };
+    const std::vector<std::string> terms = split_words(query);
+    const auto fuzzy_word_match = [](std::string_view word, std::string_view term) {
+      if(term.empty() || word.empty() || word.front() != term.front()) return false;
+
+      std::size_t term_index = 1;
+      std::size_t word_index = 1;
+      while(term_index < term.size() && word_index < word.size())
+      {
+        if(word[word_index] == term[term_index]) ++term_index;
+        ++word_index;
+      }
+      if(term_index != term.size()) return false;
+
+      // Fuzzy matches must begin at a word boundary and stay compact enough
+      // to avoid accepting letters scattered across a long display path.
+      return word_index <= term.size() * 2U;
+    };
+    const auto term_match_quality = [&](std::string_view text, std::string_view term) {
+      if(term.empty()) return 0;
+      const std::vector<std::string> words = split_words(text);
+      for(const std::string &word : words)
+      {
+        if(word.compare(0, term.size(), term) == 0) return 3;
+      }
+      const std::string compact = compact_text(text);
+      if(compact.find(term) != std::string::npos) return 2;
+
+      for(const std::string &word : words)
+      {
+        if(fuzzy_word_match(word, term)) return 1;
+      }
+      return 0;
+    };
+    const auto match_terms = [&](std::string_view text) {
+      if(terms.empty()) return 0;
+      int quality = 3;
+      for(const std::string &term : terms)
+      {
+        const int term_quality = term_match_quality(text, term);
+        if(term_quality == 0) return 0;
+        quality = std::min(quality, term_quality);
+      }
+      return quality;
+    };
+    const auto heading_contributes = [&](std::string_view heading_path) {
+      for(const std::string &term : terms)
+      {
+        if(term_match_quality(heading_path, term) != 0) return true;
+      }
+      return false;
+    };
+    const std::string normalized_query = compact_text(query);
+    const std::string lowercase_query = lowercase_text(query);
+    const auto note_score = [&](const NoteMeta &note) {
+      if(lowercase_text(note.title) == lowercase_query) return 10000;
+      if(compact_text(note.title) == normalized_query) return 9500;
+
+      switch(match_terms(note.title))
+      {
+      case 3:
+        return 9000;
+      case 2:
+        return 7500;
+      case 1:
+        return 5500;
+      default:
+        return 0;
+      }
+    };
+    const auto heading_score = [&](std::string_view display_path) {
+      if(lowercase_text(display_path) == lowercase_query) return 7000;
+      if(compact_text(display_path) == normalized_query) return 6900;
+
+      switch(match_terms(display_path))
+      {
+      case 3:
+        return 6500;
+      case 2:
+        return 6000;
+      case 1:
+        return 5000;
+      default:
+        return 0;
+      }
+    };
+    const auto append_result = [&](NoteSwitcherResult result) {
+      if(note_switcher.results.size() < kMaxResults)
+      {
+        note_switcher.results.push_back(std::move(result));
         return;
       }
-      note_switcher.results.push_back(std::move(result));
+
+      const auto lowest_score = std::min_element(
+          note_switcher.results.begin(), note_switcher.results.end(),
+          [](const NoteSwitcherResult &left, const NoteSwitcherResult &right) {
+            return left.score < right.score;
+          });
+      if(lowest_score != note_switcher.results.end() && result.score > lowest_score->score)
+        *lowest_score = std::move(result);
     };
-    const std::string query = std::string(StringUtils::trim(note_switcher.query));
-    const std::string query_lower = to_lower_ascii(query);
-    const size_t dot = query.find('.');
-    const bool heading_query = dot != std::string::npos && dot > 0;
-    bool malformed_heading_query = false;
-    std::vector<std::string> heading_query_parts;
-    if(heading_query)
-    {
-      size_t start = dot + 1;
-      while(start < query.size())
-      {
-        const size_t end = query.find('.', start);
-        const size_t length = (end == std::string::npos) ? query.size() - start : end - start;
-        if(length == 0)
-        {
-          malformed_heading_query = true;
-          heading_query_parts.clear();
-          break;
-        }
-        heading_query_parts.push_back(to_lower_ascii(query.substr(start, length)));
-        if(end == std::string::npos) break;
-        start = end + 1;
-      }
-    }
-    const bool valid_heading_query = heading_query && !malformed_heading_query;
-    const std::string note_query = heading_query ? query.substr(0, dot) : query;
-    const std::string note_query_lower = to_lower_ascii(note_query);
 
     auto append_heading_results = [&](auto &&self,
                                       const std::vector<MdSection> &sections,
@@ -5683,56 +5800,88 @@ void App::frame_ui()
                                       const NoteMeta &note,
                                       int folder_idx,
                                       int note_idx,
-                                      const FolderMeta &folder) -> void {
+                                      const FolderMeta &folder,
+                                      std::size_t &heading_occurrence_index) -> void {
       for(const MdSection &section : sections)
       {
-        if(results_full) return;
+        const std::size_t occurrence_index = heading_occurrence_index++;
         std::vector<std::string> path = parent_path;
         path.push_back(section.title);
-        bool matches = path.size() >= heading_query_parts.size();
-        for(std::size_t part = 0; matches && part < heading_query_parts.size(); ++part)
-          matches = to_lower_ascii(path[part]).find(heading_query_parts[part]) != std::string::npos;
-        if(matches)
+        std::string heading_path = path.front();
+        for(std::size_t part_index = 1; part_index < path.size(); ++part_index)
+          heading_path += "." + path[part_index];
+
+        const std::string display_path = note.title + "." + heading_path;
+        const int score = heading_score(display_path);
+        if(score != 0 && heading_contributes(heading_path))
         {
-          std::string display_path = note.title;
-          for(const std::string &part : path) display_path += "." + part;
-          append_result(
-              {note.id, folder_idx, note_idx, note.title, folder.name, note.path, display_path});
+          append_result({note.id,
+                         folder_idx,
+                         note_idx,
+                         note.title,
+                         folder.name,
+                         note.path,
+                         heading_path,
+                         occurrence_index,
+                         score});
         }
-        self(self, section.kids, path, note, folder_idx, note_idx, folder);
-        if(results_full) return;
+        self(self,
+             section.kids,
+             path,
+             note,
+             folder_idx,
+             note_idx,
+             folder,
+             heading_occurrence_index);
       }
     };
 
-    for(int folder_idx = 0; folder_idx < (int)folders_.size() && !results_full; ++folder_idx)
+    for(int folder_idx = 0; folder_idx < static_cast<int>(folders_.size()); ++folder_idx)
     {
-      const FolderMeta &folder = folders_[(size_t)folder_idx];
-      for(int note_idx = 0; note_idx < (int)folder.notes.size() && !results_full; ++note_idx)
+      const FolderMeta &folder = folders_[static_cast<std::size_t>(folder_idx)];
+      for(int note_idx = 0; note_idx < static_cast<int>(folder.notes.size()); ++note_idx)
       {
-        const NoteMeta &note = folder.notes[(size_t)note_idx];
-        const std::string note_title_lower = to_lower_ascii(note.title);
-        const bool note_matches = query_lower.empty() ||
-                                  note_title_lower.find(note_query_lower) != std::string::npos;
-        if(!valid_heading_query)
+        const NoteMeta &note = folder.notes[static_cast<std::size_t>(note_idx)];
+        if(terms.empty())
         {
-          if(note_matches)
-            append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}});
+          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, 0, 0});
           continue;
         }
-        if(!note_matches) continue;
 
-        const std::size_t result_count_before_headings = note_switcher.results.size();
+        const int score = note_score(note);
+        if(score != 0)
+          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, 0, score});
+
         const std::string content = (note.path == state_file_path_)
                                         ? markdown_text_
                                         : read_text_file(note.path);
         const MdSection sections = parse_sections(content);
-        append_heading_results(append_heading_results, sections.kids, {}, note, folder_idx, note_idx, folder);
-        // A dotted note title remains searchable when it is not also a heading path.
-        if(note_switcher.results.size() == result_count_before_headings &&
-           note_title_lower.find(query_lower) != std::string::npos)
-          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}});
+        std::size_t heading_occurrence_index = 0;
+        append_heading_results(
+            append_heading_results, sections.kids, {}, note, folder_idx, note_idx, folder,
+            heading_occurrence_index);
       }
     }
+
+    const auto display_path = [](const NoteSwitcherResult &result) {
+      return result.heading_path.empty() ? result.note_title
+                                         : result.note_title + "." + result.heading_path;
+    };
+    std::stable_sort(note_switcher.results.begin(), note_switcher.results.end(),
+                     [&](const NoteSwitcherResult &left, const NoteSwitcherResult &right) {
+                       if(left.score != right.score) return left.score > right.score;
+                       const bool left_is_note = left.heading_path.empty();
+                       const bool right_is_note = right.heading_path.empty();
+                       if(left_is_note != right_is_note) return left_is_note;
+                       const std::string left_path = display_path(left);
+                       const std::string right_path = display_path(right);
+                       if(left_path.size() != right_path.size()) return left_path.size() < right_path.size();
+                       if(left_path != right_path) return left_path < right_path;
+                       if(left.note_path != right.note_path) return left.note_path < right.note_path;
+                       return left.heading_occurrence_index < right.heading_occurrence_index;
+                     });
+    if(note_switcher.results.size() > kMaxResults)
+      note_switcher.results.resize(kMaxResults);
 
     if(note_switcher.results.empty())
     {
@@ -5746,7 +5895,8 @@ void App::frame_ui()
       for(std::size_t i = 0; i < note_switcher.results.size(); ++i)
       {
         if(note_switcher.results[i].note_id == selected_note_id &&
-           note_switcher.results[i].heading_path == selected_heading_path)
+           note_switcher.results[i].heading_path == selected_heading_path &&
+           note_switcher.results[i].heading_occurrence_index == selected_heading_occurrence_index)
         {
           note_switcher_selected_idx_ = static_cast<int>(i);
           break;
@@ -5850,7 +6000,9 @@ void App::frame_ui()
         for(size_t i = 0; i < note_switcher.results.size(); ++i)
         {
           const NoteSwitcherResult &result = note_switcher.results[i];
-          const std::string display_name = result.heading_path.empty() ? result.note_title : result.heading_path;
+          const std::string display_name = result.heading_path.empty()
+                                               ? result.note_title
+                                               : result.note_title + "." + result.heading_path;
           const std::string label = display_name + "  [" + result.folder_name + "]##note_switcher_" +
                                     std::to_string(i);
           const bool selected = static_cast<int>(i) == note_switcher_selected_idx_;
