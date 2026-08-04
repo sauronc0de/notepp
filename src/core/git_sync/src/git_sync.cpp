@@ -393,9 +393,6 @@ std::vector<std::string> project_pathspec()
   return paths;
 }
 
-constexpr std::string_view project_settings_pathspec =
-    ":(glob)config/project_settings.json";
-
 std::vector<std::string> status_pathspec(const std::filesystem::path &)
 {
   return project_pathspec();
@@ -436,22 +433,8 @@ std::optional<Status> stage_and_commit(const process::Runner &runner,
   process::Result result = run_git(runner, root, std::move(add_arguments), false);
   if(!result.succeeded()) return operation_error(result, "Staging project files", false);
 
-  // A missing pathspec makes `git add` fail on repositories created before
-  // project settings existed. A separate add lets tracked deletions be staged;
-  // an absent, never-tracked file is harmlessly ignored.
-  const process::Result settings_add = run_git(
-      runner, root, {"add", "--all", "--", std::string(project_settings_pathspec)}, false);
-  if(!settings_add.succeeded())
-  {
-    const process::Result tracked = run_git(
-        runner, root, {"ls-files", "--error-unmatch", "--", "config/project_settings.json"}, false);
-    if(tracked.succeeded())
-      return operation_error(settings_add, "Staging project settings", false);
-  }
-
   std::vector<std::string> list_arguments = {"diff", "--cached", "--name-only", "-z", "--"};
   list_arguments.insert(list_arguments.end(), pathspec.begin(), pathspec.end());
-  list_arguments.emplace_back(std::string(project_settings_pathspec));
   result = run_git(runner, root, std::move(list_arguments), false);
   if(!result.succeeded()) return operation_error(result, "Inspecting staged project files", false);
 
@@ -509,7 +492,6 @@ Status Client::inspect(const std::filesystem::path &project_root) const
   std::vector<std::string> status_arguments = {"status", "--porcelain=v2", "--branch", "--"};
   const auto pathspec = status_pathspec(project_root);
   status_arguments.insert(status_arguments.end(), pathspec.begin(), pathspec.end());
-  status_arguments.emplace_back(std::string(project_settings_pathspec));
   result = run_git(runner_, project_root, std::move(status_arguments), false);
   if(!result.succeeded()) return command_failure(result, "Reading Git status", false);
   return parse_status(result.stdout_text);

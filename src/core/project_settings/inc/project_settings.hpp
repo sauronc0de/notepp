@@ -37,16 +37,6 @@ struct UpdateResult
   explicit operator bool() const noexcept { return success; }
 };
 
-struct PollResult
-{
-  bool success = false;
-  bool changed = false;
-  Settings settings;
-  std::string message;
-
-  explicit operator bool() const noexcept { return success; }
-};
-
 class Store
 {
 public:
@@ -55,7 +45,6 @@ public:
   LoadResult load(bool persist_defaults = true) noexcept;
   UpdateResult set_language(const std::string &language) noexcept;
   UpdateResult set_git_sync_enabled(bool enabled) noexcept;
-  PollResult poll() noexcept;
 
   const std::filesystem::path &path() const noexcept { return config_file_; }
 
@@ -64,7 +53,5 @@ private:
                       const std::optional<bool> &git_sync_enabled) noexcept;
 
   std::filesystem::path config_file_;
-  std::optional<atomic_file::Snapshot> observed_snapshot_;
-  Settings observed_settings_;
 };
 } // namespace notepp::project_settings

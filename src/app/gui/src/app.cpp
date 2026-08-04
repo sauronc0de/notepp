@@ -1901,7 +1901,7 @@ App::App(AppConfig config)
 
 bool App::load_project_settings()
 {
-  auto loaded = project_settings_store_.load();
+  const auto loaded = project_settings_store_.load(false);
   if(!loaded)
   {
     project_settings_error_ = loaded.message;
@@ -1909,22 +1909,11 @@ bool App::load_project_settings()
   }
 
   const auto app_settings = app_settings_store_.load();
-  if(!loaded.settings.has_git_sync_enabled && app_settings &&
-     app_settings.settings.git_sync_enabled)
-  {
-    const auto migrated = project_settings_store_.set_git_sync_enabled(true);
-    if(!migrated)
-      LOG_ERROR("Cannot migrate Git Sync setting: ", migrated.message);
-    loaded = project_settings_store_.load();
-  }
-  if(!loaded)
-  {
-    project_settings_error_ = loaded.message;
-    return false;
-  }
+  const bool migrate_git_sync = !loaded.settings.has_git_sync_enabled && app_settings &&
+                                app_settings.settings.git_sync_enabled;
 
   project_settings_error_.clear();
-  git_sync_enabled_ = loaded.settings.git_sync_enabled;
+  git_sync_enabled_ = loaded.settings.git_sync_enabled || migrate_git_sync;
   project_language_explicit_ = false;
   if(!loaded.settings.language.empty())
   {
@@ -1932,6 +1921,7 @@ bool App::load_project_settings()
     if(!project_language_explicit_)
       LOG_WARNING("Project language is unavailable: ", loaded.settings.language);
   }
+  project_settings_dirty_ = migrate_git_sync;
   return true;
 }
 
@@ -1968,6 +1958,30 @@ bool App::save_imgui_settings()
   const char *ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
   return save_workspace_text(
       imgui_ini_file_, std::string_view(ini_data != nullptr ? ini_data : "", ini_size));
+}
+
+bool App::save_project_settings()
+{
+  if(!project_settings_dirty_) return true;
+  if(atomic_file::shared_writes_suspended()) return false;
+
+  const auto saved_language = project_settings_store_.set_language(Lang::current_language_code());
+  if(!saved_language)
+  {
+    project_settings_error_ = saved_language.message;
+    LOG_ERROR("Cannot save project language: ", project_settings_error_);
+    return false;
+  }
+  const auto saved_git_sync = project_settings_store_.set_git_sync_enabled(git_sync_enabled_);
+  if(!saved_git_sync)
+  {
+    project_settings_error_ = saved_git_sync.message;
+    LOG_ERROR("Cannot save Git Sync setting: ", project_settings_error_);
+    return false;
+  }
+  project_settings_error_.clear();
+  project_settings_dirty_ = false;
+  return true;
 }
 
 void App::begin_git_operation(bool manual_sync)
@@ -2207,29 +2221,6 @@ void App::finish_git_operation()
   }
 }
 
-bool App::poll_project_settings()
-{
-  const auto polled = project_settings_store_.poll();
-  if(!polled)
-  {
-    if(project_settings_error_ != polled.message)
-      LOG_ERROR("Cannot reload project settings: ", polled.message);
-    project_settings_error_ = polled.message;
-    return false;
-  }
-  project_settings_error_.clear();
-  if(!polled.changed) return false;
-
-  const bool toggle_changed = git_sync_enabled_ != polled.settings.git_sync_enabled;
-  git_sync_enabled_ = polled.settings.git_sync_enabled;
-  if(!polled.settings.language.empty() &&
-     polled.settings.language != Lang::current_language_code())
-    Lang::set_language(polled.settings.language);
-  if(toggle_changed)
-    LOG_INFO("Git Sync setting reloaded: ", git_sync_enabled_ ? "enabled" : "disabled");
-  return toggle_changed;
-}
-
 #if USE_PORTABLE_PATHS
 void App::load_switched_project(const std::filesystem::path &new_root)
 {
@@ -2281,6 +2272,11 @@ void App::load_switched_project(const std::filesystem::path &new_root)
 bool App::switch_project(const std::filesystem::path &new_root)
 {
   if(git_sync_in_progress_) return false;
+  if(!save_project_settings())
+  {
+    LOG_ERROR("Project switch cancelled because project settings could not be saved");
+    return false;
+  }
   if(!save_state())
   {
     LOG_ERROR("Project switch cancelled because project files could not be saved");
@@ -2392,13 +2388,15 @@ bool App::switch_project(const std::filesystem::path &new_root)
 
 bool App::persist_before_close()
 {
+  bool saved = save_project_settings();
   layout_profiles_.erase(
       std::remove_if(layout_profiles_.begin(), layout_profiles_.end(),
                      [](const LayoutProfile &profile) { return profile.pending_delete; }),
       layout_profiles_.end());
   if(!layout_profiles_.empty()) capture_to_active_profile();
 
-  bool saved = save_state();
+  const bool state_saved = save_state();
+  saved = saved && state_saved;
   if(!save_imgui_settings()) LOG_ERROR("Cannot save local ImGui workspace state");
   saved = saved && g_unresolved_persistence_errors.empty() &&
           MarkdownWidgets::last_persistence_error().empty();
@@ -2660,9 +2658,8 @@ void App::load_state()
       {
         if(Lang::set_language(decoded_index->language))
         {
-          const auto migrated = project_settings_store_.set_language(decoded_index->language);
-          if(migrated) project_language_explicit_ = true;
-          else LOG_ERROR("Cannot migrate project language: ", migrated.message);
+          project_language_explicit_ = true;
+          project_settings_dirty_ = true;
         }
       }
 
@@ -5067,7 +5064,6 @@ bool App::frame_begin()
     }
     if(event.type == kProjectFilesChangedEvent)
     {
-      if(poll_project_settings()) had_event = true;
       if(!git_sync_in_progress_ && sync_project_files()) had_event = true;
       continue;
     }
@@ -5572,18 +5568,10 @@ void App::frame_ui()
   MarkdownView::begin_sidebar_thumbnail_frame();
   const bool git_disabled_for_frame = git_sync_in_progress_ || close_requested_;
   const auto set_git_sync_enabled = [this](const bool requested) {
-    const auto updated = project_settings_store_.set_git_sync_enabled(requested);
-    if(updated)
-    {
-      git_sync_enabled_ = updated.settings.git_sync_enabled;
-      project_settings_error_.clear();
-      if(git_sync_enabled_) begin_git_operation(false);
-    }
-    else
-    {
-      project_settings_error_ = updated.message;
-      LOG_ERROR("Cannot save Git Sync setting: ", project_settings_error_);
-    }
+    git_sync_enabled_ = requested;
+    project_settings_dirty_ = true;
+    project_settings_error_.clear();
+    if(git_sync_enabled_) begin_git_operation(false);
   };
   if(git_disabled_for_frame) ImGui::BeginDisabled();
 
@@ -10450,13 +10438,8 @@ void App::frame_ui()
               {
                 if(Lang::set_language(lang.code))
                 {
-                  const auto saved = project_settings_store_.set_language(lang.code);
-                  if(!saved)
-                  {
-                    project_settings_error_ = saved.message;
-                    LOG_ERROR("Cannot save project language: ", saved.message);
-                  }
-                  save_index();
+                  project_language_explicit_ = true;
+                  project_settings_dirty_ = true;
                 }
               }
             }

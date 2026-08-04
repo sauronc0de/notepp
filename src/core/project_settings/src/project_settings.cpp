@@ -145,8 +145,6 @@ LoadResult Store::load(bool persist_defaults) noexcept
       if(!saved) return {false, document.settings, existed, saved.message};
       document.snapshot = saved.new_snapshot;
     }
-    observed_snapshot_ = document.snapshot;
-    observed_settings_ = document.settings;
     return {true, document.settings, existed, {}};
   }
   catch(const std::exception &error)
@@ -174,8 +172,6 @@ UpdateResult Store::update(const std::optional<std::string> &language,
     const auto saved = atomic_file::save_text(config_file_, serialize(document.document),
                                               &document.snapshot);
     if(!saved) return {false, document.settings, saved.message};
-    observed_snapshot_ = saved.new_snapshot;
-    observed_settings_ = document.settings;
     return {true, document.settings, {}};
   }
   catch(const std::exception &error)
@@ -194,14 +190,4 @@ UpdateResult Store::set_git_sync_enabled(bool enabled) noexcept
   return update(std::nullopt, enabled);
 }
 
-PollResult Store::poll() noexcept
-{
-  const auto current = atomic_file::read_text(config_file_);
-  if(!current) return {false, false, observed_settings_, current.message};
-  if(observed_snapshot_ && current.snapshot == *observed_snapshot_)
-    return {true, false, observed_settings_, {}};
-  const auto loaded = load();
-  if(!loaded) return {false, false, loaded.settings, loaded.message};
-  return {true, true, loaded.settings, {}};
-}
 } // namespace notepp::project_settings

@@ -47,6 +47,7 @@ private:
   notepp::git_sync::Client git_client_;
   bool git_sync_enabled_ = false;
   bool project_language_explicit_ = false;
+  bool project_settings_dirty_ = false;
   enum class GitOperationKind
   {
     none,
@@ -71,7 +72,6 @@ private:
   std::future<GitAsyncResult> git_sync_future_;
   std::string app_settings_error_;
   std::string project_settings_error_;
-  bool poll_project_settings();
   void record_git_status(const notepp::git_sync::Status &status);
   void begin_git_operation(bool manual_sync);
   void begin_close_git_operation();
@@ -79,6 +79,7 @@ private:
   void request_close();
   void advance_close();
   bool save_imgui_settings();
+  bool save_project_settings();
   bool persist_before_close();
   void destroy_runtime();
   void reload_project_after_git_pull();

@@ -309,9 +309,9 @@ void test_offline_close_keeps_local_commit()
     if(ends_with(arguments, {"config", "--get", "branch.main.merge"})) return exited(0, "refs/heads/main\n");
     if(std::find(arguments.begin(), arguments.end(), "add") != arguments.end())
     {
-      if(std::find(arguments.begin(), arguments.end(), ":(glob)config/project_settings.json") !=
-         arguments.end())
-        return exited();
+      expect(std::find(arguments.begin(), arguments.end(), ":(glob)config/project_settings.json") ==
+                 arguments.end(),
+             "project settings are not staged by Git Sync");
       expect(std::find(arguments.begin(), arguments.end(), ":(exclude,glob)**/*.bak") !=
                  arguments.end(),
              "backup files are excluded from staging");
@@ -400,8 +400,6 @@ void test_real_repository_integration()
   fs::create_directories(project / "assets");
   fs::create_directories(project / "config");
   std::ofstream(project / "config" / "notes_index.json") << "{}\n";
-  std::ofstream(project / "config" / "project_settings.json")
-      << "{\"schemaVersion\":1,\"language\":\"ca\",\"gitSyncEnabled\":true}\n";
   std::ofstream(project / "notepp.project.json") << "{}\n";
   require_git(git({"add", "."}, project), "stage initial project");
   require_git(git({"commit", "-m", "initial"}, project), "commit initial project");
@@ -435,18 +433,6 @@ void test_real_repository_integration()
          "conflict recovery files are not committed");
   expect(git({"ls-files", "--error-unmatch", "config/layout_profiles.json"}, project).exit_code != 0,
          "workspace configuration is not committed");
-  expect(git({"ls-files", "--error-unmatch", "config/project_settings.json"}, project).succeeded(),
-         "project settings are committed and synchronized");
-
-  fs::remove(project / "config" / "project_settings.json");
-  expect(client.inspect(project).state == gs::SyncState::dirty,
-         "deleted project settings remain visible to Git status");
-  const gs::OperationResult deleted_settings =
-      client.commit_and_push(project, "Remove project settings");
-  expect(deleted_settings.success, "deleted project settings can be committed");
-  expect(git({"ls-files", "--error-unmatch", "config/project_settings.json"}, project).exit_code != 0,
-         "deleted project settings are removed from the repository");
-
   require_git(git({"clone", remote.string(), peer.string()}), "clone peer");
   require_git(git({"config", "user.name", "Notepp Tests"}, peer), "configure peer name");
   require_git(git({"config", "user.email", "notepp@example.test"}, peer), "configure peer email");
