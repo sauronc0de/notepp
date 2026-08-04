@@ -33,7 +33,7 @@ All commands are launched without a shell, receive null standard input, use boun
 
 The Explorer shows Disabled, Syncing, Synced, Local changes, Ahead, Behind, Diverged, Offline, Git unavailable, Not a repository, No upstream, Conflict or Error. Hover the status or open the Explorer context menu for details. The last result is stored in the device-local Notepp settings and shown after restart.
 
-If histories diverge, close Notepp and resolve the Git history using normal Git tools; Notepp will not select a winner. If a project file changes externally while Notepp has unsaved content, Notepp preserves local bytes in a sibling `notepp-local-conflict` recovery file instead of overwriting the external version.
+If histories diverge, close Notepp and resolve the Git history using normal Git tools; Notepp will not select a winner. If a project file changes externally while Notepp has unsaved content, Notepp preserves local bytes in a sibling `.~notepp-conflict-...` recovery file instead of overwriting the external version. Recovery files and atomic temporary files are never imported as notes or staged by Notepp Git Sync; review or remove them manually after recovering their content.
 
 ## Sequential-device handoff
 

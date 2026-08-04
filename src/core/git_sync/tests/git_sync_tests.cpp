@@ -315,6 +315,9 @@ void test_offline_close_keeps_local_commit()
       expect(std::find(arguments.begin(), arguments.end(),
                        ":(exclude,glob)**/*.~npp-t-*") != arguments.end(),
              "atomic temporary files are excluded from staging");
+      expect(std::find(arguments.begin(), arguments.end(),
+                       ":(exclude,glob)**/*.~notepp-conflict-*") != arguments.end(),
+             "conflict recovery files are excluded from staging");
       expect(std::find(arguments.begin(), arguments.end(), ":(exclude,glob)**/*.tmp") !=
                  arguments.end(),
              "legacy temporary files are excluded from staging");
@@ -411,6 +414,7 @@ void test_real_repository_integration()
 
   std::ofstream(project / "notes" / "local.md") << "local note\n";
   std::ofstream(project / "notes" / "deleted.md.bak") << "undo backup\n";
+  std::ofstream(project / "notes" / "note.~notepp-conflict-test.md") << "recovery note\n";
   std::ofstream(project / "config" / "index.~npp-t-test.json") << "partial temporary\n";
   std::ofstream(project / "config" / "layout_profiles.json") << "local workspace\n";
   const gs::OperationResult pushed = client.commit_and_push(project, "Notepp sync test");
@@ -422,6 +426,8 @@ void test_real_repository_integration()
          "soft-delete backups are not committed");
   expect(git({"ls-files", "--error-unmatch", "config/index.~npp-t-test.json"}, project).exit_code != 0,
          "atomic temporary files are not committed");
+  expect(git({"ls-files", "--error-unmatch", "notes/note.~notepp-conflict-test.md"}, project).exit_code != 0,
+         "conflict recovery files are not committed");
   expect(git({"ls-files", "--error-unmatch", "config/layout_profiles.json"}, project).exit_code != 0,
          "workspace configuration is not committed");
 

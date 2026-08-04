@@ -157,7 +157,8 @@ private:
   void load_profiles();
   bool save_profiles();
   void capture_to_active_profile();
-  void apply_profile(const LayoutProfile &profile, bool apply_window_state = true);
+  void apply_profile(const LayoutProfile &profile, bool apply_window_state = true,
+                     bool mark_dirty = true);
   std::string create_profile(const std::string &name, bool maximized, int x, int y, int w, int h);
   void delete_profile(const std::string &id);
   LayoutProfile *find_active_profile();

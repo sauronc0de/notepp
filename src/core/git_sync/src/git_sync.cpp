@@ -386,7 +386,8 @@ std::vector<std::string> project_pathspec()
 {
   return {"notes", "assets", ":(glob)config/notes_index.json", "notepp.project.json",
           ":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
-          ":(exclude,glob)**/*.tmp"};
+          ":(exclude,glob)**/*.~notepp-conflict-*",
+          ":(exclude,glob)**/*notepp-local-conflict*", ":(exclude,glob)**/*.tmp"};
 }
 
 std::vector<std::string> status_pathspec()

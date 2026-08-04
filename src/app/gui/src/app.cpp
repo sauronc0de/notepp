@@ -2783,6 +2783,7 @@ void App::load_state()
   if(!workspace_saved) LOG_ERROR("Cannot save local workspace state");
   if(!profiles_saved) LOG_ERROR("Cannot save local layout profiles");
   if(uuid_migrated || paths_migrated || fingerprints_migrated) save_index();
+
 }
 
 bool App::save_state()
@@ -3167,7 +3168,7 @@ void App::load_profiles()
   // opens exactly as the user left it).
   const LayoutProfile *last = find_active_profile();
   if(last)
-    apply_profile(*last, true);
+    apply_profile(*last, true, false);
   else
   {
     // Fallback for an invalid or absent saved ID: first match the current
@@ -3177,7 +3178,7 @@ void App::load_profiles()
     if(match)
     {
       active_profile_id_ = match->id;
-      apply_profile(*match, false);
+      apply_profile(*match, false, false);
     }
     else
     {
@@ -3286,7 +3287,7 @@ void App::capture_to_active_profile()
   }
 }
 
-void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
+void App::apply_profile(const LayoutProfile &profile, bool apply_window_state, bool mark_dirty)
 {
   for(auto &f : folders_)
   {
@@ -3308,7 +3309,7 @@ void App::apply_profile(const LayoutProfile &profile, bool apply_window_state)
     }
   }
   force_note_layout_restore_ = true;
-  layout_dirty_ = true;
+  if(mark_dirty) layout_dirty_ = true;
 
   if(apply_window_state && window_)
   {
@@ -3728,7 +3729,11 @@ bool App::sync_project_files()
       }
       disk_entries.push_back(entry);
       const fs::path &path = entry.path();
-      if(lower_ext(path) != ".md" || tracked_notes.contains(norm_path(path))) continue;
+      const std::string filename = path.filename().string();
+      if(lower_ext(path) != ".md" || tracked_notes.contains(norm_path(path)) ||
+         filename.find(".~notepp-conflict-") != std::string::npos ||
+         filename.find("notepp-local-conflict") != std::string::npos)
+        continue;
       std::string folder_name;
       if(!folder_name_for(path, folder_name)) continue;
       const auto candidate = g_project_files.ensure_loaded(path);
@@ -3752,6 +3757,11 @@ bool App::sync_project_files()
     const fs::path &p = entry.path();
     const std::string ext = lower_ext(p);
     const std::string norm = norm_path(p);
+
+    const std::string filename = p.filename().string();
+    if(filename.find(".~notepp-conflict-") != std::string::npos ||
+       filename.find("notepp-local-conflict") != std::string::npos)
+      continue;
 
     if(ext == ".md")
     {
