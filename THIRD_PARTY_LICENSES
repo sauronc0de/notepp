@@ -13,9 +13,21 @@ in full below.
 
  Licensed under the SIL Open Font License, Version 1.1 (see below).
 
+================================================================================
+ Noto Sans Mono
+================================================================================
+
+ Source:    https://raw.githubusercontent.com/googlefonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSansMono/NotoSansMono-Regular.ttf
+ Files:     assets/fonts/NotoSansMono-Regular.ttf
+
+ Copyright 2018 The Noto Project Authors (https://github.com/googlei18n/noto-fonts)
+
+ Licensed under the SIL Open Font License, Version 1.1 (see below).
+
 --------------------------------------------------------------------------------
 
  SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+ (applies to Twemoji and Noto Sans Mono)
 
  PREAMBLE
  The goals of the Open Font License (OFL) are to stimulate worldwide development

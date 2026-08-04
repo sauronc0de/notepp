@@ -131,6 +131,10 @@ if(WIN32)
       "${CMAKE_SOURCE_DIR}/assets"
       "${CMAKE_SOURCE_DIR}/dist/Notepp/assets"
 
+    COMMAND ${CMAKE_COMMAND} -E copy
+      "${CMAKE_SOURCE_DIR}/THIRD_PARTY_LICENSES"
+      "${CMAKE_SOURCE_DIR}/dist/Notepp/THIRD_PARTY_LICENSES"
+
     COMMAND C:/msys64/usr/bin/bash.exe --login
       "${CMAKE_SOURCE_DIR}/tools/tasks/copy_mingw_dlls.sh"
       "${CMAKE_SOURCE_DIR}"
@@ -162,7 +166,9 @@ elseif(ENABLE_DEB_PACKAGE)
     )
   endif()
 
-  install(FILES "${CMAKE_SOURCE_DIR}/readme.md"
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/readme.md"
+    "${CMAKE_SOURCE_DIR}/THIRD_PARTY_LICENSES"
     DESTINATION "share/doc/notepp"
     COMPONENT notepp
   )
