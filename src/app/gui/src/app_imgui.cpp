@@ -42,6 +42,10 @@ void App::init_imgui()
   ImFont *font_terminal = io.Fonts->AddFontDefault(&terminal_font_config);
 
   const std::string noto_sans_mono_path = (config_.assetsPath / "fonts" / "NotoSansMono-Regular.ttf").string();
+  const std::string noto_sans_symbols2_path =
+      (config_.assetsPath / "fonts" / "NotoSansSymbols2-Regular.ttf").string();
+  const std::string dejavu_sans_mono_path =
+      (config_.assetsPath / "fonts" / "DejaVuSansMono.ttf").string();
 
   auto merge_emoji_fallback = [&](const char *emoji_font_path) {
     ImFontConfig emoji_cfg;
@@ -60,18 +64,74 @@ void App::init_imgui()
     io.Fonts->AddFontFromFileTTF(emoji_font_path, kUiFontSize, &emoji_cfg, emoji_ranges);
   };
 
-  auto merge_box_drawing_fallback = [&](ImFont *destination_font) {
+  auto merge_noto_sans_mono_fallback = [&](ImFont *destination_font) {
     if(destination_font == nullptr) return;
 
-    ImFontConfig box_drawing_cfg;
-    box_drawing_cfg.MergeMode = true;
-    box_drawing_cfg.PixelSnapH = true;
-    static const ImWchar box_drawing_ranges[] = {0x2500, 0x257F, 0};
-    io.Fonts->AddFontFromFileTTF(noto_sans_mono_path.c_str(), kUiFontSize, &box_drawing_cfg,
-                                 box_drawing_ranges);
+    ImFontConfig noto_sans_mono_cfg;
+    noto_sans_mono_cfg.MergeMode = true;
+    noto_sans_mono_cfg.PixelSnapH = true;
+    // Keep the fallback restricted to the symbols needed by the editor and
+    // terminal. Noto Sans Mono supplies the cell-width box and punctuation
+    // glyphs without changing the primary font's normal Latin coverage.
+    static const ImWchar noto_sans_mono_ranges[] = {
+        0x00B7, 0x00B7, // middle dot
+        0x2022, 0x2022, // bullet
+        0x2026, 0x2026, // horizontal ellipsis
+        0x2190, 0x21B3, // arrows
+        0x22EF, 0x22EF, // midline horizontal ellipsis
+        0x2500, 0x257F, // box drawing
+        0x25AA, 0x25AB, // small squares
+        0x25B6, 0x25B6, // right-pointing triangle
+        0x25B8, 0x25B9, // small right-pointing triangles
+        0x25BA, 0x25BA, // right-pointing pointer
+        0x25C6, 0x25C7, // diamonds
+        0};
+    io.Fonts->AddFontFromFileTTF(noto_sans_mono_path.c_str(), kUiFontSize, &noto_sans_mono_cfg,
+                                 noto_sans_mono_ranges);
   };
 
-  merge_box_drawing_fallback(font_terminal);
+  auto merge_noto_sans_symbols2_fallback = [&](ImFont *destination_font) {
+    if(destination_font == nullptr) return;
+
+    ImFontConfig noto_sans_symbols2_cfg;
+    noto_sans_symbols2_cfg.MergeMode = true;
+    noto_sans_symbols2_cfg.PixelSnapH = true;
+    // Symbols 2 supplies the check marks absent from Noto Sans Mono. Keep the
+    // other requested ranges here as well so the fallback remains explicit if
+    // the mono font is replaced with a narrower build in the future.
+    static const ImWchar noto_sans_symbols2_ranges[] = {
+        0x21AF, 0x21AF, // downwards zigzag arrow
+        0x25AA, 0x25AB, // small squares
+        0x25B6, 0x25B6, // right-pointing triangle
+        0x25B8, 0x25B9, // small right-pointing triangles
+        0x25BA, 0x25BA, // right-pointing pointer
+        0x25C6, 0x25C7, // diamonds
+        0x2713, 0x2714, // check marks
+        0x2717, 0x2718, // ballot marks
+        0};
+    io.Fonts->AddFontFromFileTTF(noto_sans_symbols2_path.c_str(), kUiFontSize, &noto_sans_symbols2_cfg,
+                                 noto_sans_symbols2_ranges);
+  };
+
+  auto merge_dejavu_sans_mono_fallback = [&](ImFont *destination_font) {
+    if(destination_font == nullptr) return;
+
+    ImFontConfig dejavu_sans_mono_cfg;
+    dejavu_sans_mono_cfg.MergeMode = true;
+    dejavu_sans_mono_cfg.PixelSnapH = true;
+    // DejaVu Sans Mono supplies the two symbols still missing from the Noto
+    // fallbacks without changing the primary font's normal coverage.
+    static const ImWchar dejavu_sans_mono_ranges[] = {
+        0x21B3, 0x21B3, // downwards arrow with tip rightwards
+        0x22EF, 0x22EF, // midline horizontal ellipsis
+        0};
+    io.Fonts->AddFontFromFileTTF(dejavu_sans_mono_path.c_str(), kUiFontSize, &dejavu_sans_mono_cfg,
+                                 dejavu_sans_mono_ranges);
+  };
+
+  merge_noto_sans_mono_fallback(font_terminal);
+  merge_noto_sans_symbols2_fallback(font_terminal);
+  merge_dejavu_sans_mono_fallback(font_terminal);
 
   const std::string roboto_path = (config_.assetsPath / "fonts" / "Roboto-Medium.ttf").string();
   const std::string opensans_path = (config_.assetsPath / "fonts" / "opensans.ttf").string();
@@ -87,21 +147,27 @@ void App::init_imgui()
   }
   if(font_regular)
   {
-    merge_box_drawing_fallback(font_regular);
+    merge_noto_sans_mono_fallback(font_regular);
+    merge_noto_sans_symbols2_fallback(font_regular);
+    merge_dejavu_sans_mono_fallback(font_regular);
     merge_emoji_fallback(twemoji_path.c_str());
   }
 
   ImFont *font_italic = io.Fonts->AddFontFromFileTTF(italic_path.c_str(), kUiFontSize);
   if(font_italic)
   {
-    merge_box_drawing_fallback(font_italic);
+    merge_noto_sans_mono_fallback(font_italic);
+    merge_noto_sans_symbols2_fallback(font_italic);
+    merge_dejavu_sans_mono_fallback(font_italic);
     merge_emoji_fallback(twemoji_path.c_str());
   }
 
   ImFont *font_bold = io.Fonts->AddFontFromFileTTF(bold_path.c_str(), kUiFontSize);
   if(font_bold)
   {
-    merge_box_drawing_fallback(font_bold);
+    merge_noto_sans_mono_fallback(font_bold);
+    merge_noto_sans_symbols2_fallback(font_bold);
+    merge_dejavu_sans_mono_fallback(font_bold);
     merge_emoji_fallback(twemoji_path.c_str());
   }
 
