@@ -1846,19 +1846,15 @@ bool App::save_note_clipboard()
 App::App(AppConfig config)
     : config_(std::move(config)),
       app_settings_store_(config_.appSettingsPath),
+      project_settings_store_(config_.configPath / "project_settings.json"),
       git_client_(git_process_runner_)
 {
   const auto app_settings = app_settings_store_.load();
-  if(app_settings)
-  {
-    git_sync_enabled_ = app_settings.settings.git_sync_enabled;
-  }
-  else
+  if(!app_settings)
   {
     app_settings_error_ = app_settings.message;
     LOG_ERROR("Cannot load Notepp app settings: ", app_settings_error_);
   }
-  if(app_settings) git_last_attempt_ = app_settings.settings.last_git_sync.attempted_at;
   if(config_.hasInitialGitStatus)
   {
     git_status_ = config_.initialGitStatus;
@@ -1899,6 +1895,44 @@ App::App(AppConfig config)
   });
 
   Lang::init(config_.assetsPath / "languages");
+  if(!load_project_settings())
+    LOG_ERROR("Cannot load project settings: ", project_settings_error_);
+}
+
+bool App::load_project_settings()
+{
+  auto loaded = project_settings_store_.load();
+  if(!loaded)
+  {
+    project_settings_error_ = loaded.message;
+    return false;
+  }
+
+  const auto app_settings = app_settings_store_.load();
+  if(!loaded.settings.has_git_sync_enabled && app_settings &&
+     app_settings.settings.git_sync_enabled)
+  {
+    const auto migrated = project_settings_store_.set_git_sync_enabled(true);
+    if(!migrated)
+      LOG_ERROR("Cannot migrate Git Sync setting: ", migrated.message);
+    loaded = project_settings_store_.load();
+  }
+  if(!loaded)
+  {
+    project_settings_error_ = loaded.message;
+    return false;
+  }
+
+  project_settings_error_.clear();
+  git_sync_enabled_ = loaded.settings.git_sync_enabled;
+  project_language_explicit_ = false;
+  if(!loaded.settings.language.empty())
+  {
+    project_language_explicit_ = Lang::set_language(loaded.settings.language);
+    if(!project_language_explicit_)
+      LOG_WARNING("Project language is unavailable: ", loaded.settings.language);
+  }
+  return true;
 }
 
 void App::record_git_status(const notepp::git_sync::Status &status)
@@ -2139,14 +2173,17 @@ void App::finish_git_operation()
   git_sync_in_progress_ = false;
   git_operation_kind_ = GitOperationKind::none;
   atomic_file::set_shared_writes_suspended(false);
-  record_git_status(async_result.operation.status);
 #if USE_PORTABLE_PATHS
   if(!async_result.switch_root.empty())
   {
     load_switched_project(async_result.switch_root);
+    // The project store is replaced by load_switched_project, so persist the
+    // switch result in the newly selected project's settings.
+    record_git_status(async_result.operation.status);
     return;
   }
 #endif
+  record_git_status(async_result.operation.status);
   if(async_result.operation.success && async_result.operation.changed_worktree)
     reload_project_after_git_pull();
 
@@ -2170,27 +2207,26 @@ void App::finish_git_operation()
   }
 }
 
-bool App::poll_app_settings()
+bool App::poll_project_settings()
 {
-  const auto polled = app_settings_store_.poll();
+  const auto polled = project_settings_store_.poll();
   if(!polled)
   {
-    if(app_settings_error_ != polled.message)
-    {
-      LOG_ERROR("Cannot reload Notepp app settings: ", polled.message);
-    }
-    app_settings_error_ = polled.message;
+    if(project_settings_error_ != polled.message)
+      LOG_ERROR("Cannot reload project settings: ", polled.message);
+    project_settings_error_ = polled.message;
     return false;
   }
-  app_settings_error_.clear();
+  project_settings_error_.clear();
   if(!polled.changed) return false;
 
   const bool toggle_changed = git_sync_enabled_ != polled.settings.git_sync_enabled;
   git_sync_enabled_ = polled.settings.git_sync_enabled;
+  if(!polled.settings.language.empty() &&
+     polled.settings.language != Lang::current_language_code())
+    Lang::set_language(polled.settings.language);
   if(toggle_changed)
-  {
     LOG_INFO("Git Sync setting reloaded: ", git_sync_enabled_ ? "enabled" : "disabled");
-  }
   return toggle_changed;
 }
 
@@ -2211,6 +2247,15 @@ void App::load_switched_project(const std::filesystem::path &new_root)
   config_.workspacePath = project.workspace;
   configure_workspace_paths();
   migrate_legacy_workspace_files();
+  project_settings_store_ = notepp::project_settings::Store(
+      config_.configPath / "project_settings.json");
+  project_language_explicit_ = false;
+  git_sync_enabled_ = false;
+  git_last_attempt_.clear();
+  git_status_available_ = false;
+  config_.hasInitialGitStatus = false;
+  if(!load_project_settings())
+    LOG_ERROR("Cannot load project settings: ", project_settings_error_);
 
   g_folder_drawings.clear();
   g_draw_undo.clear();
@@ -2243,7 +2288,13 @@ bool App::switch_project(const std::filesystem::path &new_root)
   }
   if(!save_imgui_settings())
     LOG_ERROR("Cannot save local ImGui workspace state before project switch");
-  if(!git_sync_enabled_)
+  notepp::project_settings::Store new_project_settings(
+      new_root / "config" / "project_settings.json");
+  const auto new_settings = new_project_settings.load(false);
+  const bool new_project_may_need_pull =
+      !new_settings || !new_settings.existed || !new_settings.settings.has_git_sync_enabled ||
+      new_settings.settings.git_sync_enabled;
+  if(!git_sync_enabled_ && !new_project_may_need_pull)
   {
     load_switched_project(new_root);
     return true;
@@ -2256,17 +2307,40 @@ bool App::switch_project(const std::filesystem::path &new_root)
   git_status_.state = notepp::git_sync::SyncState::syncing;
   git_status_.summary = Lang::t("Git Sync in progress");
   const std::filesystem::path old_root = config_.projectRoot;
+  const bool old_project_git_sync_enabled = git_sync_enabled_;
   try
   {
-    git_sync_future_ = std::async(std::launch::async, [this, old_root, new_root] {
+    git_sync_future_ = std::async(std::launch::async,
+                                  [this, old_root, new_root, old_project_git_sync_enabled] {
       notepp::git_sync::OperationResult result;
       try
       {
-        const auto pushed = git_client_.commit_and_push(
-            old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
-        const auto pulled = git_client_.pull_on_open(new_root);
+        notepp::git_sync::OperationResult pushed;
+        pushed.success = true;
+        pushed.status.state = notepp::git_sync::SyncState::unavailable;
+        pushed.status.summary = "Project Git Sync is disabled";
+        if(old_project_git_sync_enabled)
+          pushed = git_client_.commit_and_push(
+              old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+        notepp::project_settings::Store new_project_settings(
+            new_root / "config" / "project_settings.json");
+        const auto new_settings = new_project_settings.load(false);
+        const bool pull_enabled =
+            !new_settings || !new_settings.existed || !new_settings.settings.has_git_sync_enabled ||
+            new_settings.settings.git_sync_enabled;
+        notepp::git_sync::OperationResult pulled;
+        if(pull_enabled)
+          pulled = git_client_.pull_on_open(new_root);
+        else
+        {
+          pulled.success = true;
+          pulled.status.state = notepp::git_sync::SyncState::unavailable;
+          pulled.status.summary = "Project Git Sync is disabled";
+        }
         result = pulled;
-        if(!pushed.success && pulled.success)
+        if(!pushed.success && !pull_enabled)
+          result = pushed;
+        else if(!pushed.success && pulled.success)
           result = pushed;
         else if(!pushed.success && !pulled.success)
         {
@@ -2295,19 +2369,22 @@ bool App::switch_project(const std::filesystem::path &new_root)
     git_sync_in_progress_ = false;
     git_operation_kind_ = GitOperationKind::none;
     atomic_file::set_shared_writes_suspended(false);
-    record_git_status(notepp::git_sync::exception_result(
-                          "Starting project switch Git Sync", error.what())
-                          .status);
+    const auto status = notepp::git_sync::exception_result(
+                            "Starting project switch Git Sync", error.what())
+                            .status;
     load_switched_project(new_root);
+    record_git_status(status);
   }
   catch(...)
   {
     git_sync_in_progress_ = false;
     git_operation_kind_ = GitOperationKind::none;
     atomic_file::set_shared_writes_suspended(false);
-    record_git_status(
-        notepp::git_sync::exception_result("Starting project switch Git Sync").status);
+    const auto status = notepp::git_sync::exception_result(
+                            "Starting project switch Git Sync")
+                            .status;
     load_switched_project(new_root);
+    record_git_status(status);
   }
   return true;
 }
@@ -2579,7 +2656,15 @@ void App::load_state()
       layout_locked_ = decoded_index->layout_locked;
       detached_note_windows_enabled_ = decoded_index->detached_note_windows;
       dockers_enabled_ = decoded_index->dockers_enabled;
-      if(!decoded_index->language.empty()) Lang::set_language(decoded_index->language);
+      if(!project_language_explicit_ && !decoded_index->language.empty())
+      {
+        if(Lang::set_language(decoded_index->language))
+        {
+          const auto migrated = project_settings_store_.set_language(decoded_index->language);
+          if(migrated) project_language_explicit_ = true;
+          else LOG_ERROR("Cannot migrate project language: ", migrated.message);
+        }
+      }
 
       for(const auto &folder_record : decoded_index->folders)
       {
@@ -4982,7 +5067,7 @@ bool App::frame_begin()
     }
     if(event.type == kProjectFilesChangedEvent)
     {
-      if(poll_app_settings()) had_event = true;
+      if(poll_project_settings()) had_event = true;
       if(!git_sync_in_progress_ && sync_project_files()) had_event = true;
       continue;
     }
@@ -5487,17 +5572,17 @@ void App::frame_ui()
   MarkdownView::begin_sidebar_thumbnail_frame();
   const bool git_disabled_for_frame = git_sync_in_progress_ || close_requested_;
   const auto set_git_sync_enabled = [this](const bool requested) {
-    const auto updated = app_settings_store_.set_git_sync_enabled(requested);
+    const auto updated = project_settings_store_.set_git_sync_enabled(requested);
     if(updated)
     {
       git_sync_enabled_ = updated.settings.git_sync_enabled;
-      app_settings_error_.clear();
+      project_settings_error_.clear();
       if(git_sync_enabled_) begin_git_operation(false);
     }
     else
     {
-      app_settings_error_ = updated.message;
-      LOG_ERROR("Cannot save Git Sync setting: ", app_settings_error_);
+      project_settings_error_ = updated.message;
+      LOG_ERROR("Cannot save Git Sync setting: ", project_settings_error_);
     }
   };
   if(git_disabled_for_frame) ImGui::BeginDisabled();
@@ -7778,10 +7863,13 @@ void App::frame_ui()
         ImGui::PopTextWrapPos();
       }
     }
-    if(!app_settings_error_.empty())
+    if(!app_settings_error_.empty() || !project_settings_error_.empty())
     {
+      const std::string &error = !project_settings_error_.empty()
+                                     ? project_settings_error_
+                                     : app_settings_error_;
       ImGui::PushTextWrapPos(420.0f);
-      ImGui::TextDisabled("%s: %s", Lang::t("Settings error"), app_settings_error_.c_str());
+      ImGui::TextDisabled("%s: %s", Lang::t("Settings error"), error.c_str());
       ImGui::PopTextWrapPos();
     }
     ImGui::Separator();
@@ -10360,8 +10448,16 @@ void App::frame_ui()
             {
               if(lang.code != Lang::current_language_code())
               {
-                Lang::set_language(lang.code);
-                save_index();
+                if(Lang::set_language(lang.code))
+                {
+                  const auto saved = project_settings_store_.set_language(lang.code);
+                  if(!saved)
+                  {
+                    project_settings_error_ = saved.message;
+                    LOG_ERROR("Cannot save project language: ", saved.message);
+                  }
+                  save_index();
+                }
               }
             }
             ImGui::PopID();

@@ -4,6 +4,7 @@
 #include "git_sync.hpp"
 #include "note_project.hpp"
 #include "process.hpp"
+#include "project_settings.hpp"
 
 #include <exception>
 #include <filesystem>
@@ -30,9 +31,20 @@ int main(int, char **)
   if(!selected_root) return 0;
   projectRoot = *selected_root;
 
+  const std::filesystem::path project_settings_path =
+      projectRoot / "config" / "project_settings.json";
+  notepp::project_settings::Store project_settings_store(project_settings_path);
+  // Do not create project settings before pulling: the file may be tracked in
+  // the remote repository and must be allowed to arrive through Git first.
+  const auto project_settings = project_settings_store.load(false);
+  const bool project_git_sync_enabled =
+      project_settings && project_settings.settings.has_git_sync_enabled
+          ? project_settings.settings.git_sync_enabled
+          : (settings && settings.settings.git_sync_enabled);
+
   // Pull before create_or_open_project can create directories or upgrade the
   // shared manifest. Every failure is advisory and the local tree still opens.
-  if(settings && settings.settings.git_sync_enabled)
+  if(project_git_sync_enabled)
   {
     process::SystemRunner runner;
     notepp::git_sync::Client client(runner);
@@ -54,11 +66,29 @@ int main(int, char **)
     const notepp::app_settings::GitSyncRecord record{
         std::string(notepp::git_sync::state_name(pulled.status.state)), pulled.status.summary,
         pulled.status.detail, notepp::app_settings::current_utc_timestamp()};
-    const auto recorded = settings_store.record_git_sync_status(record);
-    if(!recorded)
+    auto migrated_settings = project_settings_store.load();
+    if(!migrated_settings)
     {
-      LOG_ERROR("Cannot persist startup Git Sync status: ", recorded.message);
-      (void)0;
+      LOG_ERROR("Cannot load project settings after startup Git Sync: ",
+                migrated_settings.message);
+    }
+    else
+    {
+      if(!migrated_settings.settings.has_git_sync_enabled && settings &&
+         settings.settings.git_sync_enabled)
+      {
+        const auto migrated = project_settings_store.set_git_sync_enabled(true);
+        if(!migrated)
+          LOG_ERROR("Cannot migrate Git Sync setting: ", migrated.message);
+        else
+          migrated_settings = project_settings_store.load();
+      }
+      if(migrated_settings)
+      {
+        const auto recorded = settings_store.record_git_sync_status(record);
+        if(!recorded)
+          LOG_ERROR("Cannot persist startup Git Sync status: ", recorded.message);
+      }
     }
     if(!pulled.success)
     {

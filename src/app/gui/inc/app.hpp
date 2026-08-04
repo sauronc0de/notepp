@@ -6,6 +6,7 @@
 #include "note_history.hpp"
 #include "note_model.hpp"
 #include "note_storage.hpp"
+#include "project_settings.hpp"
 #include "terminal.hpp"
 
 #include <imgui.h>
@@ -41,9 +42,11 @@ public:
 private:
   AppConfig config_;
   notepp::app_settings::Store app_settings_store_;
+  notepp::project_settings::Store project_settings_store_;
   process::SystemRunner git_process_runner_;
   notepp::git_sync::Client git_client_;
   bool git_sync_enabled_ = false;
+  bool project_language_explicit_ = false;
   enum class GitOperationKind
   {
     none,
@@ -67,7 +70,8 @@ private:
   std::string git_last_attempt_;
   std::future<GitAsyncResult> git_sync_future_;
   std::string app_settings_error_;
-  bool poll_app_settings();
+  std::string project_settings_error_;
+  bool poll_project_settings();
   void record_git_status(const notepp::git_sync::Status &status);
   void begin_git_operation(bool manual_sync);
   void begin_close_git_operation();
@@ -179,6 +183,7 @@ private:
   bool save_workspace_text(const std::filesystem::path &path, std::string_view content);
   void configure_workspace_paths();
   void migrate_legacy_workspace_files();
+  bool load_project_settings();
 #if USE_PORTABLE_PATHS
   bool switch_project(const std::filesystem::path &new_root);
 #endif

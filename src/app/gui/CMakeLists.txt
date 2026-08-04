@@ -72,6 +72,7 @@ target_link_libraries(${PROJECT_NAME}
     note_clipboard_state
     note_model
     note_storage
+    project_settings
     markdown_view
     markdown_sections
     note_project
