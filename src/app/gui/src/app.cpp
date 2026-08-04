@@ -8721,10 +8721,13 @@ void App::frame_ui()
                              : git_status_available_
                                  ? Lang::t(sync_state_name.c_str())
                                  : Lang::t("Git status unknown");
-    const ImVec4 sync_color = git_sync_in_progress_ ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
-                              : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
-                                  ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
-                                  : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
+    const ImVec4 sync_color = !git_sync_enabled_
+                                   ? ImVec4(0.72f, 0.72f, 0.74f, 1.0f)
+                               : git_sync_in_progress_
+                                   ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
+                               : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
+                                   ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
+                                   : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
     const ImVec2 sync_size = ImGui::CalcTextSize(sync_label);
     root_dl->AddText(
         ImVec2(header_max.x - ImGui::GetStyle().ItemSpacing.x - sync_size.x,
