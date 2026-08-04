@@ -5486,6 +5486,20 @@ void App::frame_ui()
 {
   MarkdownView::begin_sidebar_thumbnail_frame();
   const bool git_disabled_for_frame = git_sync_in_progress_ || close_requested_;
+  const auto set_git_sync_enabled = [this](const bool requested) {
+    const auto updated = app_settings_store_.set_git_sync_enabled(requested);
+    if(updated)
+    {
+      git_sync_enabled_ = updated.settings.git_sync_enabled;
+      app_settings_error_.clear();
+      if(git_sync_enabled_) begin_git_operation(false);
+    }
+    else
+    {
+      app_settings_error_ = updated.message;
+      LOG_ERROR("Cannot save Git Sync setting: ", app_settings_error_);
+    }
+  };
   if(git_disabled_for_frame) ImGui::BeginDisabled();
 
   // --- Dock host (workspace only: right pane, excluding explorer and top bar) ---
@@ -5557,6 +5571,7 @@ void App::frame_ui()
     const float right_margin = ImGui::GetStyle().WindowPadding.x;
     const ImTextureID refresh_icon = get_toolbar_icon_texture("refresh.png");
     const ImTextureID recycle_icon = get_toolbar_icon_texture("recycle.png");
+    const ImTextureID sync_icon = get_toolbar_icon_texture("sync.png");
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(Lang::t("Explorer"));
     if(!g_unresolved_persistence_errors.empty())
@@ -5570,6 +5585,40 @@ void App::frame_ui()
                           error.second.c_str());
       }
     }
+    const ImVec2 git_switch_size(30.0f, 16.0f);
+    const float git_switch_x = ImGui::GetWindowWidth() - right_margin -
+                               2.0f * btn_sz - 2.0f * btn_gap - git_switch_size.x;
+    if(git_sync_enabled_)
+    {
+      ImGui::SameLine(0.0f, 6.0f);
+      ImGui::SetCursorPosX(git_switch_x - btn_gap - btn_sz);
+      if(shaded_icon_button("##explorer_git_sync_now", sync_icon, ImVec2(btn_sz, btn_sz), "S##explorer_git_sync_now"))
+        begin_git_operation(true);
+      if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("%s", Lang::t("Sync now"));
+    }
+    ImGui::SameLine(0.0f, 6.0f);
+    ImGui::SetCursorPosX(git_switch_x);
+    ImGui::InvisibleButton("##explorer_git_sync_switch", git_switch_size);
+    const bool git_switch_clicked = ImGui::IsItemClicked();
+    const bool git_switch_hovered = ImGui::IsItemHovered();
+    const ImVec2 git_switch_min = ImGui::GetItemRectMin();
+    const ImVec2 git_switch_max = ImGui::GetItemRectMax();
+    const float git_switch_radius = git_switch_size.y * 0.5f;
+    const ImU32 git_switch_track = ImGui::GetColorU32(
+        git_sync_enabled_ ? ImGuiCol_Button : ImGuiCol_TextDisabled);
+    const ImU32 git_switch_knob = ImGui::GetColorU32(ImGuiCol_SliderGrab);
+    ImDrawList *git_switch_draw_list = ImGui::GetWindowDrawList();
+    git_switch_draw_list->AddRectFilled(
+        git_switch_min, git_switch_max, git_switch_track, git_switch_radius);
+    const float git_switch_knob_x = git_sync_enabled_ ? git_switch_max.x - git_switch_radius
+                                                       : git_switch_min.x + git_switch_radius;
+    git_switch_draw_list->AddCircleFilled(
+        ImVec2(git_switch_knob_x, git_switch_min.y + git_switch_radius),
+        git_switch_radius - 2.0f, git_switch_knob);
+    if(git_switch_clicked) set_git_sync_enabled(!git_sync_enabled_);
+    if(git_switch_hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+      ImGui::SetTooltip("Git Sync: %s", git_sync_enabled_ ? "enabled" : "disabled");
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - btn_sz - right_margin);
     if(shaded_icon_button("##explorer_refresh", refresh_icon, ImVec2(btn_sz, btn_sz), "R##explorer_refresh"))
@@ -5600,30 +5649,6 @@ void App::frame_ui()
     }
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("Restore removed notes"));
-    const std::string sync_state_name = git_status_available_
-                                            ? std::string(notepp::git_sync::state_name(git_status_.state))
-                                            : std::string{};
-    const char *sync_label = !git_sync_enabled_
-                                 ? Lang::t("Git Sync disabled")
-                             : git_sync_in_progress_
-                                 ? Lang::t("Syncing")
-                             : git_status_available_
-                                 ? Lang::t(sync_state_name.c_str())
-                                 : Lang::t("Git status unknown");
-    const ImVec4 sync_color = git_sync_in_progress_ ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
-                              : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
-                                  ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
-                                  : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
-    ImGui::TextColored(sync_color, "%s", sync_label);
-    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && git_status_available_)
-      ImGui::SetTooltip("%s%s%s%s%s", git_status_.summary.c_str(),
-                        git_status_.detail.empty() ? "" : "\n", git_status_.detail.c_str(),
-                        git_last_attempt_.empty() ? "" : "\nLast attempt: ", git_last_attempt_.c_str());
-    if(git_sync_enabled_)
-    {
-      ImGui::SameLine();
-      if(ImGui::SmallButton(Lang::t("Sync now"))) begin_git_operation(true);
-    }
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -7735,21 +7760,7 @@ void App::frame_ui()
       open_directory(config_.dataPath);
     ImGui::Separator();
     if(ImGui::MenuItem(Lang::t("Enable Git Sync"), nullptr, git_sync_enabled_))
-    {
-      const bool requested = !git_sync_enabled_;
-      const auto updated = app_settings_store_.set_git_sync_enabled(requested);
-      if(updated)
-      {
-        git_sync_enabled_ = updated.settings.git_sync_enabled;
-        app_settings_error_.clear();
-        if(git_sync_enabled_) begin_git_operation(false);
-      }
-      else
-      {
-        app_settings_error_ = updated.message;
-        LOG_ERROR("Cannot save Git Sync setting: ", app_settings_error_);
-      }
-    }
+      set_git_sync_enabled(!git_sync_enabled_);
     if(git_sync_enabled_ && ImGui::MenuItem(Lang::t("Sync now"), nullptr, false, !git_sync_in_progress_))
       begin_git_operation(true);
     if(git_sync_enabled_ && git_status_available_ &&
@@ -8624,6 +8635,29 @@ void App::frame_ui()
         ImVec2(header_min.x + ImGui::GetStyle().ItemSpacing.x, header_min.y + (header_h - ImGui::GetTextLineHeight()) * 0.5f),
         ImGui::GetColorU32(ImVec4(0.50f, 0.52f, 0.55f, 0.85f)),
         Lang::t("Root"));
+    const std::string sync_state_name = git_status_available_
+                                            ? std::string(notepp::git_sync::state_name(git_status_.state))
+                                            : std::string{};
+    const char *sync_label = !git_sync_enabled_
+                                 ? Lang::t("Git Sync disabled")
+                             : git_sync_in_progress_
+                                 ? Lang::t("Syncing")
+                             : git_status_available_
+                                 ? Lang::t(sync_state_name.c_str())
+                                 : Lang::t("Git status unknown");
+    const ImVec4 sync_color = git_sync_in_progress_ ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
+                              : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
+                                  ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
+                                  : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
+    const ImVec2 sync_size = ImGui::CalcTextSize(sync_label);
+    root_dl->AddText(
+        ImVec2(header_max.x - ImGui::GetStyle().ItemSpacing.x - sync_size.x,
+               header_min.y + (header_h - ImGui::GetTextLineHeight()) * 0.5f),
+        ImGui::GetColorU32(sync_color), sync_label);
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && git_status_available_)
+      ImGui::SetTooltip("%s%s%s%s%s", git_status_.summary.c_str(),
+                        git_status_.detail.empty() ? "" : "\n", git_status_.detail.c_str(),
+                        git_last_attempt_.empty() ? "" : "\nLast attempt: ", git_last_attempt_.c_str());
     // Highlight on drag hover (-99 is sentinel for root zone)
     if(drag_hover_folder_idx == -99)
     {
