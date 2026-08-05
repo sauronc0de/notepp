@@ -9266,7 +9266,8 @@ void App::frame_ui()
         NoteMeta &n = f.notes[(size_t)ni];
         const bool note_selected =
             (fi == active_folder_idx_) && (selected_note_indices.count(ni) != 0);
-        const std::string note_item_label = n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
+        const std::string note_item_label =
+            n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
         const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
         ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
         if(note_flash_col.w > 0.0f) note_text_col = mix_color(note_text_col, note_flash_col, 0.78f);
@@ -9824,7 +9825,7 @@ void App::frame_ui()
           const bool note_sel = (rfi == active_folder_idx_) && selected_note_indices.count(ni);
           const std::string label = n.title + "###RootNote_" + std::to_string(rfi) + "_" + std::to_string(ni);
           const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
-          ImVec4 note_text_col = ImVec4(0.93f, 0.94f, 0.96f, 1.0f);
+          ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
           if(note_flash_col.w > 0.0f) note_text_col = mix_color(note_text_col, note_flash_col, 0.78f);
           note_text_col.w = 1.0f;
           ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);

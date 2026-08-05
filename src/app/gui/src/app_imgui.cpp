@@ -24,6 +24,81 @@ namespace
 {
 constexpr const char *kGlslVersion = "#version 150";
 constexpr float kUiFontSize = 14.0f;
+
+void apply_notepp_style()
+{
+  ImGui::StyleColorsDark();
+  ImGuiStyle &style = ImGui::GetStyle();
+
+  // Keep the base style in one place so individual widgets only need local
+  // overrides for behavior-specific states (for example, folder accents).
+  style.WindowPadding = ImVec2(10.0f, 9.0f);
+  style.FramePadding = ImVec2(8.0f, 5.0f);
+  style.ItemSpacing = ImVec2(7.0f, 6.0f);
+  style.ItemInnerSpacing = ImVec2(5.0f, 4.0f);
+  style.CellPadding = ImVec2(7.0f, 4.0f);
+  style.IndentSpacing = 17.0f;
+  style.ScrollbarSize = 12.0f;
+  style.GrabMinSize = 10.0f;
+
+  style.WindowRounding = 4.0f;
+  style.ChildRounding = 3.0f;
+  style.FrameRounding = 3.0f;
+  style.PopupRounding = 4.0f;
+  style.ScrollbarRounding = 3.0f;
+  style.GrabRounding = 3.0f;
+  style.TabRounding = 3.0f;
+
+  style.WindowBorderSize = 1.0f;
+  style.ChildBorderSize = 1.0f;
+  style.PopupBorderSize = 1.0f;
+  style.FrameBorderSize = 0.0f;
+  style.TabBorderSize = 0.0f;
+
+  // Solid surfaces and a restrained blue accent avoid expensive visual
+  // effects while keeping focus and selection states clear.
+  ImVec4 *colors = style.Colors;
+  colors[ImGuiCol_Text] = ImVec4(0.886f, 0.906f, 0.929f, 1.0f);
+  colors[ImGuiCol_TextDisabled] = ImVec4(0.412f, 0.455f, 0.502f, 1.0f);
+  colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.067f, 0.086f, 1.0f);
+  colors[ImGuiCol_ChildBg] = ImVec4(0.075f, 0.094f, 0.125f, 1.0f);
+  colors[ImGuiCol_PopupBg] = ImVec4(0.106f, 0.133f, 0.173f, 1.0f);
+  colors[ImGuiCol_Border] = ImVec4(0.161f, 0.196f, 0.239f, 1.0f);
+  colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
+  colors[ImGuiCol_FrameBg] = ImVec4(0.106f, 0.133f, 0.173f, 1.0f);
+  colors[ImGuiCol_FrameBgHovered] = ImVec4(0.133f, 0.169f, 0.216f, 1.0f);
+  colors[ImGuiCol_FrameBgActive] = ImVec4(0.141f, 0.212f, 0.310f, 1.0f);
+  colors[ImGuiCol_TitleBg] = ImVec4(0.106f, 0.133f, 0.173f, 1.0f);
+  colors[ImGuiCol_TitleBgActive] = ImVec4(0.118f, 0.153f, 0.204f, 1.0f);
+  colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.075f, 0.094f, 0.125f, 1.0f);
+
+  colors[ImGuiCol_Button] = ImVec4(0.106f, 0.133f, 0.173f, 1.0f);
+  colors[ImGuiCol_ButtonHovered] = ImVec4(0.133f, 0.169f, 0.216f, 1.0f);
+  colors[ImGuiCol_ButtonActive] = ImVec4(0.141f, 0.212f, 0.310f, 1.0f);
+  colors[ImGuiCol_Header] = ImVec4(0.133f, 0.169f, 0.216f, 1.0f);
+  colors[ImGuiCol_HeaderHovered] = ImVec4(0.153f, 0.204f, 0.267f, 1.0f);
+  colors[ImGuiCol_HeaderActive] = ImVec4(0.141f, 0.212f, 0.310f, 1.0f);
+
+  const ImVec4 accent(0.298f, 0.553f, 1.0f, 1.0f);
+  colors[ImGuiCol_CheckMark] = accent;
+  colors[ImGuiCol_SliderGrab] = accent;
+  colors[ImGuiCol_SliderGrabActive] = ImVec4(0.384f, 0.612f, 1.0f, 1.0f);
+  colors[ImGuiCol_ResizeGrip] = ImVec4(0.298f, 0.553f, 1.0f, 0.35f);
+  colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.298f, 0.553f, 1.0f, 0.65f);
+  colors[ImGuiCol_ResizeGripActive] = accent;
+  colors[ImGuiCol_Separator] = ImVec4(0.145f, 0.176f, 0.216f, 1.0f);
+  colors[ImGuiCol_SeparatorHovered] = ImVec4(0.298f, 0.553f, 1.0f, 0.65f);
+  colors[ImGuiCol_SeparatorActive] = accent;
+
+  colors[ImGuiCol_Tab] = ImVec4(0.075f, 0.094f, 0.125f, 1.0f);
+  colors[ImGuiCol_TabHovered] = ImVec4(0.133f, 0.169f, 0.216f, 1.0f);
+  colors[ImGuiCol_TabActive] = ImVec4(0.141f, 0.212f, 0.310f, 1.0f);
+  colors[ImGuiCol_ScrollbarBg] = ImVec4(0.055f, 0.067f, 0.086f, 1.0f);
+  colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.161f, 0.196f, 0.239f, 1.0f);
+  colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.216f, 0.267f, 0.329f, 1.0f);
+  colors[ImGuiCol_ScrollbarGrabActive] = accent;
+}
 } // namespace
 
 void App::init_imgui()
@@ -187,7 +262,7 @@ void App::init_imgui()
   else
     io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 
-  ImGui::StyleColorsDark();
+  apply_notepp_style();
   if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
   {
     ImGuiStyle &style = ImGui::GetStyle();
