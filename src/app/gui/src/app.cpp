@@ -5230,6 +5230,38 @@ bool App::frame_begin()
       continue;
     }
 
+    if(event.type == SDL_KEYDOWN &&
+       (note_header_create_name_visible_ || note_color_set_visible_) &&
+       !command_finder_window_visible_ &&
+       !(terminal_visible_ && terminal_.hasFocus()))
+    {
+      if(event.key.keysym.sym == SDLK_ESCAPE)
+      {
+        request_close_note_header_create_ = note_header_create_name_visible_;
+        request_close_note_color_set_ = note_color_set_visible_;
+        continue;
+      }
+      if(event.key.repeat == 0 &&
+         (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
+      {
+        request_note_header_create_confirm_ = note_header_create_name_visible_;
+        request_note_color_set_confirm_ = note_color_set_visible_;
+        continue;
+      }
+      if(event.key.repeat == 0 && note_color_set_visible_ && event.key.keysym.sym == SDLK_UP)
+      {
+        --note_color_set_navigation_delta_;
+        continue;
+      }
+      if(event.key.repeat == 0 && note_color_set_visible_ && event.key.keysym.sym == SDLK_DOWN)
+      {
+        ++note_color_set_navigation_delta_;
+        continue;
+      }
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      continue;
+    }
+
     // These dialogs own application shortcuts while they are visible. Forward
     // unhandled keys to ImGui so their filter fields still accept text editing.
     if(event.type == SDL_KEYDOWN &&
@@ -5245,7 +5277,12 @@ bool App::frame_begin()
       if(event.key.repeat == 0 && event.key.keysym.sym == SDLK_UP)
       {
         if(command_finder_window_visible_)
-          --command_finder_navigation_delta_;
+        {
+          if(note_color_set_visible_)
+            --note_color_set_navigation_delta_;
+          else
+            --command_finder_navigation_delta_;
+        }
         else
           --editor_actions_navigation_delta_;
         continue;
@@ -5253,7 +5290,12 @@ bool App::frame_begin()
       if(event.key.repeat == 0 && event.key.keysym.sym == SDLK_DOWN)
       {
         if(command_finder_window_visible_)
-          ++command_finder_navigation_delta_;
+        {
+          if(note_color_set_visible_)
+            ++note_color_set_navigation_delta_;
+          else
+            ++command_finder_navigation_delta_;
+        }
         else
           ++editor_actions_navigation_delta_;
         continue;
@@ -5907,6 +5949,7 @@ void App::frame_ui()
     std::string folder_name;
     std::string note_path;
     std::string heading_path;
+    std::string heading_title;
     std::size_t heading_occurrence_index = 0;
     int score = 0;
   };
@@ -6004,6 +6047,27 @@ void App::frame_ui()
     request_note_switcher_activate_ = false;
     note_switcher_window_visible_ = false;
     request_close_note_switcher_ = false;
+    note_header_create_selecting_ = false;
+    note_header_create_name_visible_ = false;
+    request_note_header_create_confirm_ = false;
+    request_close_note_header_create_ = false;
+    note_header_create_focus_input_ = false;
+    note_header_create_title_[0] = '\0';
+    note_header_create_note_reference_.clear();
+    note_header_create_parent_.clear();
+    note_header_create_parent_path_.clear();
+    note_header_create_parent_occurrence_ = 0;
+    note_color_set_selecting_ = false;
+    note_color_set_visible_ = false;
+    request_note_color_set_confirm_ = false;
+    request_close_note_color_set_ = false;
+    note_color_set_focus_input_ = false;
+    note_color_set_color_[0] = 0.35f;
+    note_color_set_color_[1] = 0.65f;
+    note_color_set_color_[2] = 1.0f;
+    note_color_set_selected_preset_ = 3;
+    note_color_set_navigation_delta_ = 0;
+    note_color_set_note_reference_.clear();
     command_finder = {};
     command_finder_window_visible_ = false;
     request_open_command_finder_ = false;
@@ -6781,6 +6845,7 @@ void App::frame_ui()
                          folder.name,
                          note.path,
                          heading_path,
+                         section.title,
                          occurrence_index,
                          score});
         }
@@ -6803,13 +6868,13 @@ void App::frame_ui()
         const NoteMeta &note = folder.notes[static_cast<std::size_t>(note_idx)];
         if(terms.empty())
         {
-          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, 0, 0});
+          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, {}, 0, 0});
           continue;
         }
 
         const int score = note_score(note);
         if(score != 0)
-          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, 0, score});
+          append_result({note.id, folder_idx, note_idx, note.title, folder.name, note.path, {}, {}, 0, score});
 
         const std::string content = (note.path == state_file_path_)
                                         ? markdown_text_
@@ -6863,6 +6928,41 @@ void App::frame_ui()
       }
     }
   };
+  const auto begin_note_header_create = [&](const NoteSwitcherResult &result) {
+    note_switcher.query[0] = '\0';
+    note_switcher.last_query.clear();
+    command_finder.query[0] = '\0';
+    command_finder_feedback_.clear();
+    note_header_create_note_reference_ = result.note_id.empty() ? result.note_path : result.note_id;
+    // The API's parent argument is the exact header title. Keep the switcher's
+    // path and occurrence alongside it so selection context is not flattened.
+    note_header_create_parent_path_ = result.heading_path;
+    note_header_create_parent_occurrence_ = result.heading_occurrence_index;
+    note_header_create_parent_ = result.heading_title;
+    note_header_create_title_[0] = '\0';
+    note_header_create_focus_input_ = true;
+    note_header_create_selecting_ = false;
+    note_header_create_name_visible_ = true;
+    command_finder_navigation_delta_ = 0;
+    command_finder_feedback_.clear();
+  };
+  const auto begin_note_color_set = [&](const NoteSwitcherResult &result) {
+    note_switcher.query[0] = '\0';
+    note_switcher.last_query.clear();
+    command_finder.query[0] = '\0';
+    command_finder_feedback_.clear();
+    note_color_set_note_reference_ = result.note_id.empty() ? result.note_path : result.note_id;
+    note_color_set_color_[0] = 0.35f;
+    note_color_set_color_[1] = 0.65f;
+    note_color_set_color_[2] = 1.0f;
+    note_color_set_selected_preset_ = 3;
+    note_color_set_navigation_delta_ = 0;
+    note_color_set_focus_input_ = true;
+    note_color_set_selecting_ = false;
+    note_color_set_visible_ = true;
+    command_finder_navigation_delta_ = 0;
+    command_finder_feedback_.clear();
+  };
   auto open_note_switcher = [&]() {
     if(!request_open_note_switcher_) return;
     note_switcher.visible = true;
@@ -6886,6 +6986,13 @@ void App::frame_ui()
     if(request_close_note_switcher_)
     {
       note_switcher.visible = false;
+      if(note_header_create_selecting_)
+        note_header_create_selecting_ = false;
+      if(note_color_set_selecting_)
+      {
+        note_color_set_selecting_ = false;
+        note_color_set_note_reference_.clear();
+      }
       request_close_note_switcher_ = false;
       request_note_switcher_activate_ = false;
       note_switcher_navigation_delta_ = 0;
@@ -6899,12 +7006,22 @@ void App::frame_ui()
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond,
                             ImVec2(0.5f, 0.5f));
     if(just_opened) ImGui::SetNextWindowFocus();
-    if(!ImGui::Begin("Quick Note Switcher", &note_switcher.visible,
+    const char *note_switcher_title = (note_header_create_selecting_ || note_color_set_selecting_)
+                                           ? "Command Finder"
+                                           : "Quick Note Switcher";
+    if(!ImGui::Begin(note_switcher_title, &note_switcher.visible,
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
                          ImGuiWindowFlags_NoSavedSettings))
     {
       note_switcher.just_opened = false;
       ImGui::End();
+      if(!note_switcher.visible && note_header_create_selecting_)
+        note_header_create_selecting_ = false;
+      if(!note_switcher.visible && note_color_set_selecting_)
+      {
+        note_color_set_selecting_ = false;
+        note_color_set_note_reference_.clear();
+      }
       return;
     }
     note_switcher.just_opened = false;
@@ -6942,8 +7059,14 @@ void App::frame_ui()
       if(note_switcher_selected_idx_ >= 0 &&
          note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
       {
-        navigate_to_note_switcher_result(
-            note_switcher.results[static_cast<std::size_t>(note_switcher_selected_idx_)]);
+        const NoteSwitcherResult &result =
+            note_switcher.results[static_cast<std::size_t>(note_switcher_selected_idx_)];
+        if(note_header_create_selecting_)
+          begin_note_header_create(result);
+        else if(note_color_set_selecting_)
+          begin_note_color_set(result);
+        else
+          navigate_to_note_switcher_result(result);
         note_switcher.visible = false;
       }
     }
@@ -6971,7 +7094,12 @@ void App::frame_ui()
           if(ImGui::Selectable(label.c_str(), selected))
           {
             note_switcher_selected_idx_ = static_cast<int>(i);
-            navigate_to_note_switcher_result(result);
+            if(note_header_create_selecting_)
+              begin_note_header_create(result);
+            else if(note_color_set_selecting_)
+              begin_note_color_set(result);
+            else
+              navigate_to_note_switcher_result(result);
             note_switcher.visible = false;
           }
           if(selected)
@@ -6986,6 +7114,13 @@ void App::frame_ui()
     }
     if(ImGui::Button("Close")) note_switcher.visible = false;
     ImGui::End();
+    if(!note_switcher.visible && note_header_create_selecting_)
+      note_header_create_selecting_ = false;
+    if(!note_switcher.visible && note_color_set_selecting_)
+    {
+      note_color_set_selecting_ = false;
+      note_color_set_note_reference_.clear();
+    }
     note_switcher_window_visible_ = note_switcher.visible;
   };
   auto render_terminal = [&]() {
@@ -7095,6 +7230,196 @@ void App::frame_ui()
         args["name"] = value;
       return args;
     };
+    if(note_color_set_visible_ && !command_finder.visible)
+    {
+      const auto close_guided_note_color_set = [&]() {
+        note_color_set_selecting_ = false;
+        note_color_set_visible_ = false;
+        request_note_color_set_confirm_ = false;
+        request_close_note_color_set_ = false;
+        note_color_set_focus_input_ = false;
+        note_color_set_note_reference_.clear();
+        note_color_set_color_[0] = 0.35f;
+        note_color_set_color_[1] = 0.65f;
+        note_color_set_color_[2] = 1.0f;
+        note_color_set_selected_preset_ = 3;
+        note_color_set_navigation_delta_ = 0;
+      };
+      if(request_close_note_color_set_)
+        close_guided_note_color_set();
+      else
+      {
+        bool open = true;
+        ImGui::SetNextWindowSize(ImVec2(500.0f, 220.0f), ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                                ImVec2(0.5f, 0.5f));
+        if(note_color_set_focus_input_) ImGui::SetNextWindowFocus();
+        if(ImGui::Begin("Command Finder", &open,
+                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                            ImGuiWindowFlags_NoSavedSettings))
+        {
+          ImGui::TextUnformatted("Choose a color for the selected note");
+          if(note_color_set_focus_input_)
+          {
+            ImGui::SetKeyboardFocusHere();
+            note_color_set_focus_input_ = false;
+          }
+          ImGui::ColorEdit3("Color", note_color_set_color_, ImGuiColorEditFlags_NoInputs);
+          static constexpr ImVec4 choices[] = {
+              ImVec4(0.95f, 0.35f, 0.35f, 1.0f), ImVec4(0.98f, 0.72f, 0.25f, 1.0f),
+              ImVec4(0.35f, 0.75f, 0.45f, 1.0f), ImVec4(0.35f, 0.65f, 1.0f, 1.0f),
+              ImVec4(0.70f, 0.45f, 0.90f, 1.0f)};
+          if(note_color_set_navigation_delta_ != 0)
+          {
+            note_color_set_selected_preset_ = clamp_to_range(
+                note_color_set_selected_preset_ + note_color_set_navigation_delta_, 0,
+                static_cast<int>(std::size(choices)) - 1);
+            note_color_set_navigation_delta_ = 0;
+            const ImVec4 &choice = choices[static_cast<std::size_t>(note_color_set_selected_preset_)];
+            note_color_set_color_[0] = choice.x;
+            note_color_set_color_[1] = choice.y;
+            note_color_set_color_[2] = choice.z;
+          }
+          for(std::size_t i = 0; i < std::size(choices); ++i)
+          {
+            if(i != 0U) ImGui::SameLine();
+            const bool selected = static_cast<int>(i) == note_color_set_selected_preset_;
+            if(selected)
+            {
+              ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+              ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            }
+            const bool clicked = ImGui::ColorButton(
+                ("##guided_note_color_" + std::to_string(i)).c_str(), choices[i]);
+            if(selected)
+            {
+              ImGui::PopStyleColor();
+              ImGui::PopStyleVar();
+            }
+            if(clicked)
+            {
+              note_color_set_selected_preset_ = static_cast<int>(i);
+              note_color_set_color_[0] = choices[i].x;
+              note_color_set_color_[1] = choices[i].y;
+              note_color_set_color_[2] = choices[i].z;
+            }
+          }
+          if(!command_finder_feedback_.empty())
+            ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+          if(ImGui::Button("Apply")) request_note_color_set_confirm_ = true;
+          ImGui::SameLine();
+          if(ImGui::Button("Cancel")) request_close_note_color_set_ = true;
+        }
+        ImGui::End();
+        if(!open) request_close_note_color_set_ = true;
+
+        if(request_note_color_set_confirm_)
+        {
+          request_note_color_set_confirm_ = false;
+          if(command_api_ == nullptr)
+            command_finder_feedback_ = "Command API is unavailable";
+          else
+          {
+            nlohmann::json args = note_reference_args(note_color_set_note_reference_.c_str());
+            args["r"] = static_cast<int>(std::lround(note_color_set_color_[0] * 255.0f));
+            args["g"] = static_cast<int>(std::lround(note_color_set_color_[1] * 255.0f));
+            args["b"] = static_cast<int>(std::lround(note_color_set_color_[2] * 255.0f));
+            const nlohmann::json request{{"command", "note.color.set"}, {"args", args}};
+            const auto response = command_api_->execute(request);
+            command_finder_feedback_ = response.body.dump();
+            if(response.ok)
+            {
+              post_command_mutation(request, response);
+              close_guided_note_color_set();
+            }
+            else
+              LOG_WARNING("Command failed: ", response.body.dump());
+          }
+        }
+        if(request_close_note_color_set_)
+          close_guided_note_color_set();
+      }
+      return;
+    }
+    if(note_header_create_name_visible_ && !command_finder.visible)
+    {
+      const auto close_guided_header_create = [&]() {
+        note_header_create_selecting_ = false;
+        note_header_create_name_visible_ = false;
+        request_note_header_create_confirm_ = false;
+        request_close_note_header_create_ = false;
+        note_header_create_focus_input_ = false;
+        note_header_create_title_[0] = '\0';
+        note_header_create_note_reference_.clear();
+        note_header_create_parent_.clear();
+        note_header_create_parent_path_.clear();
+        note_header_create_parent_occurrence_ = 0;
+      };
+      if(request_close_note_header_create_)
+        close_guided_header_create();
+      else
+      {
+        bool open = true;
+        ImGui::SetNextWindowSize(ImVec2(500.0f, 220.0f), ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                                ImVec2(0.5f, 0.5f));
+        if(note_header_create_focus_input_) ImGui::SetNextWindowFocus();
+        if(ImGui::Begin("Command Finder", &open,
+                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                            ImGuiWindowFlags_NoSavedSettings))
+        {
+          ImGui::TextUnformatted("New header");
+          if(!note_header_create_parent_.empty())
+            ImGui::TextDisabled("Under: %s", note_header_create_parent_path_.c_str());
+          else
+            ImGui::TextDisabled("At the end of the selected note");
+          if(note_header_create_focus_input_)
+          {
+            ImGui::SetKeyboardFocusHere();
+            note_header_create_focus_input_ = false;
+          }
+          ImGui::SetNextItemWidth(-1.0f);
+          ImGui::InputText("Name", note_header_create_title_,
+                           sizeof(note_header_create_title_), ImGuiInputTextFlags_AutoSelectAll);
+          if(!command_finder_feedback_.empty())
+            ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+          if(ImGui::Button("Create")) request_note_header_create_confirm_ = true;
+          ImGui::SameLine();
+          if(ImGui::Button("Cancel")) request_close_note_header_create_ = true;
+        }
+        ImGui::End();
+        if(!open) request_close_note_header_create_ = true;
+
+        if(request_note_header_create_confirm_)
+        {
+          request_note_header_create_confirm_ = false;
+          if(note_header_create_title_[0] == '\0')
+            command_finder_feedback_ = "Invalid parameters: title is required";
+          else if(command_api_ == nullptr)
+            command_finder_feedback_ = "Command API is unavailable";
+          else
+          {
+            nlohmann::json args = note_reference_args(note_header_create_note_reference_.c_str());
+            args["title"] = note_header_create_title_;
+            args["parent"] = note_header_create_parent_;
+            args["level"] = 1;
+            const nlohmann::json request{{"command", "note.header.create"}, {"args", args}};
+            const auto response = command_api_->execute(request);
+            command_finder_feedback_ = response.body.dump();
+            if(response.ok)
+            {
+              post_command_mutation(request, response);
+              close_guided_header_create();
+            }
+            else
+              LOG_WARNING("Command failed: ", response.body.dump());
+          }
+        }
+        if(request_close_note_header_create_)
+          close_guided_header_create();
+      }
+      return;
+    }
     if(!api_form.command.empty())
     {
       bool open = true;
@@ -7276,9 +7601,276 @@ void App::frame_ui()
       request_close_command_finder_ = false;
       request_activate_command_finder_ = false;
       command_finder_navigation_delta_ = 0;
+      note_header_create_selecting_ = false;
+      note_header_create_name_visible_ = false;
+      request_note_header_create_confirm_ = false;
+      request_close_note_header_create_ = false;
+      note_header_create_focus_input_ = false;
+      note_header_create_title_[0] = '\0';
+      note_color_set_selecting_ = false;
+      note_color_set_visible_ = false;
+      request_note_color_set_confirm_ = false;
+      request_close_note_color_set_ = false;
+      note_color_set_focus_input_ = false;
+      note_color_set_selected_preset_ = 3;
+      note_color_set_navigation_delta_ = 0;
+      note_header_create_note_reference_.clear();
+      note_header_create_parent_.clear();
+      note_header_create_parent_path_.clear();
+      note_color_set_note_reference_.clear();
     }
     command_finder_window_visible_ = command_finder.visible;
     if(!command_finder.visible) return;
+
+    // Guided note commands deliberately stay in the command finder window.  The
+    // note switcher's result generation remains the source for this list, but
+    // its widgets are rendered here so selecting a note never opens a second
+    // window or changes the ImGui window identity.
+    const bool guided_command = note_header_create_selecting_ ||
+                                note_color_set_selecting_ ||
+                                note_header_create_name_visible_ ||
+                                note_color_set_visible_;
+    if(guided_command)
+    {
+      const auto close_guided_command = [&]() {
+        note_header_create_selecting_ = false;
+        note_header_create_name_visible_ = false;
+        note_header_create_focus_input_ = false;
+        note_header_create_title_[0] = '\0';
+        note_header_create_note_reference_.clear();
+        note_header_create_parent_.clear();
+        note_header_create_parent_path_.clear();
+        note_header_create_parent_occurrence_ = 0;
+        request_note_header_create_confirm_ = false;
+        note_color_set_selecting_ = false;
+        note_color_set_visible_ = false;
+        note_color_set_focus_input_ = false;
+        note_color_set_note_reference_.clear();
+        note_color_set_selected_preset_ = 3;
+        note_color_set_navigation_delta_ = 0;
+        request_note_color_set_confirm_ = false;
+        command_finder.visible = false;
+        command_finder_feedback_.clear();
+      };
+      if(note_header_create_selecting_ || note_color_set_selecting_)
+      {
+        if(request_activate_command_finder_ && note_switcher_selected_idx_ >= 0 &&
+           note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
+        {
+          const NoteSwitcherResult &result = note_switcher.results[
+              static_cast<std::size_t>(note_switcher_selected_idx_)];
+          request_activate_command_finder_ = false;
+          if(note_header_create_selecting_) begin_note_header_create(result);
+          else begin_note_color_set(result);
+        }
+
+        if(command_finder_navigation_delta_ != 0 && !note_switcher.results.empty())
+        {
+          note_switcher_selected_idx_ = clamp_to_range(
+              note_switcher_selected_idx_ + command_finder_navigation_delta_, 0,
+              static_cast<int>(note_switcher.results.size()) - 1);
+          command_finder_navigation_delta_ = 0;
+        }
+      }
+
+      ImGui::SetNextWindowSize(ImVec2(560.0f, 460.0f), ImGuiCond_Appearing);
+      ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                              ImVec2(0.5f, 0.5f));
+      if(!ImGui::Begin("Command Finder", &command_finder.visible,
+                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                           ImGuiWindowFlags_NoSavedSettings))
+      {
+        ImGui::End();
+        if(!command_finder.visible) close_guided_command();
+        command_finder_window_visible_ = command_finder.visible;
+        return;
+      }
+
+      if(note_header_create_selecting_ || note_color_set_selecting_)
+      {
+        if(command_finder.focus_input)
+        {
+          ImGui::SetKeyboardFocusHere();
+          command_finder.focus_input = false;
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        if(ImGui::InputTextWithHint("##guided_command_filter", "Search notes or headers...",
+                                   note_switcher.query, sizeof(note_switcher.query)))
+        {
+          note_switcher_selected_idx_ = 0;
+          note_switcher_navigation_delta_ = 0;
+        }
+        const std::string current_query(note_switcher.query);
+        if(current_query != note_switcher.last_query || note_switcher.just_opened)
+        {
+          refresh_note_switcher_results();
+          note_switcher.last_query = current_query;
+          note_switcher.just_opened = false;
+        }
+        ImGui::TextDisabled("%zu result%s", note_switcher.results.size(),
+                            note_switcher.results.size() == 1 ? "" : "s");
+        ImGui::Separator();
+        if(ImGui::BeginChild("##command_guided_results", ImVec2(0.0f, 340.0f), true))
+        {
+          if(note_switcher.results.empty()) ImGui::TextDisabled("No matching results.");
+          for(std::size_t i = 0; i < note_switcher.results.size(); ++i)
+          {
+            const NoteSwitcherResult &result = note_switcher.results[i];
+            const std::string display_name = result.heading_path.empty()
+                                                 ? result.note_title
+                                                 : result.note_title + "." + result.heading_path;
+            const std::string label = display_name + "  [" + result.folder_name + "]##command_guided_" +
+                                      std::to_string(i);
+            const bool selected = static_cast<int>(i) == note_switcher_selected_idx_;
+            if(ImGui::Selectable(label.c_str(), selected))
+            {
+              note_switcher_selected_idx_ = static_cast<int>(i);
+              request_activate_command_finder_ = true;
+            }
+            if(selected) ImGui::SetItemDefaultFocus();
+            if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s", result.note_path.c_str());
+          }
+          ImGui::EndChild();
+        }
+      }
+      else if(note_header_create_name_visible_)
+      {
+        ImGui::TextUnformatted("New header");
+        if(!note_header_create_parent_.empty())
+          ImGui::TextDisabled("Under: %s", note_header_create_parent_path_.c_str());
+        else
+          ImGui::TextDisabled("At the end of the selected note");
+        if(note_header_create_focus_input_)
+        {
+          ImGui::SetKeyboardFocusHere();
+          note_header_create_focus_input_ = false;
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("Name", note_header_create_title_, sizeof(note_header_create_title_),
+                         ImGuiInputTextFlags_AutoSelectAll);
+        if(!command_finder_feedback_.empty())
+          ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+        if(ImGui::Button("Create")) request_note_header_create_confirm_ = true;
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel")) request_close_command_finder_ = true;
+        if(request_activate_command_finder_)
+        {
+          request_activate_command_finder_ = false;
+          request_note_header_create_confirm_ = true;
+        }
+      }
+      else
+      {
+        ImGui::TextUnformatted("Choose a color for the selected note");
+        if(note_color_set_focus_input_)
+        {
+          ImGui::SetKeyboardFocusHere();
+          note_color_set_focus_input_ = false;
+        }
+        ImGui::ColorEdit3("Color", note_color_set_color_, ImGuiColorEditFlags_NoInputs);
+        static constexpr ImVec4 choices[] = {
+            ImVec4(0.95f, 0.35f, 0.35f, 1.0f), ImVec4(0.98f, 0.72f, 0.25f, 1.0f),
+            ImVec4(0.35f, 0.75f, 0.45f, 1.0f), ImVec4(0.35f, 0.65f, 1.0f, 1.0f),
+            ImVec4(0.70f, 0.45f, 0.90f, 1.0f)};
+        if(note_color_set_navigation_delta_ != 0)
+        {
+          note_color_set_selected_preset_ = clamp_to_range(
+              note_color_set_selected_preset_ + note_color_set_navigation_delta_, 0,
+              static_cast<int>(std::size(choices)) - 1);
+          note_color_set_navigation_delta_ = 0;
+          const ImVec4 &choice = choices[static_cast<std::size_t>(note_color_set_selected_preset_)];
+          note_color_set_color_[0] = choice.x;
+          note_color_set_color_[1] = choice.y;
+          note_color_set_color_[2] = choice.z;
+        }
+        for(std::size_t i = 0; i < std::size(choices); ++i)
+        {
+          if(i != 0U) ImGui::SameLine();
+          const bool selected = static_cast<int>(i) == note_color_set_selected_preset_;
+          if(selected)
+          {
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+          }
+          const bool clicked = ImGui::ColorButton(
+              ("##guided_command_color_" + std::to_string(i)).c_str(), choices[i]);
+          if(selected)
+          {
+            ImGui::PopStyleColor();
+            ImGui::PopStyleVar();
+          }
+          if(clicked)
+          {
+            note_color_set_selected_preset_ = static_cast<int>(i);
+            note_color_set_color_[0] = choices[i].x;
+            note_color_set_color_[1] = choices[i].y;
+            note_color_set_color_[2] = choices[i].z;
+          }
+        }
+        if(!command_finder_feedback_.empty())
+          ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+        if(ImGui::Button("Apply")) request_note_color_set_confirm_ = true;
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel")) request_close_command_finder_ = true;
+        if(request_activate_command_finder_)
+        {
+          request_activate_command_finder_ = false;
+          request_note_color_set_confirm_ = true;
+        }
+      }
+      ImGui::End();
+
+      if(!command_finder.visible || request_close_command_finder_)
+        close_guided_command();
+      if(request_note_header_create_confirm_)
+      {
+        request_note_header_create_confirm_ = false;
+        if(note_header_create_title_[0] == '\0')
+          command_finder_feedback_ = "Invalid parameters: title is required";
+        else if(command_api_ == nullptr)
+          command_finder_feedback_ = "Command API is unavailable";
+        else
+        {
+          nlohmann::json args = note_reference_args(note_header_create_note_reference_.c_str());
+          args["title"] = note_header_create_title_;
+          args["parent"] = note_header_create_parent_;
+          args["level"] = 1;
+          const nlohmann::json request{{"command", "note.header.create"}, {"args", args}};
+          const auto response = command_api_->execute(request);
+          command_finder_feedback_ = response.body.dump();
+          if(response.ok)
+          {
+            post_command_mutation(request, response);
+            close_guided_command();
+          }
+          else LOG_WARNING("Command failed: ", response.body.dump());
+        }
+      }
+      if(request_note_color_set_confirm_)
+      {
+        request_note_color_set_confirm_ = false;
+        if(command_api_ == nullptr)
+          command_finder_feedback_ = "Command API is unavailable";
+        else
+        {
+          nlohmann::json args = note_reference_args(note_color_set_note_reference_.c_str());
+          args["r"] = static_cast<int>(std::lround(note_color_set_color_[0] * 255.0f));
+          args["g"] = static_cast<int>(std::lround(note_color_set_color_[1] * 255.0f));
+          args["b"] = static_cast<int>(std::lround(note_color_set_color_[2] * 255.0f));
+          const nlohmann::json request{{"command", "note.color.set"}, {"args", args}};
+          const auto response = command_api_->execute(request);
+          command_finder_feedback_ = response.body.dump();
+          if(response.ok)
+          {
+            post_command_mutation(request, response);
+            close_guided_command();
+          }
+          else LOG_WARNING("Command failed: ", response.body.dump());
+        }
+      }
+      command_finder_window_visible_ = command_finder.visible;
+      return;
+    }
 
     struct Command
     {
@@ -7410,7 +8002,46 @@ void App::frame_ui()
         if(command_api_ != nullptr)
         {
           const std::string &api_name = matches[static_cast<std::size_t>(command_finder.selected)]->api_name;
-          api_form.reset(api_name);
+          if(api_name == "note.header.create")
+          {
+            command_finder.query[0] = '\0';
+            api_form.command.clear();
+            note_header_create_selecting_ = true;
+            note_header_create_name_visible_ = false;
+            note_header_create_focus_input_ = false;
+            note_switcher.visible = false;
+            note_switcher.focus_input = false;
+            note_switcher.just_opened = true;
+            note_switcher.query[0] = '\0';
+            note_switcher.last_query.clear();
+            note_switcher.results.clear();
+            note_switcher_selected_idx_ = -1;
+            note_switcher_navigation_delta_ = 0;
+            command_finder.focus_input = true;
+            command_finder_navigation_delta_ = 0;
+            command_finder_feedback_.clear();
+          }
+          else if(api_name == "note.color.set")
+          {
+            command_finder.query[0] = '\0';
+            api_form.command.clear();
+            note_color_set_selecting_ = true;
+            note_color_set_visible_ = false;
+            note_color_set_focus_input_ = false;
+            note_switcher.visible = false;
+            note_switcher.focus_input = false;
+            note_switcher.just_opened = true;
+            note_switcher.query[0] = '\0';
+            note_switcher.last_query.clear();
+            note_switcher.results.clear();
+            note_switcher_selected_idx_ = -1;
+            note_switcher_navigation_delta_ = 0;
+            command_finder.focus_input = true;
+            command_finder_navigation_delta_ = 0;
+            command_finder_feedback_.clear();
+          }
+          else
+            api_form.reset(api_name);
           // Commands without arguments still get a confirmation/result path;
           // information responses are printed in the embedded terminal.
           if(api_name == "app.capabilities" || api_name == "note.list")
@@ -7425,7 +8056,11 @@ void App::frame_ui()
         }
         break;
       }
-      command_finder.visible = false;
+      const bool guided_command = note_header_create_selecting_ ||
+                                  note_color_set_selecting_ ||
+                                  note_header_create_name_visible_ ||
+                                  note_color_set_visible_;
+      if(!guided_command) command_finder.visible = false;
       request_activate_command_finder_ = false;
     }
     ImGui::End();
