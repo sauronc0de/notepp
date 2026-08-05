@@ -1879,6 +1879,8 @@ App::App(AppConfig config)
   std::filesystem::create_directories(config_.dataPath);
   std::filesystem::create_directories(config_.configPath);
   configure_workspace_paths();
+
+  rebind_command_ipc();
   migrate_legacy_workspace_files();
   MarkdownView::set_document_path(config_.dataPath);
   MarkdownView::set_assets_path(config_.assetsPath);
@@ -1897,6 +1899,57 @@ App::App(AppConfig config)
   Lang::init(config_.assetsPath / "languages");
   if(!load_project_settings())
     LOG_ERROR("Cannot load project settings: ", project_settings_error_);
+}
+
+void App::rebind_command_ipc()
+{
+  command_ipc_server_.close();
+  notepp::project::ProjectInfo command_project;
+  command_project.root = config_.projectRoot;
+  command_project.notes = config_.dataPath;
+  command_project.assets = config_.assetsPath;
+  command_project.config = config_.configPath;
+  command_project.workspace = config_.workspacePath;
+  command_project.projectFile = config_.projectRoot / "notepp.project.json";
+  const std::string command_endpoint = notepp::command_api::endpoint_for_project(command_project);
+  command_api_ = std::make_unique<notepp::command_api::Api>(std::move(command_project));
+  command_api_->set_variable_adapter({
+      [](const std::filesystem::path &path, std::string_view markdown, std::string_view name) {
+        MarkdownWidgets::set_widget_document_path(path);
+        const auto result = MarkdownWidgets::command_get_variable(markdown, name);
+        return notepp::command_api::VariableResult{result.success, result.value, result.error};
+      },
+      [](const std::filesystem::path &path, std::string &markdown, std::string_view name,
+         const nlohmann::json &value) {
+        MarkdownWidgets::set_widget_document_path(path);
+        const auto result = MarkdownWidgets::command_set_variable(markdown, name, value);
+        return notepp::command_api::VariableResult{result.success, result.value, result.error};
+      }});
+  std::string command_ipc_error;
+  if(!command_ipc_server_.open(command_endpoint, &command_ipc_error))
+    LOG_WARNING("Command IPC unavailable: ", command_ipc_error);
+}
+
+void App::post_command_mutation(const nlohmann::json &request,
+                                const notepp::command_api::Response &response)
+{
+  (void)response;
+  const std::string command = request.value("command", request.value("method", std::string{}));
+  const bool mutates = command == "note.create" || command == "note.header.create" ||
+                       command == "note.color.set" || command == "note.variable.set";
+  if(!mutates) return;
+
+  // The command API writes through atomic_file while the editor may hold an
+  // older in-memory document. Reloading at this frame boundary prevents a
+  // later GUI save from overwriting the command result. Unsaved editor text
+  // is deliberately discarded for this initial synchronization path.
+  note_content_cache_.clear();
+  g_project_files.clear();
+  MarkdownView::clear_sidebar_thumbnail_cache();
+  MarkdownWidgets::reset_persistence_state();
+  discard_pending_text_history();
+  load_state();
+  dirty_ = true;
 }
 
 bool App::load_project_settings()
@@ -2237,6 +2290,7 @@ void App::load_switched_project(const std::filesystem::path &new_root)
   config_.configPath = project.config;
   config_.workspacePath = project.workspace;
   configure_workspace_paths();
+  rebind_command_ipc();
   migrate_legacy_workspace_files();
   project_settings_store_ = notepp::project_settings::Store(
       config_.configPath / "project_settings.json");
@@ -2524,6 +2578,8 @@ int App::run()
 }
 void App::shutdown()
 {
+  command_ipc_server_.close();
+  command_api_.reset();
   if(git_sync_future_.valid())
   {
     try
@@ -4991,6 +5047,33 @@ void App::render_debug_history_window() const
 
 bool App::frame_begin()
 {
+  if(command_api_ != nullptr)
+  {
+    command_ipc_server_.poll([this](std::string_view request) {
+      try
+      {
+        const auto parsed = nlohmann::json::parse(request);
+        const auto executed = command_api_->execute(parsed);
+        if(executed.ok) post_command_mutation(parsed, executed);
+        nlohmann::json response = nlohmann::json::parse(executed.serialize());
+        if(parsed.contains("id")) response["id"] = parsed.at("id");
+        return response.dump();
+      }
+      catch(const std::exception &error)
+      {
+        nlohmann::json malformed{{"success", false}, {"ok", false},
+                                 {"error", {{"code", "invalid_request"},
+                                             {"message", error.what()}}}};
+        try
+        {
+          const auto parsed = nlohmann::json::parse(request);
+          if(parsed.is_object() && parsed.contains("id")) malformed["id"] = parsed.at("id");
+        }
+        catch(const std::exception &) { }
+        return malformed.dump();
+      }
+    });
+  }
   if(git_sync_in_progress_ && git_sync_future_.valid())
   {
     try
@@ -5846,7 +5929,8 @@ void App::frame_ui()
     hide_folder_notes,
     quick_open,
     find_current_note,
-    find_in_project
+    find_in_project,
+    api_command
   };
   struct CommandFinderState
   {
@@ -6930,6 +7014,253 @@ void App::frame_ui()
     pending_terminal_text_.clear();
   };
   auto render_command_finder = [&]() {
+    struct ApiParameterForm
+    {
+      std::string command;
+      char note_reference[512] = {};
+      char folder[256] = "General";
+      char title[256] = {};
+      char parent[256] = {};
+      char content[4096] = {};
+      char variable_name[256] = {};
+      char variable_value[2048] = {};
+      char raw_json[4096] = "{}";
+      int level = 1;
+      float color[3] = {0.35f, 0.65f, 1.0f};
+      bool raw_json_enabled = false;
+
+      void reset(std::string name)
+      {
+        command = std::move(name);
+        std::strncpy(folder, "General", sizeof(folder));
+        folder[sizeof(folder) - 1U] = '\0';
+        note_reference[0] = '\0';
+        title[0] = '\0';
+        parent[0] = '\0';
+        content[0] = '\0';
+        variable_name[0] = '\0';
+        variable_value[0] = '\0';
+        std::strncpy(raw_json, "{}", sizeof(raw_json));
+        raw_json[sizeof(raw_json) - 1U] = '\0';
+        level = 1;
+        color[0] = 0.35f; color[1] = 0.65f; color[2] = 1.0f;
+        raw_json_enabled = false;
+      }
+    };
+    static ApiParameterForm api_form;
+    static const auto is_mutating_command = [](std::string_view command) {
+      return command == "note.create" || command == "note.header.create" ||
+             command == "note.color.set" || command == "note.variable.set";
+    };
+    static const auto has_parameter_form = [](std::string_view command) {
+      return command == "note.get" || command == "note.create" ||
+             command == "note.header.list" || command == "note.header.get" ||
+             command == "note.header.create" || command == "note.color.set" ||
+             command == "note.variable.get" || command == "note.variable.set";
+    };
+    const auto write_terminal_response = [&](const nlohmann::json &request,
+                                              const notepp::command_api::Response &response) {
+      terminal_visible_ = true;
+      request_open_terminal_ = false;
+      terminal_.setDefaultWorkingDirectory(config_.dataPath);
+      if(terminal_.sessionCount() == 0) terminal_.start(config_.dataPath, 24, 80);
+      const auto quote_for_shell = [](std::string_view text) {
+        std::string quoted = "'";
+        for(const char c : text)
+        {
+          if(c == '\'') quoted += "'\\''";
+          else quoted.push_back(c);
+        }
+        quoted.push_back('\'');
+        return quoted;
+      };
+      terminal_.write("printf '%s\\n' " + quote_for_shell(
+                          "$ notepp-cli execute " + request.dump()) + "\n");
+      terminal_.write("printf '%s\\n' " + quote_for_shell(response.serialize()) + "\n");
+    };
+    const auto note_reference_args = [this](const char *reference) {
+      nlohmann::json args = nlohmann::json::object();
+      const std::string value(reference);
+      for(const auto &folder : folders_)
+        for(const auto &note : folder.notes)
+          if(note.id == value)
+          {
+            args["id"] = value;
+            return args;
+          }
+      if(value.find('/') != std::string::npos || value.find('\\') != std::string::npos ||
+         (value.size() > 3U && value.substr(value.size() - 3U) == ".md"))
+        args["path"] = value;
+      else if(!value.empty())
+        args["name"] = value;
+      return args;
+    };
+    if(!api_form.command.empty())
+    {
+      bool open = true;
+      ImGui::SetNextWindowSize(ImVec2(560.0f, 520.0f), ImGuiCond_Appearing);
+      if(ImGui::Begin("Command Parameters", &open,
+                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings))
+      {
+        ImGui::TextUnformatted(api_form.command.c_str());
+        nlohmann::json args = nlohmann::json::object();
+        const bool known_form = has_parameter_form(api_form.command);
+        if(known_form && api_form.command != "note.create" && api_form.command != "app.capabilities" &&
+           api_form.command != "note.list")
+        {
+          ImGui::SetNextItemWidth(-1.0f);
+          ImGui::InputText("Note ID, path, or name", api_form.note_reference,
+                           sizeof(api_form.note_reference));
+        }
+        if(api_form.command == "note.create")
+        {
+          ImGui::InputText("Folder", api_form.folder, sizeof(api_form.folder));
+          ImGui::InputText("Title", api_form.title, sizeof(api_form.title));
+          ImGui::InputTextMultiline("Content", api_form.content, sizeof(api_form.content), ImVec2(-1.0f, 130.0f));
+        }
+        else if(api_form.command == "note.header.create")
+        {
+          ImGui::InputText("Title", api_form.title, sizeof(api_form.title));
+          ImGui::InputText("Parent (optional)", api_form.parent, sizeof(api_form.parent));
+          ImGui::SliderInt("Level", &api_form.level, 1, 6);
+        }
+        else if(api_form.command == "note.header.get")
+          ImGui::InputText("Header title", api_form.title, sizeof(api_form.title));
+        else if(api_form.command == "note.color.set")
+        {
+          ImGui::TextDisabled("Choose a note color");
+          ImGui::ColorEdit3("Color", api_form.color, ImGuiColorEditFlags_NoInputs);
+          static constexpr ImVec4 choices[] = {
+              ImVec4(0.95f, 0.35f, 0.35f, 1.0f), ImVec4(0.98f, 0.72f, 0.25f, 1.0f),
+              ImVec4(0.35f, 0.75f, 0.45f, 1.0f), ImVec4(0.35f, 0.65f, 1.0f, 1.0f),
+              ImVec4(0.70f, 0.45f, 0.90f, 1.0f)};
+          for(std::size_t i = 0; i < std::size(choices); ++i)
+          {
+            if(i != 0U) ImGui::SameLine();
+            if(ImGui::ColorButton(("##note_color_" + std::to_string(i)).c_str(), choices[i]))
+            {
+              api_form.color[0] = choices[i].x; api_form.color[1] = choices[i].y; api_form.color[2] = choices[i].z;
+            }
+          }
+        }
+        else if(api_form.command == "note.variable.get" || api_form.command == "note.variable.set")
+        {
+          ImGui::InputText("Variable name", api_form.variable_name, sizeof(api_form.variable_name));
+          if(api_form.command == "note.variable.set")
+            ImGui::InputTextMultiline("Value", api_form.variable_value, sizeof(api_form.variable_value), ImVec2(-1.0f, 100.0f));
+        }
+        if(!known_form)
+        {
+          ImGui::Separator();
+          ImGui::TextDisabled("This command has no registered form.");
+          ImGui::Checkbox("Advanced: raw JSON arguments", &api_form.raw_json_enabled);
+          if(api_form.raw_json_enabled)
+            ImGui::InputTextMultiline("##advanced_command_parameters", api_form.raw_json,
+                                      sizeof(api_form.raw_json), ImVec2(-1.0f, 120.0f));
+        }
+        if(!command_finder_feedback_.empty())
+          ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+        if(ImGui::Button("Run"))
+        {
+          bool valid = true;
+          if(!api_form.raw_json_enabled)
+          {
+            const auto require = [&](const char *value, const char *field) {
+              if(value[0] != '\0') return true;
+              command_finder_feedback_ = std::string("Invalid parameters: ") + field + " is required";
+              return false;
+            };
+            const bool needs_reference = api_form.command == "note.get" ||
+                                         api_form.command == "note.header.list" ||
+                                         api_form.command == "note.header.get" ||
+                                         api_form.command == "note.header.create" ||
+                                         api_form.command == "note.color.set" ||
+                                         api_form.command == "note.variable.get" ||
+                                         api_form.command == "note.variable.set";
+            if(needs_reference) valid = require(api_form.note_reference, "note reference") && valid;
+            if(api_form.command == "note.create")
+            {
+              valid = require(api_form.folder, "folder") && valid;
+              valid = require(api_form.title, "title") && valid;
+            }
+            else if(api_form.command == "note.header.create" || api_form.command == "note.header.get")
+              valid = require(api_form.title, "title") && valid;
+            if(api_form.command == "note.variable.get" || api_form.command == "note.variable.set")
+              valid = require(api_form.variable_name, "variable name") && valid;
+          }
+          try
+          {
+            if(valid && api_form.raw_json_enabled)
+            {
+              args = nlohmann::json::parse(api_form.raw_json);
+              valid = args.is_object();
+              if(!valid) command_finder_feedback_ = "Invalid parameters: arguments must be an object";
+            }
+            else if(valid && api_form.command == "note.create")
+            {
+              args = {{"folder", api_form.folder}, {"title", api_form.title}, {"content", api_form.content}};
+            }
+            else if(valid && api_form.command == "note.header.create")
+            {
+              args = note_reference_args(api_form.note_reference);
+              args["title"] = api_form.title; args["parent"] = api_form.parent; args["level"] = api_form.level;
+            }
+            else if(valid && api_form.command == "note.header.get")
+            {
+              args = note_reference_args(api_form.note_reference); args["title"] = api_form.title;
+            }
+            else if(valid && api_form.command == "note.color.set")
+            {
+              args = note_reference_args(api_form.note_reference);
+              args["r"] = static_cast<int>(std::lround(api_form.color[0] * 255.0f));
+              args["g"] = static_cast<int>(std::lround(api_form.color[1] * 255.0f));
+              args["b"] = static_cast<int>(std::lround(api_form.color[2] * 255.0f));
+            }
+            else if(valid && (api_form.command == "note.variable.get" || api_form.command == "note.variable.set"))
+            {
+              args = note_reference_args(api_form.note_reference); args["name"] = api_form.variable_name;
+              if(api_form.command == "note.variable.set")
+              {
+                const auto value = nlohmann::json::parse(api_form.variable_value, nullptr, false);
+                args["value"] = value.is_discarded() ? nlohmann::json(api_form.variable_value) : value;
+              }
+            }
+            else if(valid && (api_form.command == "note.get" || api_form.command == "note.header.list"))
+              args = note_reference_args(api_form.note_reference);
+            else if(valid && api_form.command == "note.list")
+              args = nlohmann::json::object();
+            else if(valid && api_form.command == "app.capabilities")
+              args = nlohmann::json::object();
+          }
+          catch(const std::exception &error)
+          {
+            valid = false;
+            command_finder_feedback_ = std::string("Invalid parameters: ") + error.what();
+          }
+          if(valid)
+          {
+            const nlohmann::json request{{"command", api_form.command}, {"args", args}};
+            const auto response = command_api_->execute(request);
+            if(is_mutating_command(api_form.command))
+            {
+              command_finder_feedback_ = response.body.dump();
+              if(response.ok) post_command_mutation(request, response);
+              else LOG_WARNING("Command failed: ", response.body.dump());
+            }
+            else
+            {
+              command_finder_feedback_.clear();
+              write_terminal_response(request, response);
+            }
+            if(response.ok || !is_mutating_command(api_form.command)) api_form.command.clear();
+          }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel")) api_form.command.clear();
+      }
+      ImGui::End();
+      if(!open) api_form.command.clear();
+    }
     if(request_open_command_finder_)
     {
       command_finder.visible = true;
@@ -6952,23 +7283,51 @@ void App::frame_ui()
     struct Command
     {
       CommandFinderCommand id;
-      const char *label;
+      std::string label;
+      std::string api_name;
     };
-    static constexpr Command commands[] = {
-        {CommandFinderCommand::terminal, "Open / Hide Terminal"},
-        {CommandFinderCommand::focus_active_note, "Focus Active Note"},
-        {CommandFinderCommand::new_note, "Create New Note"},
-        {CommandFinderCommand::hide_focused_note, "Hide Focused Note"},
-        {CommandFinderCommand::hide_folder_notes, "Hide Visible Notes in Active Folder"},
-        {CommandFinderCommand::quick_open, "Quick Open"},
-        {CommandFinderCommand::find_current_note, "Find Current Note"},
-        {CommandFinderCommand::find_in_project, "Find in Project"}};
-    const std::string query_lower = to_lower_ascii(command_finder.query);
+    std::vector<Command> commands = {
+        {CommandFinderCommand::terminal, "Open / Hide Terminal", {}},
+        {CommandFinderCommand::focus_active_note, "Focus Active Note", {}},
+        {CommandFinderCommand::new_note, "Create New Note", {}},
+        {CommandFinderCommand::hide_focused_note, "Hide Focused Note", {}},
+        {CommandFinderCommand::hide_folder_notes, "Hide Visible Notes in Active Folder", {}},
+        {CommandFinderCommand::quick_open, "Quick Open", {}},
+        {CommandFinderCommand::find_current_note, "Find Current Note", {}},
+        {CommandFinderCommand::find_in_project, "Find in Project", {}}};
+    // Keep the finder usable even while the project command adapter is being
+    // initialized. The command names are also the protocol's single source
+    // of truth; the registry supplies the descriptors when available.
+    static constexpr const char *api_command_names[] = {
+        "app.capabilities", "note.list", "note.get", "note.create",
+        "note.header.list", "note.header.get", "note.header.create",
+        "note.color.set", "note.variable.get", "note.variable.set"};
+    for(const char *name : api_command_names)
+      commands.push_back({CommandFinderCommand::api_command, name, name});
+    if(command_api_ != nullptr)
+    {
+      // The registry may add future commands without requiring GUI changes.
+      for(const auto &entry : command_api_->capabilities().at("commands"))
+      {
+        const std::string name = entry.value("name", std::string{});
+        if(std::find_if(commands.begin(), commands.end(), [&](const Command &command) {
+             return command.api_name == name;
+           }) == commands.end())
+          commands.push_back({CommandFinderCommand::api_command, name, name});
+      }
+    }
+    std::string query_lower = to_lower_ascii(command_finder.query);
+    // Accept both the protocol spelling ("note.list") and the natural
+    // command-finder spelling ("note list").
+    std::replace(query_lower.begin(), query_lower.end(), ' ', '.');
     std::vector<const Command *> matches;
-    matches.reserve(8);
+    matches.reserve(commands.size());
     for(const Command &command : commands)
     {
-      if(query_lower.empty() || to_lower_ascii(command.label).find(query_lower) != std::string::npos)
+      const std::string label_lower = to_lower_ascii(command.label);
+      const std::string api_name_lower = to_lower_ascii(command.api_name);
+      if(query_lower.empty() || label_lower.find(query_lower) != std::string::npos ||
+         api_name_lower.find(query_lower) != std::string::npos)
         matches.push_back(&command);
     }
     if(matches.empty())
@@ -7003,16 +7362,22 @@ void App::frame_ui()
       command_finder_navigation_delta_ = 0;
     }
     ImGui::Separator();
-    for(std::size_t i = 0; i < matches.size(); ++i)
+    if(!command_finder_feedback_.empty())
+      ImGui::TextWrapped("Result: %s", command_finder_feedback_.c_str());
+    if(ImGui::BeginChild("##command_results", ImVec2(0.0f, 0.0f), false))
     {
-      const bool selected = static_cast<int>(i) == command_finder.selected;
-      if(ImGui::Selectable(matches[i]->label, selected))
+      for(std::size_t i = 0; i < matches.size(); ++i)
       {
-        command_finder.selected = static_cast<int>(i);
-        request_activate_command_finder_ = true;
+        const bool selected = static_cast<int>(i) == command_finder.selected;
+        if(ImGui::Selectable(matches[i]->label.c_str(), selected))
+        {
+          command_finder.selected = static_cast<int>(i);
+          request_activate_command_finder_ = true;
+        }
+        if(selected) ImGui::SetItemDefaultFocus();
       }
-      if(selected) ImGui::SetItemDefaultFocus();
     }
+    ImGui::EndChild();
     if(request_activate_command_finder_ && command_finder.selected >= 0 && command_finder.selected < static_cast<int>(matches.size()))
     {
       switch(matches[static_cast<std::size_t>(command_finder.selected)]->id)
@@ -7040,6 +7405,24 @@ void App::frame_ui()
         break;
       case CommandFinderCommand::find_in_project:
         request_open_project_search_ = true;
+        break;
+      case CommandFinderCommand::api_command:
+        if(command_api_ != nullptr)
+        {
+          const std::string &api_name = matches[static_cast<std::size_t>(command_finder.selected)]->api_name;
+          api_form.reset(api_name);
+          // Commands without arguments still get a confirmation/result path;
+          // information responses are printed in the embedded terminal.
+          if(api_name == "app.capabilities" || api_name == "note.list")
+          {
+            const nlohmann::json request{{"command", api_name}, {"args", nlohmann::json::object()}};
+            const auto response = command_api_->execute(request);
+            command_finder_feedback_.clear();
+            write_terminal_response(request, response);
+            api_form.command.clear();
+            if(!response.ok) LOG_WARNING("Command failed: ", response.body.dump());
+          }
+        }
         break;
       }
       command_finder.visible = false;

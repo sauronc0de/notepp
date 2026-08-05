@@ -5,3 +5,4 @@
 # `CMakeLists.txt`. Subdirectories may depend on every lower tier.
 
 add_subdirectory(gui)
+add_subdirectory(cli)

@@ -58,6 +58,8 @@ target_link_libraries(${PROJECT_NAME}
   PRIVATE
     app_settings
     atomic_file
+    command_ipc
+    command_api
     log
     imgui
     imgui_md

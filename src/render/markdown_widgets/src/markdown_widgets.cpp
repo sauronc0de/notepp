@@ -6152,4 +6152,158 @@ std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::str
 
   return result;
 }
+
+namespace
+{
+Value command_value_from_json(const nlohmann::json &json, std::string &error)
+{
+  Value value;
+  if(json.is_string()) { value.kind = ValueKind::String; value.str = json.get<std::string>(); }
+  else if(json.is_boolean()) { value.kind = ValueKind::Bool; value.boolean = json.get<bool>(); }
+  else if(json.is_number())
+  {
+    value.kind = ValueKind::Number;
+    value.number = json.get<double>();
+    value.is_integer = json.is_number_integer();
+  }
+  else if(json.is_array())
+  {
+    value.kind = ValueKind::Array;
+    for(const auto &item : json)
+    {
+      std::string item_error;
+      value.array.push_back(command_value_from_json(item, item_error));
+      if(!item_error.empty()) { error = item_error; return {}; }
+    }
+  }
+  else if(json.is_object())
+  {
+    value.kind = ValueKind::Object;
+    for(auto it = json.begin(); it != json.end(); ++it)
+    {
+      std::string item_error;
+      value.object.emplace_back(it.key(), command_value_from_json(it.value(), item_error));
+      if(!item_error.empty()) { error = item_error; return {}; }
+    }
+  }
+  else error = "variables do not support null values";
+  return value;
+}
+
+nlohmann::json command_value_to_json(const Value &value)
+{
+  switch(value.kind)
+  {
+  case ValueKind::String: return value.str;
+  case ValueKind::Bool: return value.boolean;
+  case ValueKind::Number: return value.number;
+  case ValueKind::Array: {
+    nlohmann::json result = nlohmann::json::array();
+    for(const auto &item : value.array) result.push_back(command_value_to_json(item));
+    return result;
+  }
+  case ValueKind::Object: {
+    nlohmann::json result = nlohmann::json::object();
+    for(const auto &[key, item] : value.object) result[key] = command_value_to_json(item);
+    return result;
+  }
+  default: return nullptr;
+  }
+}
+
+struct CommandBlock
+{
+  size_t body_start = 0;
+  ParsedBlock block;
+};
+
+std::vector<CommandBlock> command_blocks(std::string_view markdown)
+{
+  std::vector<CommandBlock> result;
+  size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const size_t fence = markdown.find("```ui", pos);
+    if(fence == std::string_view::npos) break;
+    const size_t line_end = markdown.find('\n', fence);
+    if(line_end == std::string_view::npos) break;
+    if(trim(markdown.substr(fence, line_end - fence)) != "```ui") { pos = line_end + 1; continue; }
+    const size_t body_start = line_end + 1;
+    size_t scan = body_start;
+    size_t body_end = std::string_view::npos;
+    while(scan < markdown.size())
+    {
+      const size_t next = markdown.find('\n', scan);
+      const size_t end = next == std::string_view::npos ? markdown.size() : next;
+      if(trim(markdown.substr(scan, end - scan)) == "```") { body_end = scan; break; }
+      scan = next == std::string_view::npos ? markdown.size() : next + 1;
+    }
+    if(body_end == std::string_view::npos) break;
+    const std::string body(markdown.substr(body_start, body_end - body_start));
+    auto parsed = g_block_parse_cache.find(body);
+    if(parsed == g_block_parse_cache.end()) parsed = g_block_parse_cache.emplace(body, parse_block(body)).first;
+    result.push_back({body_start, parsed->second});
+    pos = body_end + 3;
+  }
+  return result;
+}
+} // namespace
+
+VariableResult command_get_variable(std::string_view markdown, std::string_view name)
+{
+  if(name.empty()) return {false, nullptr, "variable name is required"};
+  const auto blocks = command_blocks(markdown);
+  const auto &globals = load_global_declarations();
+  for(const auto &entry : blocks)
+  {
+    if(entry.block.declarations.find(std::string(name)) == entry.block.declarations.end()) continue;
+    EvalContext ctx{entry.block};
+    ctx.global_declarations = globals.empty() ? nullptr : &globals;
+    const ExprResult value = ctx.evaluate(std::string(name));
+    if(!value.error.empty()) return {false, nullptr, value.error};
+    return {true, command_value_to_json(value.value), {}};
+  }
+  ParsedBlock empty;
+  EvalContext ctx{empty};
+  ctx.global_declarations = globals.empty() ? nullptr : &globals;
+  const ExprResult value = ctx.evaluate(std::string(name));
+  if(!value.error.empty()) return {false, nullptr, value.error};
+  return {true, command_value_to_json(value.value), {}};
+}
+
+VariableResult command_set_variable(std::string &markdown, std::string_view name,
+                                    const nlohmann::json &json)
+{
+  if(name.empty()) return {false, nullptr, "variable name is required"};
+  std::string conversion_error;
+  const Value value = command_value_from_json(json, conversion_error);
+  if(!conversion_error.empty()) return {false, nullptr, conversion_error};
+  const std::string variable(name);
+  const auto blocks = command_blocks(markdown);
+  const auto &globals = load_global_declarations();
+  for(const auto &entry : blocks)
+  {
+    if(entry.block.declarations.find(variable) == entry.block.declarations.end()) continue;
+    EvalContext ctx{entry.block};
+    ctx.global_declarations = globals.empty() ? nullptr : &globals;
+    std::unordered_map<std::string, std::string> replacements;
+    std::vector<std::string> errors;
+    set_override(ctx, entry.block, variable, value, replacements, errors);
+    if(!errors.empty()) return {false, nullptr, errors.front()};
+    apply_replacements(markdown, entry.body_start, entry.block, replacements);
+    return {true, json, {}};
+  }
+  ParsedBlock empty;
+  EvalContext ctx{empty};
+  ctx.global_declarations = globals.empty() ? nullptr : &globals;
+  std::unordered_map<std::string, std::string> replacements;
+  std::vector<std::string> errors;
+  set_override(ctx, empty, variable, value, replacements, errors);
+  if(!errors.empty()) return {false, nullptr, errors.front()};
+  apply_global_replacements_to_disk(ctx.global_replacements, globals);
+  if(ctx.global_replacements.empty()) return {false, nullptr, "unknown variable '" + variable + "'"};
+  const std::string persistence_error = last_persistence_error();
+  if(!persistence_error.empty()) return {false, nullptr, persistence_error};
+  return {true, json, {}};
+}
 } // namespace MarkdownWidgets

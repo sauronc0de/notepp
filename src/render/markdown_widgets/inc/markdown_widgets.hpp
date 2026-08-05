@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 
@@ -17,6 +18,20 @@ struct RenderResult
 };
 
 using TerminalCommandHandler = std::function<void(std::string_view)>;
+
+struct VariableResult
+{
+  bool success = false;
+  nlohmann::json value;
+  std::string error;
+};
+
+// Headless command adapter for the same declarations and persistence used by
+// rendered UI blocks. Local variables update markdown; global variables use
+// the existing .globals.md persistence path.
+VariableResult command_get_variable(std::string_view markdown, std::string_view name);
+VariableResult command_set_variable(std::string &markdown, std::string_view name,
+                                    const nlohmann::json &value);
 
 void set_widget_document_path(std::filesystem::path path);
 void notify_document_moved(const std::filesystem::path &from,

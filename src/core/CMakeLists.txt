@@ -9,6 +9,8 @@
 # optional `tests/` directory.
 
 add_subdirectory(app_settings)
+add_subdirectory(command_api)
+add_subdirectory(command_ipc)
 add_subdirectory(git_sync)
 add_subdirectory(lang)
 add_subdirectory(layout_profile_state)

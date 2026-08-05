@@ -1,6 +1,8 @@
 #pragma once
 
 #include "app_settings.hpp"
+#include "command_api.hpp"
+#include "command_ipc.hpp"
 #include "emoji_picker.hpp"
 #include "git_sync.hpp"
 #include "note_history.hpp"
@@ -13,6 +15,7 @@
 
 #include <filesystem>
 #include <future>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -183,6 +186,9 @@ private:
   void load_workspace();
   bool save_workspace_text(const std::filesystem::path &path, std::string_view content);
   void configure_workspace_paths();
+  void rebind_command_ipc();
+  void post_command_mutation(const nlohmann::json &request,
+                             const notepp::command_api::Response &response);
   void migrate_legacy_workspace_files();
   bool load_project_settings();
 #if USE_PORTABLE_PATHS
@@ -216,6 +222,8 @@ private:
   unsigned int file_watch_timer_ = 0;
   bool dirty_ = true;
   notepp::note_storage::NoteContentCache note_content_cache_;
+  std::unique_ptr<notepp::command_api::Api> command_api_;
+  notepp::command_ipc::Server command_ipc_server_;
   unsigned long long min_frame_ticks_ = 0;
   unsigned long long last_frame_ticks_ = 0;
 
@@ -266,6 +274,7 @@ private:
   bool request_activate_command_finder_ = false;
   int command_finder_navigation_delta_ = 0;
   bool command_finder_window_visible_ = false;
+  std::string command_finder_feedback_;
   bool request_open_editor_actions_ = false;
   bool request_close_editor_actions_ = false;
   bool request_activate_editor_actions_ = false;

@@ -1791,7 +1791,35 @@ Notes are stored as plain Markdown files — easy to version-control or edit ext
 
 Notepp can use the installed system Git to synchronize an existing project repository. Git Sync is disabled by default; enable it from the Explorer context menu. When enabled, Notepp performs a fast-forward-only pull before loading a project and saves, commits, and pushes on normal close. Opening waits only for bounded Git command timeouts; closing keeps the window responsive while its bounded Git worker finishes. Failures never prevent subsequent local editing or final exit.
 
-See [`docs/git_sync.md`](docs/git_sync.md) for setup, safety guarantees, statuses, and recovery instructions.
+See the [Git Sync documentation](https://github.com/sauronc0de/notepp/blob/main/docs/git_sync.md) for setup, safety guarantees, statuses, and recovery instructions.
+
+### Command API and `notepp-cli`
+
+Notepp exposes the same structured Command API to the GUI, local scripts, and
+AI agents. Press **Ctrl+Shift+P** to discover commands such as listing notes,
+creating notes, reading headers, changing colors, and reading or updating UI
+variables. Commands that need parameters open a form; read-only results are
+shown in the embedded terminal.
+
+The command-line client communicates with a running Notepp instance through
+local IPC. It does not edit Notepp files directly. Run:
+
+```bash
+notepp-cli --help
+```
+
+For example:
+
+```bash
+notepp-cli --project "/path/to/your/project" --json app capabilities
+notepp-cli --project "/path/to/your/project" --json note list
+notepp-cli --project "/path/to/your/project" --json note create \\
+  --folder General --name "A new note" --content "# A new note"
+```
+
+The complete protocol, command arguments, JSON envelopes, error codes, and
+raw JSON examples are available in the public
+[Command API documentation](https://github.com/sauronc0de/notepp/blob/main/docs/command_api.md).
 
 ---
 
