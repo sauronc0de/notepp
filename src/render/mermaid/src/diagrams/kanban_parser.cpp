@@ -144,7 +144,9 @@ bool parse_kanban(std::string_view src, KanbanDiagram &out)
       }
     }
     std::size_t b1 = item_part.find('[');
-    std::size_t b2 = item_part.find(']');
+    // Labels may contain a markdown link (`[title](note.md)`), so the
+    // closing bracket of the card wrapper is the last bracket on the line.
+    std::size_t b2 = item_part.rfind(']');
     std::string id2, lbl;
     if(b1 != std::string_view::npos && b2 != std::string_view::npos)
     {

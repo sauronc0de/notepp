@@ -445,7 +445,12 @@ static InternalLinkTarget resolve_internal_link(std::string_view href)
 
     std::vector<std::filesystem::path> candidates;
     if(!g_document_path.empty())
+    {
+      // The GUI supplies the project notes directory as the document path;
+      // prefer it so Explorer-created project-relative links resolve there.
+      candidates.push_back(std::filesystem::path(g_document_path) / rel);
       candidates.push_back(std::filesystem::path(g_document_path).parent_path() / rel);
+    }
     candidates.push_back(std::filesystem::path(DATA_PATH) / "notes" / rel);
 
     for(const auto &candidate : candidates)
@@ -1485,6 +1490,30 @@ void MarkdownView::set_assets_path(std::filesystem::path path)
 void MarkdownView::set_hover_preview_enabled(bool enabled)
 {
   g_hover_preview_enabled = enabled;
+}
+
+bool MarkdownView::request_link_hover_preview(std::string_view href)
+{
+  return request_internal_link_preview(href);
+}
+
+std::string MarkdownView::resolve_link_title(std::string_view href)
+{
+  const InternalLinkTarget target = resolve_internal_link(href);
+  if(!target.valid) return {};
+  const std::string markdown = read_text_file(target.note_path);
+  if(markdown.empty()) return {};
+  const MarkdownSection section = extract_section_markdown(markdown, target.anchor);
+  if(!target.anchor.empty())
+  {
+    std::size_t end = section.body.find('\n');
+    if(end == std::string::npos) end = section.body.size();
+    std::string_view line(section.body.data(), end);
+    int level = 0;
+    std::string_view heading;
+    if(parse_heading_line(line, level, heading)) return std::string(heading);
+  }
+  return target.note_path.stem().string();
 }
 
 MarkdownView::TextureHandle MarkdownView::get_or_load_texture(const std::filesystem::path &path)

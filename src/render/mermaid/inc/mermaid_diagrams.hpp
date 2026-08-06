@@ -413,6 +413,11 @@ struct KanbanDiagram
 bool parse_kanban(std::string_view src, KanbanDiagram &out);
 void render_kanban(const KanbanDiagram &d, int id);
 
+using KanbanReferenceTitleCallback = std::string (*)(std::string_view href);
+using KanbanReferenceHoverCallback = bool (*)(std::string_view href);
+void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
+                                    KanbanReferenceHoverCallback hover_callback);
+
 // ── Architecture ─────────────────────────────────────────────────────────────
 struct ArchService
 {

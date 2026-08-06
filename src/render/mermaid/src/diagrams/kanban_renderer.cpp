@@ -19,6 +19,17 @@
 
 namespace MermaidDiagrams
 {
+
+static KanbanReferenceTitleCallback g_kanban_reference_title = nullptr;
+static KanbanReferenceHoverCallback g_kanban_reference_hover = nullptr;
+
+void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
+                                    KanbanReferenceHoverCallback hover_callback)
+{
+  g_kanban_reference_title = title_callback;
+  g_kanban_reference_hover = hover_callback;
+}
+
 namespace kanbanrender
 {
 static ImVec2 kb_nonzero_invisible_button_size(float w, float h)
@@ -172,6 +183,42 @@ static std::size_t utf8_codepoint_length(unsigned char lead)
   return 1;
 }
 
+struct KanbanNoteDragPayload
+{
+  ImVec2 indices{};
+  char reference[512]{};
+};
+
+struct KanbanLink
+{
+  bool valid = false;
+  std::string label;
+  std::string href;
+};
+
+static KanbanLink parse_kanban_link(std::string_view text)
+{
+  if(text.size() < 4 || text.front() != '[') return {};
+  const std::size_t close = text.rfind("](");
+  if(close == std::string_view::npos || text.back() != ')') return {};
+  const std::string_view href = text.substr(close + 2, text.size() - close - 3);
+  if(href.empty()) return {};
+  return {true, std::string(text.substr(1, close - 1)), std::string(href)};
+}
+
+static std::string kanban_card_display_label(const KanbanCard &card)
+{
+  const KanbanLink link = parse_kanban_link(card.label);
+  if(!link.valid) return card.label;
+  if(!link.label.empty()) return link.label;
+  if(g_kanban_reference_title != nullptr)
+  {
+    const std::string title = g_kanban_reference_title(link.href);
+    if(!title.empty()) return title;
+  }
+  return link.href;
+}
+
 static std::string ellipsize_to_width(const std::string &text, float max_width)
 {
   if(text.empty() || ImGui::CalcTextSize(text.c_str()).x <= max_width) return text;
@@ -260,6 +307,42 @@ void render_kanban(const KanbanDiagram &d, int id)
         hov_ri = r.ri;
         break;
       }
+  }
+
+  // Explorer publishes a separate payload so linking a note never moves it.
+  // The canvas item covers the columns, therefore the mouse position identifies
+  // the destination column without adding invisible items over every card.
+  if(kb_hovered && !es.drag_active && ImGui::BeginDragDropTarget())
+  {
+    if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE"))
+    {
+      if(payload->DataSize == (int)sizeof(KanbanNoteDragPayload) && payload->IsDelivery())
+      {
+        const auto *note_payload = static_cast<const KanbanNoteDragPayload *>(payload->Data);
+        const std::string href(note_payload->reference);
+        int drop_col = -1;
+        for(int i = 0; i < nc; ++i)
+        {
+          const float x = orig.x + pad + i * (col_w + hgap);
+          if(mouse.x >= x && mouse.x < x + col_w &&
+             mouse.y >= orig.y + pad + col_header_h)
+          {
+            drop_col = i;
+            break;
+          }
+        }
+        if(drop_col >= 0 && !href.empty())
+        {
+          KanbanDiagram nd = d;
+          KanbanCard card;
+          card.id = next_card_id_for_column(nd, drop_col);
+          card.label = "[](" + href + ")";
+          nd.columns[drop_col].cards.push_back(std::move(card));
+          g_pending_edit = {id, serialize_kanban(nd)};
+        }
+      }
+    }
+    ImGui::EndDragDropTarget();
   }
 
   if(!es.drag_active && kb_active && ImGui::IsMouseDragging(0, 5.0f))
@@ -417,7 +500,7 @@ void render_kanban(const KanbanDiagram &d, int id)
         dl->AddRect(ImVec2(x + 4, cy), ImVec2(x + col_w - 4, cy + card_h),
                     is_hovered ? kb_series_color(i, 0.8f) : bord, 3.0f);
         const auto &card = cols[i].cards[j];
-        std::string lbl = ellipsize_to_width(card.label, col_w - 20.0f);
+        std::string lbl = ellipsize_to_width(kanban_card_display_label(card), col_w - 20.0f);
         ImVec2 cs = ImGui::CalcTextSize(lbl.c_str());
         dl->AddText(ImVec2(x + 4 + (col_w - 8 - cs.x) * 0.5f, cy + (card_h - cs.y) * 0.5f), tcol, lbl.c_str());
         if(!card.description.empty())
@@ -440,7 +523,7 @@ void render_kanban(const KanbanDiagram &d, int id)
                       ImGui::ColorConvertFloat4ToU32({0.2f, 0.2f, 0.2f, 0.85f}), 3.0f);
     dl->AddRect(ImVec2(fx, fy), ImVec2(fx + col_w - 8, fy + card_h),
                 kb_series_color(es.drag_ci, 0.9f), 3.0f, 0, 1.5f);
-    std::string lbl = ellipsize_to_width(dc.label, col_w - 20.0f);
+    std::string lbl = ellipsize_to_width(kanban_card_display_label(dc), col_w - 20.0f);
     ImVec2 cs = ImGui::CalcTextSize(lbl.c_str());
     dl->AddText(ImVec2(fx + (col_w - 8 - cs.x) * 0.5f, fy + (card_h - cs.y) * 0.5f), tcol, lbl.c_str());
   }
@@ -448,7 +531,16 @@ void render_kanban(const KanbanDiagram &d, int id)
   if(hov_ci >= 0 && hov_ri >= 0 && !es.drag_active)
   {
     const auto &card = cols[hov_ci].cards[hov_ri];
-    ImGui::SetTooltip("%s", card.description.empty() ? card.label.c_str() : card.description.c_str());
+    const KanbanLink link = parse_kanban_link(card.label);
+    if(link.valid && g_kanban_reference_hover != nullptr &&
+       g_kanban_reference_hover(link.href))
+    {
+      // The shared markdown hover popup is active for this card.
+    }
+    else
+    {
+      ImGui::SetTooltip("%s", card.description.empty() ? card.label.c_str() : card.description.c_str());
+    }
   }
 
   bool open_add_from_ctx = false;

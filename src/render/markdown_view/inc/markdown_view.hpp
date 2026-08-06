@@ -41,6 +41,8 @@ struct MarkdownView
   static void set_document_path(std::filesystem::path path);
   static void set_hover_preview_enabled(bool enabled);
   static bool take_hover_preview(MarkdownHoverPreviewData &out);
+  static bool request_link_hover_preview(std::string_view href);
+  static std::string resolve_link_title(std::string_view href);
   // Update the body of the currently active hover preview in place. Also
   // adjusts section_end so the next caller of take_hover_preview sees a
   // consistent (start, end) range covering the new body. No-op when no

@@ -417,6 +417,22 @@ void test_kanban_basic_valid()
   expect_eq_size(d.columns.size(), 2, "two columns");
 }
 
+void test_kanban_markdown_note_links()
+{
+  const std::string src =
+      "kanban\n"
+      "  todo[Todo]\n"
+      "    c1[[Visible label](create-mermaid-action)]\n"
+      "    c2[[](notepp-cli.md#notepp-agent-commands)]\n";
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban(src, d), "kanban note links parse");
+  expect_eq_size(d.columns[0].cards.size(), 2, "two linked cards");
+  expect_true(d.columns[0].cards[0].label == "[Visible label](create-mermaid-action)",
+              "linked card label preserved");
+  expect_true(d.columns[0].cards[1].label == "[](notepp-cli.md#notepp-agent-commands)",
+              "empty linked card label preserved");
+}
+
 void test_kanban_missing_header()
 {
   md::KanbanDiagram d;
@@ -845,6 +861,7 @@ int main()
   test_block_basic_valid();
   test_block_missing_header();
   test_kanban_basic_valid();
+  test_kanban_markdown_note_links();
   test_kanban_missing_header();
   test_kanban_user_content_roundtrip();
   test_kanban_user_content_convention();

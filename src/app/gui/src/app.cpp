@@ -80,6 +80,12 @@ using MarkdownSupport::request_preview_heading;
 using MarkdownSupport::request_preview_source_offset;
 using MarkdownSupport::rgba_to_hex;
 
+struct ExplorerNoteDragPayload
+{
+  ImVec2 indices{};
+  char reference[512]{};
+};
+
 static ImVec2 nonzero_invisible_button_size(float w, float h)
 {
   return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
@@ -9359,13 +9365,13 @@ void App::frame_ui()
     {
       if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
       {
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+        if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsPreview())
         {
           drag_hover_folder_idx = fi;
         }
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+        if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsDelivery())
         {
-          const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+          const ImVec2 p = static_cast<const ExplorerNoteDragPayload *>(payload->Data)->indices;
           pending_move_source_folder_idx = (int)p.x;
           pending_move_target_folder_idx = fi;
           pending_move_note_indices.clear();
@@ -9532,13 +9538,13 @@ void App::frame_ui()
         {
           if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
           {
-            if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+            if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsPreview())
             {
               drag_hover_folder_idx = fi;
             }
-            if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+            if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsDelivery())
             {
-              const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+              const ImVec2 p = static_cast<const ExplorerNoteDragPayload *>(payload->Data)->indices;
               pending_move_source_folder_idx = (int)p.x;
               pending_move_target_folder_idx = fi; // Drop on child note => same destination folder
               pending_move_note_indices.clear();
@@ -9583,7 +9589,14 @@ void App::frame_ui()
         }
         if(ImGui::BeginDragDropSource())
         {
-          ImVec2 payload((float)fi, (float)ni);
+          ExplorerNoteDragPayload payload;
+          payload.indices = ImVec2((float)fi, (float)ni);
+          std::error_code link_ec;
+          std::filesystem::path link_path = std::filesystem::relative(n.path, config_.dataPath, link_ec);
+          const std::string link_reference = (!link_ec && !link_path.empty())
+                                                  ? link_path.generic_string()
+                                                  : std::filesystem::path(n.path).filename().generic_string();
+          std::snprintf(payload.reference, sizeof(payload.reference), "%s", link_reference.c_str());
           ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &payload, sizeof(payload));
           if(selected_note_indices.count(ni) != 0 && fi == active_folder_idx_ && selected_note_indices.size() > 1)
             ImGui::Text("%zu notes", selected_note_indices.size());
@@ -9965,11 +9978,11 @@ void App::frame_ui()
     {
       if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
       {
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+        if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsPreview())
           drag_hover_folder_idx = -99;
-        if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+        if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsDelivery())
         {
-          const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+          const ImVec2 p = static_cast<const ExplorerNoteDragPayload *>(payload->Data)->indices;
           pending_move_source_folder_idx = (int)p.x;
           pending_move_target_folder_idx = (root_folder_idx >= 0) ? root_folder_idx : -2;
           pending_move_note_indices.clear();
@@ -10064,11 +10077,11 @@ void App::frame_ui()
           {
             if(const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("NOTEPP_NOTE_MOVE", ImGuiDragDropFlags_AcceptNoDrawDefaultRect))
             {
-              if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsPreview())
+              if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsPreview())
                 drag_hover_folder_idx = rfi;
-              if(payload->DataSize == (int)sizeof(ImVec2) && payload->IsDelivery())
+              if(payload->DataSize == (int)sizeof(ExplorerNoteDragPayload) && payload->IsDelivery())
               {
-                const ImVec2 p = *static_cast<const ImVec2 *>(payload->Data);
+                const ImVec2 p = static_cast<const ExplorerNoteDragPayload *>(payload->Data)->indices;
                 pending_move_source_folder_idx = (int)p.x;
                 pending_move_target_folder_idx = rfi;
                 pending_move_note_indices.clear();
@@ -10100,7 +10113,14 @@ void App::frame_ui()
           // Drag source: root notes can be dragged to other folders
           if(ImGui::BeginDragDropSource())
           {
-            ImVec2 note_payload((float)rfi, (float)ni);
+            ExplorerNoteDragPayload note_payload;
+            note_payload.indices = ImVec2((float)rfi, (float)ni);
+            std::error_code link_ec;
+            std::filesystem::path link_path = std::filesystem::relative(n.path, config_.dataPath, link_ec);
+            const std::string link_reference = (!link_ec && !link_path.empty())
+                                                    ? link_path.generic_string()
+                                                    : std::filesystem::path(n.path).filename().generic_string();
+            std::snprintf(note_payload.reference, sizeof(note_payload.reference), "%s", link_reference.c_str());
             ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &note_payload, sizeof(note_payload));
             if(selected_note_indices.count(ni) != 0 && rfi == active_folder_idx_ && selected_note_indices.size() > 1)
               ImGui::Text("%zu notes", selected_note_indices.size());

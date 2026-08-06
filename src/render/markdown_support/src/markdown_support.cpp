@@ -319,8 +319,20 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
   ImGui::PopID();
 }
 
+static std::string kanban_reference_title(std::string_view href)
+{
+  return MarkdownView::resolve_link_title(href);
+}
+
+static bool kanban_reference_hover(std::string_view href)
+{
+  return MarkdownView::request_link_hover_preview(href);
+}
+
 void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
 {
+  MermaidDiagrams::set_kanban_reference_callbacks(kanban_reference_title,
+                                                   kanban_reference_hover);
   const std::string mt = StringUtils::to_lower_copy(mermaid_type);
 
   // ── already-rendered types ──────────────────────────────────────────────
