@@ -2,6 +2,7 @@
 
 #include "pty.hpp"
 #include "terminal_key_map.hpp"
+#include "terminal_selection.hpp"
 
 #include <vterm.h>
 #include <vterm_keycodes.h>
@@ -14,7 +15,6 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -27,14 +27,6 @@
 
 namespace
 {
-
-void append_terminal_input_debug(std::string_view line)
-{
-  std::FILE *file = std::fopen("/tmp/notepp-terminal-input.log", "a");
-  if(file == nullptr) return;
-  std::fprintf(file, "[terminal] %.*s\n", static_cast<int>(line.size()), line.data());
-  std::fclose(file);
-}
 
 constexpr std::size_t kMaxPendingOutputBytes = 4U * 1024U * 1024U;
 
@@ -212,6 +204,7 @@ struct Terminal::Impl
 
     void stop()
     {
+      clearSelection();
       stop_requested.store(true, std::memory_order_release);
       {
         std::lock_guard<std::mutex> lock(write_mutex);
@@ -271,6 +264,7 @@ struct Terminal::Impl
     void resize(int newRows, int newCols)
     {
       if(newRows <= 0 || newCols <= 0 || (newRows == rows && newCols == cols)) return;
+      clearSelection();
       rows = newRows;
       cols = newCols;
       if(vt != nullptr) vterm_set_size(vt, rows, cols);
@@ -280,16 +274,9 @@ struct Terminal::Impl
 
     void write(std::string_view bytes)
     {
-      if(pty == nullptr || !isRunning())
-      {
-        append_terminal_input_debug("write skipped: no running PTY");
-        return;
-      }
+      if(pty == nullptr || !isRunning()) return;
       std::lock_guard<std::mutex> lock(write_mutex);
-      const bool success = pty->write(bytes);
-      append_terminal_input_debug(
-          "PTY write size=" + std::to_string(bytes.size()) +
-          " result=" + (success ? std::string("ok") : std::string("failed")));
+      (void)pty->write(bytes);
     }
 
     void sendKey(int imguiKey, bool ctrl, bool shift, bool alt)
@@ -334,7 +321,13 @@ struct Terminal::Impl
     {
       if(screen == nullptr) return;
 
-      const VTermRect rect{0, 0, rows, cols};
+      VTermRect rect{0, rows, 0, cols};
+      if(hasSelection())
+      {
+        const VTermPos first = selectionStart();
+        const VTermPos last = selectionEnd();
+        rect = VTermRect{first.row, last.row + 1, first.col, last.col + 1};
+      }
       const std::size_t length = vterm_screen_get_text(screen, nullptr, 0, rect);
       std::string text(length, '\0');
       if(length != 0)
@@ -347,6 +340,7 @@ struct Terminal::Impl
 
     void pasteFromClipboard()
     {
+      clearSelection();
       char *text = SDL_GetClipboardText();
       if(text == nullptr) return;
       write(text);
@@ -371,6 +365,59 @@ struct Terminal::Impl
     int rows = 24;
     int cols = 80;
     bool was_focused = false;
+    VTermPos selection_start{-1, -1};
+    VTermPos selection_end{-1, -1};
+    bool selecting = false;
+
+    void clearSelection() noexcept
+    {
+      selection_start = VTermPos{-1, -1};
+      selection_end = VTermPos{-1, -1};
+      selecting = false;
+    }
+
+    bool hasSelection() const noexcept
+    {
+      return selection_start.row >= 0 && selection_start.col >= 0 && selection_end.row >= 0 && selection_end.col >= 0;
+    }
+
+    VTermPos normalizeSelectionCell(VTermPos position) const noexcept
+    {
+      if(screen == nullptr) return position;
+      VTermScreenCell cell{};
+      while(position.col > 0 &&
+            vterm_screen_get_cell(screen, position, &cell) != 0 && cell.width == 0)
+      {
+        --position.col;
+      }
+      return position;
+    }
+
+    VTermPos selectionStart() const noexcept
+    {
+      const VTermPos first = normalizeSelectionCell(selection_start);
+      const VTermPos last = normalizeSelectionCell(selection_end);
+      const notepp::terminal_detail::TerminalCell start = notepp::terminal_detail::selectionStart(
+          {first.row, first.col}, {last.row, last.col});
+      return VTermPos{start.row, start.col};
+    }
+
+    VTermPos selectionEnd() const noexcept
+    {
+      const VTermPos first = normalizeSelectionCell(selection_start);
+      const VTermPos last = normalizeSelectionCell(selection_end);
+      const notepp::terminal_detail::TerminalCell end = notepp::terminal_detail::selectionEnd(
+          {first.row, first.col}, {last.row, last.col});
+      return VTermPos{end.row, end.col};
+    }
+
+    bool isSelected(int row, int col) const noexcept
+    {
+      const VTermPos first = normalizeSelectionCell(selection_start);
+      const VTermPos last = normalizeSelectionCell(selection_end);
+      return notepp::terminal_detail::terminalSelectionContains(
+          {first.row, first.col}, {last.row, last.col}, row, col);
+    }
 
     static int screenDamageCallback(VTermRect, void *) { return 1; }
     static int screenMoveRectCallback(VTermRect, VTermRect, void *) { return 1; }
@@ -448,13 +495,20 @@ struct Terminal::Impl
       for(int col = 0; col < cols; ++col)
       {
         const VTermPos position{row, col};
-        if(vterm_screen_get_cell(session.screen, position, &cell) == 0 || cell.width == 0) continue;
-
+        const bool hasCell = vterm_screen_get_cell(session.screen, position, &cell) != 0 && cell.width != 0;
         const ImVec2 cellMin(origin.x + col * cellWidth, origin.y + row * cellHeight);
-        const ImVec2 cellMax(cellMin.x + cellWidth * std::max(1, static_cast<int>(cell.width)), cellMin.y + cellHeight);
-        const ImU32 background = colorToU32(cell.bg, session.defaultFg, session.defaultBg, true);
-        if(background != defaultBackground) draw->AddRectFilled(cellMin, cellMax, background);
+        const ImVec2 cellMax(cellMin.x + cellWidth * (hasCell ? std::max(1, static_cast<int>(cell.width)) : 1),
+                             cellMin.y + cellHeight);
+        const bool selected = session.isSelected(row, col);
+        if(selected)
+          draw->AddRectFilled(cellMin, cellMax, ImGui::ColorConvertFloat4ToU32(ImGui::GetStyleColorVec4(ImGuiCol_TextSelectedBg)));
+        else if(hasCell)
+        {
+          const ImU32 background = colorToU32(cell.bg, session.defaultFg, session.defaultBg, true);
+          if(background != defaultBackground) draw->AddRectFilled(cellMin, cellMax, background);
+        }
 
+        if(!hasCell) continue;
         const std::uint32_t codepoint = cell.chars[0];
         if(codepoint == 0) continue;
         (void)ImTextCharToUtf8(utf8, codepoint);
@@ -471,7 +525,31 @@ struct Terminal::Impl
       draw->AddRect(cursorMin, cursorMax, cursorColor, 0.0F, 0, 1.5F);
     }
 
-    ImGui::Dummy(ImVec2(cols * cellWidth, rows * cellHeight));
+    // Capture mouse input in the terminal grid without drawing an ImGui
+    // selection rectangle; the terminal selection highlight is rendered above.
+    ImGui::InvisibleButton("##terminal_grid", ImVec2(cols * cellWidth, rows * cellHeight));
+    const bool gridHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const ImGuiIO &io = ImGui::GetIO();
+    const auto cellAt = [&](const ImVec2 &mouse) {
+      const int col = std::clamp(static_cast<int>((mouse.x - origin.x) / cellWidth), 0, cols - 1);
+      const int row = std::clamp(static_cast<int>((mouse.y - origin.y) / cellHeight), 0, rows - 1);
+      return VTermPos{row, col};
+    };
+    if(gridHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsDragDropActive())
+    {
+      session.selection_start = cellAt(io.MousePos);
+      session.selection_end = session.selection_start;
+      session.selecting = true;
+    }
+    if(session.selecting)
+    {
+      if(ImGui::IsDragDropActive())
+        session.clearSelection();
+      else if(ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        session.selection_end = cellAt(io.MousePos);
+      else
+        session.selecting = false;
+    }
 
     focused = windowFocused;
     session.setFocused(windowFocused);
@@ -483,7 +561,10 @@ struct Terminal::Impl
     SDL_StartTextInput();
     if(!pendingText.empty()) session.write(pendingText);
 
-    const ImGuiIO &io = ImGui::GetIO();
+    if(!pendingText.empty()) session.clearSelection();
+    const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if(escapePressed) session.clearSelection();
+
     const bool ctrlDown = io.KeyCtrl;
     const bool shiftDown = io.KeyShift;
     const bool altDown = io.KeyAlt;
@@ -626,6 +707,11 @@ void Terminal::resize(int rows, int cols)
 void Terminal::write(std::string_view bytes)
 {
   if(Impl::Session *session = impl_->selected(); session != nullptr) session->write(bytes);
+}
+
+void Terminal::clearSelection()
+{
+  if(Impl::Session *session = impl_->selected(); session != nullptr) session->clearSelection();
 }
 
 void Terminal::sendKey(int imguiKey, bool ctrl, bool shift, bool alt)

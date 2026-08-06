@@ -58,6 +58,9 @@ public:
   /// Write raw bytes to the selected session's PTY.
   void write(std::string_view bytes);
 
+  /// Clear the selected session's text selection.
+  void clearSelection();
+
   /// Translate a focused-window key event for the selected session.
   void sendKey(int imguiKey, bool ctrl, bool shift, bool alt);
 

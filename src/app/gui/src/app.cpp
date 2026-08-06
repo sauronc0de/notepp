@@ -497,14 +497,6 @@ using Json = nlohmann::json;
 
 namespace
 {
-void append_terminal_input_debug(std::string_view line)
-{
-  std::FILE *file = std::fopen("/tmp/notepp-terminal-input.log", "a");
-  if(file == nullptr) return;
-  std::fprintf(file, "[app] %.*s\n", static_cast<int>(line.size()), line.data());
-  std::fclose(file);
-}
-
 constexpr Uint32 kProjectFilesChangedEvent = SDL_USEREVENT + 17;
 constexpr Uint32 kGitSyncCompletedEvent = SDL_USEREVENT + 18;
 
@@ -5184,10 +5176,6 @@ bool App::frame_begin()
     // but arrows, Tab, and Ctrl+R must reach the PTY from SDL_KEYDOWN.
     if(event.type == SDL_KEYDOWN && terminal_visible_)
     {
-      append_terminal_input_debug(
-          "keydown sym=" + std::to_string(static_cast<int>(event.key.keysym.sym)) +
-          " mod=" + std::to_string(static_cast<unsigned int>(event.key.keysym.mod)) +
-          " repeat=" + std::to_string(static_cast<int>(event.key.repeat)));
       const Uint16 terminal_mod = event.key.keysym.mod;
       const bool terminal_ctrl = (terminal_mod & KMOD_CTRL) != 0;
       const bool terminal_shift = (terminal_mod & KMOD_SHIFT) != 0;
@@ -5198,7 +5186,6 @@ bool App::frame_begin()
                            (terminal_sym == SDLK_TAB) ||
                            (terminal_ctrl && terminal_sym == SDLK_r)))
       {
-        append_terminal_input_debug("dispatch special key");
         if(terminal_ctrl && terminal_sym == SDLK_r)
           terminal_.write("\x12");
         else if(terminal_sym == SDLK_TAB)
@@ -5217,6 +5204,7 @@ bool App::frame_begin()
 
     if(event.type == SDL_DROPFILE && event.drop.file)
     {
+      terminal_.clearSelection();
       int mx = 0, my = 0;
       SDL_GetMouseState(&mx, &my);
       pending_dropped_files_.push_back({std::string(event.drop.file), mx, my});

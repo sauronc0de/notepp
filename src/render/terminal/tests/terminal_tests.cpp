@@ -6,6 +6,7 @@
 
 #include "terminal.hpp"
 #include "terminal_key_map.hpp"
+#include "terminal_selection.hpp"
 #include "pty.hpp"
 
 #include <imgui.h>
@@ -201,6 +202,23 @@ void test_natural_shell_exit_is_reaped()
 }
 #endif
 
+void test_selection_range()
+{
+  using notepp::terminal_detail::TerminalCell;
+  using notepp::terminal_detail::terminalSelectionContains;
+
+  expect(terminalSelectionContains(TerminalCell{1, 2}, TerminalCell{1, 2}, 1, 2),
+         "a single terminal cell can be selected");
+  expect(!terminalSelectionContains(TerminalCell{1, 2}, TerminalCell{1, 2}, 1, 3),
+         "a single-cell selection excludes adjacent cells");
+  expect(terminalSelectionContains(TerminalCell{2, 5}, TerminalCell{0, 3}, 1, 0),
+         "a reversed drag selects cells on intermediate rows");
+  expect(terminalSelectionContains(TerminalCell{2, 5}, TerminalCell{0, 3}, 0, 3),
+         "a reversed drag includes its normalized start cell");
+  expect(!terminalSelectionContains(TerminalCell{-1, -1}, TerminalCell{0, 0}, 0, 0),
+         "an empty selection contains no cells");
+}
+
 void test_special_key_mapping()
 {
   using notepp::terminal_detail::terminalKeyFromImGui;
@@ -242,6 +260,18 @@ void test_special_key_mapping()
   vterm_keyboard_key(vt, VTERM_KEY_RIGHT, VTERM_MOD_NONE);
   expect(output == "\x1b[C", "libvterm emits CSI C for the right arrow");
   vterm_free(vt);
+
+  VTerm *screen_vt = vterm_new(2, 20);
+  VTermScreen *screen = vterm_obtain_screen(screen_vt);
+  vterm_screen_reset(screen, 1);
+  const std::string marker = "copy-marker";
+  vterm_input_write(screen_vt, marker.data(), marker.size());
+  char copied[64] = {};
+  const VTermRect rect{0, 2, 0, 20};
+  const std::size_t copied_length = vterm_screen_get_text(screen, copied, sizeof(copied), rect);
+  expect(copied_length >= marker.size() && std::string(copied, copied_length).find(marker) != std::string::npos,
+         "screen text extraction uses row/column rectangle ordering");
+  vterm_free(screen_vt);
 }
 
 void test_first_render_does_not_crash()
@@ -331,6 +361,7 @@ int main()
   test_shell_line_controls_end_to_end();
   test_natural_shell_exit_is_reaped();
 #endif
+  test_selection_range();
   test_special_key_mapping();
   test_first_render_does_not_crash();
   if(failures != 0)
