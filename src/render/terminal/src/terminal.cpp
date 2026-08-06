@@ -161,6 +161,7 @@ struct Terminal::Impl
           pty->stop();
       }
       running.store(false, std::memory_order_release);
+      exited_naturally = true;
     }
 
     bool start(int initialRows, int initialCols)
@@ -170,6 +171,7 @@ struct Terminal::Impl
       rows = std::max(1, initialRows);
       cols = std::max(1, initialCols);
       stop_requested.store(false, std::memory_order_relaxed);
+      exited_naturally = false;
       {
         std::lock_guard<std::mutex> lock(buffer_mutex);
         read_buffer.clear();
@@ -365,6 +367,7 @@ struct Terminal::Impl
     int rows = 24;
     int cols = 80;
     bool was_focused = false;
+    bool exited_naturally = false;
     VTermPos selection_start{-1, -1};
     VTermPos selection_end{-1, -1};
     bool selecting = false;
@@ -461,6 +464,7 @@ struct Terminal::Impl
   {
     if(!session.isRunning())
     {
+      if(session.exited_naturally) return true;
       const bool hasScreen = session.vt != nullptr && session.screen != nullptr;
       ImGui::TextDisabled("%s", hasScreen ? "Shell exited." : "Terminal session failed to start.");
       ImGui::SameLine();
@@ -591,6 +595,7 @@ struct Terminal::Impl
   ImFont *font = nullptr;
   bool first_frame = true;
   bool focused = false;
+  float window_height = 360.0F;
 };
 
 const VTermScreenCallbacks Terminal::Impl::Session::kScreenCallbacks = {
@@ -637,6 +642,24 @@ Terminal::SessionId Terminal::addSession(const std::filesystem::path &cwd, int r
   impl_->selected_id = id;
   impl_->selection_request_id = id;
   return id;
+}
+
+bool Terminal::selectAdjacentSession(bool previous)
+{
+  if(impl_->sessions.empty()) return false;
+  const auto current = std::find_if(
+      impl_->sessions.begin(), impl_->sessions.end(),
+      [id = impl_->selected_id](const auto &session) { return session->id == id; });
+  const std::size_t currentIndex = current == impl_->sessions.end()
+                                       ? 0U
+                                       : static_cast<std::size_t>(std::distance(impl_->sessions.begin(), current));
+  const std::size_t count = impl_->sessions.size();
+  const std::size_t nextIndex = previous
+                                     ? (currentIndex + count - 1U) % count
+                                     : (currentIndex + 1U) % count;
+  impl_->selected_id = impl_->sessions[nextIndex]->id;
+  impl_->selection_request_id = impl_->selected_id;
+  return true;
 }
 
 bool Terminal::closeSession(SessionId id)
@@ -725,6 +748,16 @@ void Terminal::setFont(ImFont *font) noexcept
   impl_->font = font;
 }
 
+void Terminal::setWindowHeight(float height) noexcept
+{
+  impl_->window_height = std::max(180.0F, height);
+}
+
+float Terminal::windowHeight() const noexcept
+{
+  return impl_->window_height;
+}
+
 void Terminal::render(bool *open, std::string_view pendingText, bool acceptKeyboardInput)
 {
   impl_->focused = false;
@@ -732,23 +765,43 @@ void Terminal::render(bool *open, std::string_view pendingText, bool acceptKeybo
 
   for(const auto &session : impl_->sessions) session->drainOutput();
 
-  if(impl_->first_frame || !acceptKeyboardInput)
-  {
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5F, 0.5F));
-    ImGui::SetNextWindowFocus();
-  }
-  ImGui::SetNextWindowSize(ImVec2(720.0F, 420.0F), ImGuiCond_FirstUseEver);
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const float minHeight = 180.0F;
+  const float maxHeight = std::max(minHeight, viewport->WorkSize.y - 80.0F);
+  impl_->window_height = std::clamp(impl_->window_height, minHeight, maxHeight);
+  ImGui::SetNextWindowPos(
+      ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - impl_->window_height),
+      ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, impl_->window_height), ImGuiCond_Always);
+  ImGui::SetNextWindowSizeConstraints(
+      ImVec2(viewport->WorkSize.x, minHeight), ImVec2(viewport->WorkSize.x, maxHeight));
   ImGui::SetNextWindowBgAlpha(1.0F);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.065F, 0.080F, 0.105F, 1.0F));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0F, 4.0F));
   if(!ImGui::Begin("Terminal##notepp", open,
                    ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_NoMove |
                        ImGuiWindowFlags_NoDocking |
                        ImGuiWindowFlags_NoSavedSettings |
-                       ImGuiWindowFlags_NoNavInputs))
+                       ImGuiWindowFlags_NoNavInputs |
+                       ImGuiWindowFlags_NoTitleBar))
   {
     impl_->first_frame = false;
     ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
     return;
   }
+  impl_->window_height = ImGui::GetWindowSize().y;
+  ImDrawList *windowDraw = ImGui::GetWindowDrawList();
+  const ImVec2 windowMin = ImGui::GetWindowPos();
+  windowDraw->AddRectFilled(
+      windowMin, ImVec2(windowMin.x + ImGui::GetWindowWidth(), windowMin.y + 1.0F),
+      ImGui::GetColorU32(ImGuiCol_Border));
+  if(ImGui::IsWindowHovered() && ImGui::GetIO().MousePos.y <= windowMin.y + 5.0F)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
 
   ImFont *font = impl_->font != nullptr ? impl_->font : ImGui::GetFont();
   std::vector<SessionId> closeRequests;
@@ -805,4 +858,6 @@ void Terminal::render(bool *open, std::string_view pendingText, bool acceptKeybo
 
   impl_->first_frame = false;
   ImGui::End();
+  ImGui::PopStyleVar(3);
+  ImGui::PopStyleColor();
 }

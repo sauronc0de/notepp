@@ -31,6 +31,9 @@ public:
   /// Create and select an independent shell session. Returns its stable ID.
   SessionId addSession(const std::filesystem::path &cwd, int rows = 24, int cols = 80);
 
+  /// Select the next or previous terminal tab. Returns false when there are no sessions.
+  bool selectAdjacentSession(bool previous);
+
   /// Stop and remove one session. Returns false when @p id does not exist.
   bool closeSession(SessionId id);
 
@@ -63,6 +66,10 @@ public:
 
   /// Translate a focused-window key event for the selected session.
   void sendKey(int imguiKey, bool ctrl, bool shift, bool alt);
+
+  /// Set the preferred terminal window height in pixels.
+  void setWindowHeight(float height) noexcept;
+  float windowHeight() const noexcept;
 
   /// Render the terminal window and its session tabs.
   /// @p pendingText is composed SDL text for this frame and is written before

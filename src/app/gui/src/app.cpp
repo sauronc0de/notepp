@@ -1688,7 +1688,9 @@ void App::load_workspace()
      has_invalid_type("detachedNoteWindows", [](const Json &value) {
        return value.is_boolean();
      }) ||
-     has_invalid_type("dockersEnabled", [](const Json &value) { return value.is_boolean(); }) || has_invalid_type("folders", [](const Json &value) { return value.is_object(); }))
+     has_invalid_type("dockersEnabled", [](const Json &value) { return value.is_boolean(); }) ||
+     has_invalid_type("terminalHeight", [](const Json &value) { return value.is_number(); }) ||
+     has_invalid_type("folders", [](const Json &value) { return value.is_object(); }))
   {
     invalid_workspace();
     return;
@@ -1749,6 +1751,8 @@ void App::load_workspace()
     detached_note_windows_enabled_ = found->get<bool>();
   if(const auto found = workspace.find("dockersEnabled"); found != workspace.end())
     dockers_enabled_ = found->get<bool>();
+  if(const auto found = workspace.find("terminalHeight"); found != workspace.end())
+    terminal_height_ = std::clamp(found->get<float>(), 180.0F, 2000.0F);
 
   if(folders_found == workspace.end()) return;
   for(FolderMeta &folder : folders_)
@@ -1789,6 +1793,7 @@ bool App::save_workspace()
   workspace["layoutLocked"] = layout_locked_;
   workspace["detachedNoteWindows"] = detached_note_windows_enabled_;
   workspace["dockersEnabled"] = dockers_enabled_;
+  workspace["terminalHeight"] = terminal_height_;
   Json folders = Json::object();
   for(const FolderMeta &folder : folders_)
     folders[folder.name] = {{"layoutLocked", folder.layout_locked},
@@ -4321,6 +4326,7 @@ std::string App::capture_workspace_snapshot() const
   root["layout_locked"] = layout_locked_;
   root["detached_note_windows"] = detached_note_windows_enabled_;
   root["dockers_enabled"] = dockers_enabled_;
+  root["terminal_height"] = terminal_height_;
   root["preview_state"] = capture_preview_state_snapshot();
 
   std::vector<std::string> pending_paths = pending_fs_delete_paths_;
@@ -4459,6 +4465,7 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   const bool root_layout_locked = root.value("layout_locked", false);
   const bool root_detached = root.value("detached_note_windows", false);
   const bool root_dockers = root.value("dockers_enabled", false);
+  terminal_height_ = std::clamp(root.value("terminal_height", terminal_height_), 180.0F, 2000.0F);
 
   std::unordered_map<std::string, std::string> restored_contents;
   int folder_parse_idx = 0;
@@ -5152,6 +5159,10 @@ bool App::frame_begin()
     // keyboard owner until an explicit click selects another window.
     return terminal_.hasFocus() || terminal_visible_;
   };
+  const auto is_terminal_toggle_key = [](SDL_Keycode key) {
+    return key == SDLK_BACKQUOTE || key == static_cast<SDL_Keycode>(0xF1) ||
+           key == static_cast<SDL_Keycode>(0xD1);
+  };
 
   bool had_event = false;
   SDL_Event event;
@@ -5170,6 +5181,40 @@ bool App::frame_begin()
     }
 
     had_event = true;
+
+    if(event.type == SDL_KEYDOWN)
+    {
+      const Uint16 terminal_mod = event.key.keysym.mod;
+      const bool terminal_ctrl = (terminal_mod & KMOD_CTRL) != 0;
+      const bool terminal_shift = (terminal_mod & KMOD_SHIFT) != 0;
+      const bool terminal_alt = (terminal_mod & KMOD_ALT) != 0;
+      if(terminal_ctrl && !terminal_alt && is_terminal_toggle_key(event.key.keysym.sym))
+      {
+        if(terminal_shift)
+        {
+          if(terminal_visible_)
+          {
+            terminal_.setDefaultWorkingDirectory(config_.dataPath);
+            (void)terminal_.addSession(config_.dataPath);
+          }
+          else
+          {
+            terminal_new_tab_on_open_ = true;
+            request_open_terminal_ = true;
+          }
+        }
+        else
+        {
+          request_open_terminal_ = true;
+        }
+        continue;
+      }
+      if(terminal_visible_ && terminal_ctrl && !terminal_alt && event.key.keysym.sym == SDLK_TAB)
+      {
+        (void)terminal_.selectAdjacentSession(terminal_shift);
+        continue;
+      }
+    }
 
     // Handle the core shell controls before any application/dialog shortcut
     // branch can consume the SDL key event. Printable text uses SDL_TEXTINPUT,
@@ -7279,12 +7324,25 @@ void App::frame_ui()
 
     terminal_.setFont(font_terminal_);
     terminal_.setDefaultWorkingDirectory(config_.dataPath);
+    terminal_.setWindowHeight(terminal_height_);
     if(terminal_opened_this_frame && terminal_.sessionCount() == 0)
       terminal_.start(config_.dataPath, 24, 80);
+    if(terminal_new_tab_on_open_ && terminal_visible_)
+    {
+      terminal_.setDefaultWorkingDirectory(config_.dataPath);
+      (void)terminal_.addSession(config_.dataPath);
+      terminal_new_tab_on_open_ = false;
+    }
     // render() resolves current-frame focus after all note/editor widgets,
     // then writes composed text before Enter/navigation events. This avoids
     // stale focus stealing note input and preserves command ordering.
     terminal_.render(&terminal_visible_, pending_terminal_text_, !terminal_opened_this_frame);
+    const float rendered_terminal_height = terminal_.windowHeight();
+    if(std::fabs(rendered_terminal_height - terminal_height_) > 0.5F)
+    {
+      terminal_height_ = rendered_terminal_height;
+      state_dirty_ = true;
+    }
     if(!terminal_visible_) terminal_.releaseFocus();
     pending_terminal_text_.clear();
   };

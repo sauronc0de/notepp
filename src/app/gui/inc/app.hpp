@@ -377,6 +377,8 @@ private:
   Terminal terminal_;
   std::string pending_terminal_text_;
   bool terminal_visible_ = false;
+  bool terminal_new_tab_on_open_ = false;
+  float terminal_height_ = 360.0F;
   int active_folder_idx_ = 0;
   int active_note_idx_ = 0;
   bool folder_overview_mode_ = false;
