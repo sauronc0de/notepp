@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -176,6 +177,8 @@ struct Terminal::Impl
         std::lock_guard<std::mutex> lock(buffer_mutex);
         read_buffer.clear();
       }
+      scrollback.clear();
+      scroll_offset = 0;
 
       if(pty == nullptr) pty.reset(notepp::terminal::createPtyBackend());
       if(pty == nullptr || !pty->start(cwd, shellCommand(), rows, cols)) return false;
@@ -368,6 +371,8 @@ struct Terminal::Impl
     int cols = 80;
     bool was_focused = false;
     bool exited_naturally = false;
+    std::deque<std::vector<VTermScreenCell>> scrollback;
+    std::size_t scroll_offset = 0;
     VTermPos selection_start{-1, -1};
     VTermPos selection_end{-1, -1};
     bool selecting = false;
@@ -428,9 +433,38 @@ struct Terminal::Impl
     static int screenSetTermPropCallback(VTermProp, VTermValue *, void *) { return 1; }
     static int screenBellCallback(void *) { return 1; }
     static int screenResizeCallback(int, int, void *) { return 1; }
-    static int screenSbPushLineCallback(int, const VTermScreenCell *, void *) { return 0; }
-    static int screenSbPopLineCallback(int, VTermScreenCell *, void *) { return 0; }
-    static int screenSbClearCallback(void *) { return 1; }
+    static int screenSbPushLineCallback(int cols, const VTermScreenCell *cells, void *user)
+    {
+      auto *session = static_cast<Session *>(user);
+      if(session == nullptr || cells == nullptr || cols <= 0) return 0;
+      session->scrollback.emplace_back(cells, cells + cols);
+      constexpr std::size_t maxScrollbackLines = 10000U;
+      while(session->scrollback.size() > maxScrollbackLines)
+        session->scrollback.pop_front();
+      return 1;
+    }
+
+    static int screenSbPopLineCallback(int cols, VTermScreenCell *cells, void *user)
+    {
+      auto *session = static_cast<Session *>(user);
+      if(session == nullptr || cells == nullptr || cols <= 0 || session->scrollback.empty()) return 0;
+      const std::vector<VTermScreenCell> &line = session->scrollback.back();
+      const int copied = std::min(cols, static_cast<int>(line.size()));
+      std::copy_n(line.data(), copied, cells);
+      session->scrollback.pop_back();
+      return 1;
+    }
+
+    static int screenSbClearCallback(void *user)
+    {
+      auto *session = static_cast<Session *>(user);
+      if(session != nullptr)
+      {
+        session->scrollback.clear();
+        session->scroll_offset = 0;
+      }
+      return 1;
+    }
 
     static const VTermScreenCallbacks kScreenCallbacks;
   };
@@ -492,14 +526,42 @@ struct Terminal::Impl
     const ImU32 defaultBackground = colorToU32(session.defaultBg, session.defaultFg, session.defaultBg, true);
     draw->AddRectFilled(contentMin, contentMax, defaultBackground);
 
+    const ImGuiIO &io = ImGui::GetIO();
+    const bool terminalHovered = ImGui::IsMouseHoveringRect(contentMin, contentMax, true);
+    const std::size_t scrollbackLines = session.scrollback.size();
+    const std::size_t totalLines = scrollbackLines + static_cast<std::size_t>(rows);
+    const std::size_t maxScrollOffset = totalLines > static_cast<std::size_t>(rows)
+                                            ? totalLines - static_cast<std::size_t>(rows)
+                                            : 0U;
+    if(terminalHovered && io.MouseWheel != 0.0F && maxScrollOffset > 0U)
+    {
+      const int step = io.MouseWheel > 0.0F ? 3 : -3;
+      const int current = static_cast<int>(session.scroll_offset);
+      session.scroll_offset = static_cast<std::size_t>(std::clamp(current - step, 0, static_cast<int>(maxScrollOffset)));
+      session.clearSelection();
+    }
+    session.scroll_offset = std::min(session.scroll_offset, maxScrollOffset);
+    const int firstLine = static_cast<int>(totalLines - static_cast<std::size_t>(rows) - session.scroll_offset);
+    const auto getCell = [&](int displayRow, int col, VTermScreenCell &target) {
+      const int logicalRow = firstLine + displayRow;
+      if(logicalRow < static_cast<int>(scrollbackLines))
+      {
+        const std::vector<VTermScreenCell> &line = session.scrollback[static_cast<std::size_t>(logicalRow)];
+        if(col < 0 || col >= static_cast<int>(line.size())) return false;
+        target = line[static_cast<std::size_t>(col)];
+        return target.width != 0;
+      }
+      const VTermPos position{logicalRow - static_cast<int>(scrollbackLines), col};
+      return vterm_screen_get_cell(session.screen, position, &target) != 0 && target.width != 0;
+    };
+
     VTermScreenCell cell{};
     char utf8[8] = {};
     for(int row = 0; row < rows; ++row)
     {
       for(int col = 0; col < cols; ++col)
       {
-        const VTermPos position{row, col};
-        const bool hasCell = vterm_screen_get_cell(session.screen, position, &cell) != 0 && cell.width != 0;
+        const bool hasCell = getCell(row, col, cell);
         const ImVec2 cellMin(origin.x + col * cellWidth, origin.y + row * cellHeight);
         const ImVec2 cellMax(cellMin.x + cellWidth * (hasCell ? std::max(1, static_cast<int>(cell.width)) : 1),
                              cellMin.y + cellHeight);
@@ -521,7 +583,7 @@ struct Terminal::Impl
       }
     }
 
-    if(session.cursor.row >= 0 && session.cursor.row < rows && session.cursor.col >= 0 && session.cursor.col < cols)
+    if(session.scroll_offset == 0U && session.cursor.row >= 0 && session.cursor.row < rows && session.cursor.col >= 0 && session.cursor.col < cols)
     {
       const ImVec2 cursorMin(origin.x + session.cursor.col * cellWidth, origin.y + session.cursor.row * cellHeight);
       const ImVec2 cursorMax(cursorMin.x + cellWidth, cursorMin.y + cellHeight);
@@ -533,7 +595,6 @@ struct Terminal::Impl
     // selection rectangle; the terminal selection highlight is rendered above.
     ImGui::InvisibleButton("##terminal_grid", ImVec2(cols * cellWidth, rows * cellHeight));
     const bool gridHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-    const ImGuiIO &io = ImGui::GetIO();
     const auto cellAt = [&](const ImVec2 &mouse) {
       const int col = std::clamp(static_cast<int>((mouse.x - origin.x) / cellWidth), 0, cols - 1);
       const int row = std::clamp(static_cast<int>((mouse.y - origin.y) / cellHeight), 0, rows - 1);

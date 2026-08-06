@@ -388,6 +388,9 @@ Undo groups character-level changes into word-granular chunks for convenient rev
 | Ctrl+F | Search the active note |
 | Ctrl+Shift+F | Search the full project |
 | Ctrl+Shift+P | Open Command Finder |
+| Ctrl+ñ | Show / hide the embedded terminal |
+| Ctrl+Shift+ñ | Show the terminal and open a new terminal tab |
+| Ctrl+Tab / Ctrl+Shift+Tab | Focus next / previous terminal tab when visible |
 | Ctrl+Enter | Preview: edit active note; Edit: open Editor Actions |
 | Esc | Return from Edit mode to Preview |
 | F6 | Leave terminal focus and return to the active note or sidebar |
@@ -1825,11 +1828,12 @@ raw JSON examples are available in the public
 
 ## 16. Embedded Terminal
 
-Open the Command Finder with **Ctrl+Shift+P**, then run **Open / Hide Terminal**
-to show a real, full-featured terminal inside the application. The shell starts
-in the project notes root, so `ls`, `git
-status`, `grep`, and any other tool you launch operate on the same files
-the app edits.
+Open the terminal with **Ctrl+ñ**, or open the Command Finder with
+**Ctrl+Shift+P** and run **Open / Hide Terminal**. **Ctrl+ñ** toggles its
+visibility without stopping the shell. **Ctrl+Shift+ñ** opens a new terminal tab
+and makes the terminal visible. The shell starts in the project notes root, so
+`ls`, `git status`, `grep`, and any other tool you launch operate on the same
+files the app edits.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1855,12 +1859,19 @@ That means anything that works in a normal terminal works here: `pi`,
 **Behavior:**
 
 - The shell is **not** sandboxed — full access by design.
-- Hiding the panel from Command Finder keeps the shell alive so it reappears
-  instantly. Closing the app terminates the shell cleanly.
-- The window resizes as you drag it: rows × cols are recomputed from
-  the font metrics and pushed to the PTY.
-- Standard shortcuts (Ctrl+C, Ctrl+D, Ctrl+L, arrows, Tab, Enter,
-  Backspace) all flow through to the shell as expected.
+- Hiding the terminal keeps the shell alive so it reappears instantly. Typing
+  `exit` closes the shell and removes its tab; closing the app terminates all
+  shells cleanly.
+- The terminal is an opaque bottom overlay over the notes. Its horizontal
+  position and width are fixed; drag its top edge to resize it vertically. The
+  height is saved with the workspace and restored when reopened.
+- The terminal keeps scrollback. Hover it and use the mouse wheel to scroll
+  through output larger than the visible area.
+- Drag across terminal cells to select text. Use **Ctrl+Shift+C** to copy the
+  selection, **Ctrl+Shift+V** or **Shift+Insert** to paste.
+- Standard shortcuts (Ctrl+C, Ctrl+D, Ctrl+L, arrows, Tab, Enter, Backspace)
+  flow through to the shell as expected. Use **Ctrl+Tab** and
+  **Ctrl+Shift+Tab** to switch terminal tabs.
 - While the terminal window is focused, app shortcuts are delivered to the
   terminal instead of the app. Press **F6** to leave terminal focus, then use
   Command Finder or another app shortcut.
