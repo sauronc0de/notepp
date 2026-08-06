@@ -169,6 +169,93 @@ ParseResult parse_friendly(const std::vector<std::string> &tokens)
   return result;
 }
 
+void print_note_summary(std::ostream &output, const Json &note, std::string_view prefix = "- ")
+{
+  const std::string title = note.value("title", note.value("name", std::string{"(untitled)"}));
+  output << prefix << title;
+  if(note.contains("id") && note.at("id").is_string()) output << " [" << note.at("id").get<std::string>() << "]";
+  if(note.contains("path") && note.at("path").is_string()) output << " (" << note.at("path").get<std::string>() << ")";
+  output << '\n';
+}
+
+void print_human_response(std::ostream &output, const std::string &command, const Json &envelope)
+{
+  const bool success = envelope.value("success", envelope.value("ok", false));
+  if(!success)
+  {
+    const Json error = envelope.value("error", Json::object());
+    output << "Error";
+    if(error.is_object() && error.contains("code") && error.at("code").is_string())
+      output << " [" << error.at("code").get<std::string>() << "]";
+    if(error.is_object() && error.contains("message") && error.at("message").is_string())
+      output << ": " << error.at("message").get<std::string>();
+    else if(error.is_string())
+      output << ": " << error.get<std::string>();
+    else
+      output << ": " << error.dump();
+    output << '\n';
+    return;
+  }
+
+  const Json result = envelope.value("result", Json{});
+  if(command == "note.list" && result.is_object() && result.contains("notes") && result.at("notes").is_array())
+  {
+    const auto &notes = result.at("notes");
+    output << "Notes (" << notes.size() << "):\n";
+    for(const auto &note : notes) print_note_summary(output, note);
+    return;
+  }
+  if(result.is_object() && result.contains("headers") && result.at("headers").is_array())
+  {
+    output << "Headers:\n";
+    for(const auto &header : result.at("headers"))
+    {
+      output << "- " << header.value("title", std::string{"(untitled)"});
+      if(header.contains("level")) output << " (level " << header.at("level") << ")";
+      output << '\n';
+    }
+    if(result.contains("note") && result.at("note").is_object())
+    {
+      output << "Note: ";
+      print_note_summary(output, result.at("note"), "");
+    }
+    return;
+  }
+  if(result.is_object() && result.contains("note") && result.at("note").is_object())
+  {
+    print_note_summary(output, result.at("note"), "");
+    if(result.contains("content") && result.at("content").is_string())
+    {
+      const std::string content = result.at("content").get<std::string>();
+      output << content;
+      if(content.empty() || content.back() != '\n') output << '\n';
+    }
+    return;
+  }
+  if(result.is_object() && result.contains("header") && result.at("header").is_object())
+  {
+    const auto &header = result.at("header");
+    output << header.value("title", std::string{"(untitled)"});
+    if(header.contains("level")) output << " (level " << header.at("level") << ")";
+    if(header.contains("offset")) output << " at offset " << header.at("offset");
+    output << '\n';
+    return;
+  }
+  if(result.is_object() && result.contains("name") && result.contains("value"))
+  {
+    output << result.value("name", std::string{"(unnamed)"}) << " = " << result.at("value").dump() << '\n';
+    return;
+  }
+  if(command == "app.capabilities" && result.is_object() && result.contains("commands"))
+  {
+    output << "Available commands:\n";
+    for(const auto &entry : result.at("commands"))
+      if(entry.is_object()) output << "- " << entry.value("name", std::string{"(unnamed)"}) << '\n';
+    return;
+  }
+  output << result.dump(2) << '\n';
+}
+
 ParseResult parse_request(const std::vector<std::string> &tokens)
 {
   if(tokens.empty()) return {Json{}, 2, "missing command"};
@@ -209,7 +296,6 @@ int main(int argc, char **argv)
     if(std::string(argv[i]) == "--json") json_mode = true;
     else tokens.emplace_back(argv[i]);
   }
-  (void)json_mode; // JSON is the protocol output for all command forms.
   const ParseResult parsed = parse_request(tokens);
   if(parsed.error != 0)
   {
@@ -225,8 +311,14 @@ int main(int argc, char **argv)
     const auto envelope = Json::parse(response);
     if(!envelope.contains("success") && !envelope.contains("ok"))
     { std::cerr << "protocol mismatch\n"; return 5; }
-    std::cout << response << '\n';
-    return envelope.value("success", envelope.value("ok", false)) ? 0 : 1;
+    const bool success = envelope.value("success", envelope.value("ok", false));
+    if(json_mode)
+      std::cout << response << '\n';
+    else
+      print_human_response(std::cout,
+                           parsed.request.value("command", parsed.request.value("method", std::string{})),
+                           envelope);
+    return success ? 0 : 1;
   }
   catch(const std::exception &error2)
   {
