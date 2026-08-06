@@ -6,19 +6,24 @@
 
 #include "terminal.hpp"
 #include "terminal_key_map.hpp"
+#include "pty.hpp"
 
 #include <imgui.h>
 #include <vterm.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 
 #if !defined(_WIN32)
 #include <cerrno>
+#include <poll.h>
 #include <sys/wait.h>
 #endif
 
@@ -107,6 +112,76 @@ void test_resize_does_not_crash()
 }
 
 #if !defined(_WIN32)
+std::string read_pty_for(notepp::terminal::PtyBackend &pty, std::chrono::milliseconds duration)
+{
+  std::string output;
+  const auto deadline = std::chrono::steady_clock::now() + duration;
+  std::array<char, 4096> buffer{};
+  while(std::chrono::steady_clock::now() < deadline)
+  {
+    struct pollfd descriptor{pty.readHandle(), POLLIN, 0};
+    const int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now()).count());
+    const int result = ::poll(&descriptor, 1, std::max(1, std::min(remaining, 25)));
+    if(result <= 0 || (descriptor.revents & POLLIN) == 0) continue;
+    const int count = pty.read(buffer.data(), buffer.size());
+    if(count <= 0) break;
+    output.append(buffer.data(), static_cast<std::size_t>(count));
+  }
+  return output;
+}
+
+std::size_t count_occurrences(std::string_view text, std::string_view needle)
+{
+  if(needle.empty()) return 0;
+  std::size_t count = 0;
+  std::size_t offset = 0;
+  while((offset = text.find(needle, offset)) != std::string_view::npos)
+  {
+    ++count;
+    offset += needle.size();
+  }
+  return count;
+}
+
+void test_shell_line_controls_end_to_end()
+{
+  std::unique_ptr<notepp::terminal::PtyBackend> pty(notepp::terminal::createPtyBackend());
+  expect(pty != nullptr, "PTY backend is available for the integration harness");
+  if(pty == nullptr) return;
+
+  const std::filesystem::path cwd = std::filesystem::temp_directory_path();
+  expect(pty->start(cwd, "/bin/bash", 24, 100), "bash starts for the terminal input harness");
+  if(!pty->isRunning()) return;
+
+  (void)read_pty_for(*pty, std::chrono::milliseconds(100));
+  const std::string marker = "NOTEPP_HISTORY_MARKER";
+  (void)pty->write("printf '" + marker + "\\n'\n");
+  std::string output = read_pty_for(*pty, std::chrono::milliseconds(300));
+  expect(output.find(marker) != std::string::npos, "bash executes a baseline command");
+
+  // Bash Readline history: Up recalls the previous command and Enter executes it.
+  (void)pty->write("\x1b[A\r");
+  output = read_pty_for(*pty, std::chrono::milliseconds(300));
+  expect(count_occurrences(output, marker) >= 2, "Up plus Enter recalls and executes history");
+
+  // Bash Readline reverse search: Ctrl+R, query, Enter executes the match.
+  (void)pty->write("\x12" + marker + "\r");
+  output = read_pty_for(*pty, std::chrono::milliseconds(300));
+  expect(count_occurrences(output, marker) >= 2, "Ctrl+R searches and executes a history match");
+
+  const std::filesystem::path completion_file = cwd / "notepp_completion_target";
+  const std::string completion_path = completion_file.string();
+  (void)pty->write("printf 'NOTEPP_TAB_MARKER\\n' > " + completion_path + "\n");
+  (void)read_pty_for(*pty, std::chrono::milliseconds(200));
+  (void)pty->write("cat " + (cwd / "notepp_completion_").string() + "\t\r");
+  output = read_pty_for(*pty, std::chrono::milliseconds(300));
+  expect(output.find("NOTEPP_TAB_MARKER") != std::string::npos, "Tab completes a file name");
+  std::error_code remove_error;
+  std::filesystem::remove(completion_file, remove_error);
+  pty->stop();
+}
+
 void test_natural_shell_exit_is_reaped()
 {
   Terminal t;
@@ -139,16 +214,33 @@ void test_special_key_mapping()
 
   const uint32_t ctrl_c = notepp::terminal_detail::terminalControlCharacterFromImGui(ImGuiKey_C);
   expect(ctrl_c == static_cast<uint32_t>('c'), "Ctrl+C mapping passes printable c to libvterm");
+  const uint32_t ctrl_r = notepp::terminal_detail::terminalControlCharacterFromImGui(ImGuiKey_R);
+  expect(ctrl_r == static_cast<uint32_t>('r'), "Ctrl+R mapping passes printable r to libvterm");
 
   std::string output;
   VTerm *vt = vterm_new(24, 80);
+  // Cursor keys consult the vterm state (unlike literal Tab), so initialize
+  // the same state that Session::start() obtains before forwarding keys.
+  (void)vterm_obtain_state(vt);
   vterm_output_set_callback(vt, captureVtermOutput, &output);
   vterm_keyboard_unichar(vt, ctrl_c, VTERM_MOD_CTRL);
   expect(output == std::string(1, '\x03'), "libvterm emits byte 0x03 for Ctrl+C");
 
   output.clear();
+  vterm_keyboard_unichar(vt, ctrl_r, VTERM_MOD_CTRL);
+  expect(output == std::string(1, '\x12'), "libvterm emits byte 0x12 for Ctrl+R");
+
+  output.clear();
   vterm_keyboard_key(vt, VTERM_KEY_TAB, VTERM_MOD_NONE);
   expect(output == std::string(1, '\t'), "libvterm emits byte 0x09 for Tab completion");
+
+  output.clear();
+  vterm_keyboard_key(vt, VTERM_KEY_LEFT, VTERM_MOD_NONE);
+  expect(output == "\x1b[D", "libvterm emits CSI D for the left arrow");
+
+  output.clear();
+  vterm_keyboard_key(vt, VTERM_KEY_RIGHT, VTERM_MOD_NONE);
+  expect(output == "\x1b[C", "libvterm emits CSI C for the right arrow");
   vterm_free(vt);
 }
 
@@ -236,6 +328,7 @@ int main()
   test_multiple_sessions_are_independent();
   test_resize_does_not_crash();
 #if !defined(_WIN32)
+  test_shell_line_controls_end_to_end();
   test_natural_shell_exit_is_reaped();
 #endif
   test_special_key_mapping();

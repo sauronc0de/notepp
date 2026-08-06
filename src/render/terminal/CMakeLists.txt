@@ -15,6 +15,8 @@ target_link_libraries(terminal
   PUBLIC
     imgui
     vterm
+  PRIVATE
+    SDL2::SDL2
 )
 
 if(UNIX AND NOT APPLE)

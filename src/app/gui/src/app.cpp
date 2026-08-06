@@ -497,6 +497,14 @@ using Json = nlohmann::json;
 
 namespace
 {
+void append_terminal_input_debug(std::string_view line)
+{
+  std::FILE *file = std::fopen("/tmp/notepp-terminal-input.log", "a");
+  if(file == nullptr) return;
+  std::fprintf(file, "[app] %.*s\n", static_cast<int>(line.size()), line.data());
+  std::fclose(file);
+}
+
 constexpr Uint32 kProjectFilesChangedEvent = SDL_USEREVENT + 17;
 constexpr Uint32 kGitSyncCompletedEvent = SDL_USEREVENT + 18;
 
@@ -5112,10 +5120,15 @@ bool App::frame_begin()
 
   // frame_begin runs before NewFrame applies mouse clicks; track the clicked window
   // so a click away from either non-modal dialog immediately releases its shortcuts.
+  // Terminal focus is also resolved during frame_ui(), so use the click target for
+  // key events delivered in the same SDL batch instead of the previous frame's
+  // terminal_.hasFocus() value.
   bool search_dialog_mouse_focus_override_valid = false;
   bool search_dialog_mouse_focus_override = false;
   bool note_switcher_mouse_focus_override_valid = false;
   bool note_switcher_mouse_focus_override = false;
+  bool terminal_mouse_focus_override_valid = false;
+  bool terminal_mouse_focus_override = false;
   const auto search_dialog_contains_window = [](ImGuiWindow *window) {
     if(window == nullptr || ImGui::GetCurrentContext() == nullptr) return false;
     ImGuiWindow *search_dialog = ImGui::FindWindowByName(Lang::t("Search"));
@@ -5133,6 +5146,19 @@ bool App::frame_begin()
   const auto note_switcher_has_keyboard_focus = [&]() {
     if(note_switcher_mouse_focus_override_valid) return note_switcher_mouse_focus_override;
     return GImGui != nullptr && note_switcher_contains_window(GImGui->NavWindow);
+  };
+  const auto terminal_contains_window = [](ImGuiWindow *window) {
+    if(window == nullptr || ImGui::GetCurrentContext() == nullptr) return false;
+    ImGuiWindow *terminal_window = ImGui::FindWindowByName("Terminal##notepp");
+    return terminal_window != nullptr && ImGui::IsWindowWithinBeginStackOf(window, terminal_window);
+  };
+  const auto terminal_has_keyboard_focus = [&]() {
+    if(terminal_mouse_focus_override_valid) return terminal_mouse_focus_override;
+    // The terminal is a separately rendered input surface. When it is
+    // visible, its focus flag may still reflect the previous frame (notably
+    // immediately after opening it from Command Finder); treat it as the
+    // keyboard owner until an explicit click selects another window.
+    return terminal_.hasFocus() || terminal_visible_;
   };
 
   bool had_event = false;
@@ -5152,6 +5178,43 @@ bool App::frame_begin()
     }
 
     had_event = true;
+
+    // Handle the core shell controls before any application/dialog shortcut
+    // branch can consume the SDL key event. Printable text uses SDL_TEXTINPUT,
+    // but arrows, Tab, and Ctrl+R must reach the PTY from SDL_KEYDOWN.
+    if(event.type == SDL_KEYDOWN && terminal_visible_)
+    {
+      append_terminal_input_debug(
+          "keydown sym=" + std::to_string(static_cast<int>(event.key.keysym.sym)) +
+          " mod=" + std::to_string(static_cast<unsigned int>(event.key.keysym.mod)) +
+          " repeat=" + std::to_string(static_cast<int>(event.key.repeat)));
+      const Uint16 terminal_mod = event.key.keysym.mod;
+      const bool terminal_ctrl = (terminal_mod & KMOD_CTRL) != 0;
+      const bool terminal_shift = (terminal_mod & KMOD_SHIFT) != 0;
+      const bool terminal_alt = (terminal_mod & KMOD_ALT) != 0;
+      const SDL_Keycode terminal_sym = event.key.keysym.sym;
+      if(!terminal_alt && ((terminal_sym == SDLK_UP) || (terminal_sym == SDLK_DOWN) ||
+                           (terminal_sym == SDLK_LEFT) || (terminal_sym == SDLK_RIGHT) ||
+                           (terminal_sym == SDLK_TAB) ||
+                           (terminal_ctrl && terminal_sym == SDLK_r)))
+      {
+        append_terminal_input_debug("dispatch special key");
+        if(terminal_ctrl && terminal_sym == SDLK_r)
+          terminal_.write("\x12");
+        else if(terminal_sym == SDLK_TAB)
+          terminal_.sendKey(ImGuiKey_Tab, false, terminal_shift, false);
+        else if(terminal_sym == SDLK_UP)
+          terminal_.sendKey(ImGuiKey_UpArrow, false, terminal_shift, false);
+        else if(terminal_sym == SDLK_DOWN)
+          terminal_.sendKey(ImGuiKey_DownArrow, false, terminal_shift, false);
+        else if(terminal_sym == SDLK_LEFT)
+          terminal_.sendKey(ImGuiKey_LeftArrow, false, terminal_shift, false);
+        else
+          terminal_.sendKey(ImGuiKey_RightArrow, false, terminal_shift, false);
+        continue;
+      }
+    }
+
     if(event.type == SDL_DROPFILE && event.drop.file)
     {
       int mx = 0, my = 0;
@@ -5218,11 +5281,13 @@ bool App::frame_begin()
       search_dialog_mouse_focus_override = search_dialog_contains_window(hovered_window);
       note_switcher_mouse_focus_override_valid = true;
       note_switcher_mouse_focus_override = note_switcher_contains_window(hovered_window);
+      terminal_mouse_focus_override_valid = true;
+      terminal_mouse_focus_override = terminal_visible_ && terminal_contains_window(hovered_window);
       continue;
     }
 
     if(event.type == SDL_KEYDOWN &&
-       terminal_visible_ && terminal_.hasFocus() &&
+       terminal_visible_ && terminal_has_keyboard_focus() &&
        event.key.keysym.sym == SDLK_F6)
     {
       terminal_.releaseFocus();
@@ -5233,7 +5298,7 @@ bool App::frame_begin()
     if(event.type == SDL_KEYDOWN &&
        (note_header_create_name_visible_ || note_color_set_visible_) &&
        !command_finder_window_visible_ &&
-       !(terminal_visible_ && terminal_.hasFocus()))
+       !(terminal_visible_ && terminal_has_keyboard_focus()))
     {
       if(event.key.keysym.sym == SDLK_ESCAPE)
       {
@@ -5265,7 +5330,7 @@ bool App::frame_begin()
     // These dialogs own application shortcuts while they are visible. Forward
     // unhandled keys to ImGui so their filter fields still accept text editing.
     if(event.type == SDL_KEYDOWN &&
-       !(terminal_visible_ && terminal_.hasFocus()) &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
        (command_finder_window_visible_ || editor_actions_window_visible_))
     {
       if(event.key.keysym.sym == SDLK_ESCAPE)
@@ -5316,7 +5381,7 @@ bool App::frame_begin()
     if(event.type == SDL_KEYDOWN &&
        event.key.keysym.sym == SDLK_ESCAPE &&
        (search_window_visible_ || note_switcher_window_visible_) &&
-       !(terminal_visible_ && terminal_.hasFocus()))
+       !(terminal_visible_ && terminal_has_keyboard_focus()))
     {
       request_close_search_ = search_window_visible_;
       request_close_note_switcher_ = note_switcher_window_visible_;
@@ -5328,7 +5393,7 @@ bool App::frame_begin()
        (event.key.keysym.mod & KMOD_CTRL) != 0 &&
        (event.key.keysym.mod & KMOD_SHIFT) == 0 &&
        event.key.keysym.sym == SDLK_e &&
-       !(terminal_visible_ && terminal_.hasFocus()))
+       !(terminal_visible_ && terminal_has_keyboard_focus()))
     {
       request_open_note_switcher_ = true;
       request_close_search_ = true;
@@ -5338,7 +5403,7 @@ bool App::frame_begin()
     // The search input remains focused while the result highlight moves, so
     // consume navigation keys before ImGui turns them into text-cursor motion.
     if(search_window_visible_ && search_dialog_has_keyboard_focus() &&
-       !(terminal_visible_ && terminal_.hasFocus()) &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
        event.type == SDL_KEYDOWN)
     {
       if(event.key.keysym.sym == SDLK_UP)
@@ -5361,7 +5426,7 @@ bool App::frame_begin()
     // The switcher's input remains focused while the result highlight moves, so
     // consume navigation keys before ImGui turns them into text-cursor motion.
     if(note_switcher_window_visible_ && note_switcher_has_keyboard_focus() &&
-       !(terminal_visible_ && terminal_.hasFocus()) &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
        event.type == SDL_KEYDOWN)
     {
       if(event.key.keysym.sym == SDLK_UP)
@@ -5385,7 +5450,7 @@ bool App::frame_begin()
     // While editing a note, swallow editor control shortcuts before ImGui sees them
     // so our grouped history handles them instead of InputText's per-character stack.
     if(editing_mode_ &&
-       !(terminal_visible_ && terminal_.hasFocus()) &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
        event.type == SDL_KEYDOWN)
     {
       const SDL_Keycode edit_key_sym = event.key.keysym.sym;
@@ -5489,8 +5554,95 @@ bool App::frame_begin()
     const Uint16 key_mod = is_keydown ? event.key.keysym.mod : static_cast<Uint16>(KMOD_NONE);
     const bool ctrl_down = (key_mod & KMOD_CTRL) != 0;
     const bool shift_down = (key_mod & KMOD_SHIFT) != 0;
+    const bool alt_down = (key_mod & KMOD_ALT) != 0;
     const bool undo_shortcut = ctrl_down && !shift_down && key_sym == SDLK_z;
     const bool redo_shortcut = ctrl_down && (key_sym == SDLK_y || (shift_down && key_sym == SDLK_z));
+
+    // Forward terminal keydowns at the SDL event boundary. The terminal is a
+    // custom renderer, not an ImGui input widget; polling IsKeyPressed later
+    // in frame_ui() loses events when focus changes in the same frame and does
+    // not provide reliable shell key repeat.
+    if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_has_keyboard_focus())
+    {
+      const bool clipboard_shortcut =
+          (!alt_down && ctrl_down && shift_down && (key_sym == SDLK_c || key_sym == SDLK_v)) ||
+          (!alt_down && ctrl_down && !shift_down && key_sym == SDLK_INSERT) ||
+          (!alt_down && !ctrl_down && shift_down && key_sym == SDLK_INSERT);
+      if(!clipboard_shortcut)
+      {
+        ImGuiKey terminal_key = ImGuiKey_None;
+        switch(key_sym)
+        {
+        case SDLK_TAB: terminal_key = ImGuiKey_Tab; break;
+        case SDLK_LEFT: terminal_key = ImGuiKey_LeftArrow; break;
+        case SDLK_RIGHT: terminal_key = ImGuiKey_RightArrow; break;
+        case SDLK_UP: terminal_key = ImGuiKey_UpArrow; break;
+        case SDLK_DOWN: terminal_key = ImGuiKey_DownArrow; break;
+        case SDLK_PAGEUP: terminal_key = ImGuiKey_PageUp; break;
+        case SDLK_PAGEDOWN: terminal_key = ImGuiKey_PageDown; break;
+        case SDLK_HOME: terminal_key = ImGuiKey_Home; break;
+        case SDLK_END: terminal_key = ImGuiKey_End; break;
+        case SDLK_INSERT: terminal_key = ImGuiKey_Insert; break;
+        case SDLK_DELETE: terminal_key = ImGuiKey_Delete; break;
+        case SDLK_BACKSPACE: terminal_key = ImGuiKey_Backspace; break;
+        case SDLK_RETURN: terminal_key = ImGuiKey_Enter; break;
+        case SDLK_KP_ENTER: terminal_key = ImGuiKey_KeypadEnter; break;
+        case SDLK_ESCAPE: terminal_key = ImGuiKey_Escape; break;
+        case SDLK_F1: terminal_key = ImGuiKey_F1; break;
+        case SDLK_F2: terminal_key = ImGuiKey_F2; break;
+        case SDLK_F3: terminal_key = ImGuiKey_F3; break;
+        case SDLK_F4: terminal_key = ImGuiKey_F4; break;
+        case SDLK_F5: terminal_key = ImGuiKey_F5; break;
+        case SDLK_F6: terminal_key = ImGuiKey_F6; break;
+        case SDLK_F7: terminal_key = ImGuiKey_F7; break;
+        case SDLK_F8: terminal_key = ImGuiKey_F8; break;
+        case SDLK_F9: terminal_key = ImGuiKey_F9; break;
+        case SDLK_F10: terminal_key = ImGuiKey_F10; break;
+        case SDLK_F11: terminal_key = ImGuiKey_F11; break;
+        case SDLK_F12: terminal_key = ImGuiKey_F12; break;
+        default:
+          if(key_sym >= SDLK_a && key_sym <= SDLK_z)
+            terminal_key = static_cast<ImGuiKey>(ImGuiKey_A + (key_sym - SDLK_a));
+          break;
+        }
+        if(terminal_key != ImGuiKey_None)
+        {
+          const bool alt = (key_mod & KMOD_ALT) != 0;
+          if(ctrl_down && !alt && key_sym >= SDLK_a && key_sym <= SDLK_z)
+          {
+            const char control = static_cast<char>(key_sym - SDLK_a + 1);
+            terminal_.write(std::string_view(&control, 1));
+          }
+          else if(!ctrl_down && !alt)
+          {
+            switch(key_sym)
+            {
+            case SDLK_TAB: terminal_.write(shift_down ? "\x1b[Z" : "\t"); break;
+            case SDLK_LEFT: terminal_.write("\x1b[D"); break;
+            case SDLK_RIGHT: terminal_.write("\x1b[C"); break;
+            case SDLK_UP: terminal_.write("\x1b[A"); break;
+            case SDLK_DOWN: terminal_.write("\x1b[B"); break;
+            case SDLK_PAGEUP: terminal_.write("\x1b[5~"); break;
+            case SDLK_PAGEDOWN: terminal_.write("\x1b[6~"); break;
+            case SDLK_HOME: terminal_.write("\x1b[H"); break;
+            case SDLK_END: terminal_.write("\x1b[F"); break;
+            case SDLK_DELETE: terminal_.write("\x1b[3~"); break;
+            case SDLK_BACKSPACE: terminal_.write("\x7f"); break;
+            case SDLK_RETURN:
+            case SDLK_KP_ENTER: terminal_.write("\r"); break;
+            case SDLK_ESCAPE: terminal_.write("\x1b"); break;
+            default: terminal_.sendKey(terminal_key, false, shift_down, false); break;
+            }
+          }
+          else
+          {
+            terminal_.sendKey(terminal_key, ctrl_down, shift_down, alt);
+          }
+        }
+      }
+      continue;
+    }
+
     // Ctrl+Shift+P opens the workspace command finder. A focused terminal
     // remains an isolated input surface and receives this chord normally.
     if(event.type == SDL_KEYDOWN &&
@@ -5498,14 +5650,14 @@ bool App::frame_begin()
        ctrl_down &&
        shift_down &&
        event.key.keysym.sym == SDLK_p &&
-       !(terminal_visible_ && terminal_.hasFocus()))
+       !(terminal_visible_ && terminal_has_keyboard_focus()))
     {
       request_open_command_finder_ = true;
       continue;
     }
     // The focused terminal owns all other key presses, including controls
     // that are also workspace shortcuts (for example Ctrl+F and Ctrl+L).
-    if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_.hasFocus())
+    if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_has_keyboard_focus())
       continue;
     if(event.type == SDL_KEYDOWN && (command_finder_window_visible_ || editor_actions_window_visible_))
       continue;

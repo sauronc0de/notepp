@@ -8,11 +8,13 @@
 
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <SDL.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -25,6 +27,14 @@
 
 namespace
 {
+
+void append_terminal_input_debug(std::string_view line)
+{
+  std::FILE *file = std::fopen("/tmp/notepp-terminal-input.log", "a");
+  if(file == nullptr) return;
+  std::fprintf(file, "[terminal] %.*s\n", static_cast<int>(line.size()), line.data());
+  std::fclose(file);
+}
 
 constexpr std::size_t kMaxPendingOutputBytes = 4U * 1024U * 1024U;
 
@@ -80,11 +90,23 @@ ImU32 colorToU32(const VTermColor &col, const VTermColor &defaultFg, const VTerm
 
 std::string shellCommand()
 {
-  if(const char *shell = std::getenv("SHELL"); shell != nullptr && *shell != '\0') return shell;
+  if(const char *shell = std::getenv("SHELL"); shell != nullptr && *shell != '\0')
+  {
+#if !defined(_WIN32)
+    const std::string configured(shell);
+    const std::string name = std::filesystem::path(configured).filename().string();
+    // /bin/sh and dash intentionally provide no Readline history, reverse
+    // search, or completion. Prefer Bash for the embedded interactive
+    // terminal so its controls behave like a normal desktop terminal.
+    if((name == "sh" || name == "dash") && std::filesystem::exists("/bin/bash"))
+      return "/bin/bash";
+#endif
+    return shell;
+  }
 #if defined(_WIN32)
   return {};
 #else
-  return "/bin/sh";
+  return std::filesystem::exists("/bin/bash") ? "/bin/bash" : "/bin/sh";
 #endif
 }
 
@@ -258,22 +280,77 @@ struct Terminal::Impl
 
     void write(std::string_view bytes)
     {
-      if(pty == nullptr || !isRunning()) return;
+      if(pty == nullptr || !isRunning())
+      {
+        append_terminal_input_debug("write skipped: no running PTY");
+        return;
+      }
       std::lock_guard<std::mutex> lock(write_mutex);
-      pty->write(bytes);
+      const bool success = pty->write(bytes);
+      append_terminal_input_debug(
+          "PTY write size=" + std::to_string(bytes.size()) +
+          " result=" + (success ? std::string("ok") : std::string("failed")));
     }
 
     void sendKey(int imguiKey, bool ctrl, bool shift, bool alt)
     {
       if(vt == nullptr || !isRunning()) return;
 
+      // Shell editing controls are byte-oriented. Send them directly through
+      // the PTY so they do not depend on the emulator's keyboard state.
+      if(ctrl && !alt)
+      {
+        const std::uint32_t character = notepp::terminal_detail::terminalControlCharacterFromImGui(imguiKey);
+        if(character != 0)
+        {
+          const char byte = static_cast<char>(character & 0x1FU);
+          write(std::string_view(&byte, 1));
+          return;
+        }
+      }
       VTermModifier modifier = VTERM_MOD_NONE;
       if(shift) modifier = static_cast<VTermModifier>(modifier | VTERM_MOD_SHIFT);
       if(alt) modifier = static_cast<VTermModifier>(modifier | VTERM_MOD_ALT);
       if(ctrl) modifier = static_cast<VTermModifier>(modifier | VTERM_MOD_CTRL);
 
       const VTermKey key = notepp::terminal_detail::terminalKeyFromImGui(imguiKey);
-      if(key != VTERM_KEY_NONE) vterm_keyboard_key(vt, key, modifier);
+      if(key != VTERM_KEY_NONE)
+      {
+        vterm_keyboard_key(vt, key, modifier);
+        return;
+      }
+
+      // Printable control keys use a separate libvterm entry point. Keep this
+      // in Session::sendKey so every caller (including the public Terminal
+      // facade) follows the same PTY path as special keys.
+      if(ctrl && !alt)
+      {
+        const std::uint32_t character = notepp::terminal_detail::terminalControlCharacterFromImGui(imguiKey);
+        if(character != 0) vterm_keyboard_unichar(vt, character, VTERM_MOD_CTRL);
+      }
+    }
+
+    void copyScreenToClipboard() const
+    {
+      if(screen == nullptr) return;
+
+      const VTermRect rect{0, 0, rows, cols};
+      const std::size_t length = vterm_screen_get_text(screen, nullptr, 0, rect);
+      std::string text(length, '\0');
+      if(length != 0)
+      {
+        const std::size_t copied = vterm_screen_get_text(screen, text.data(), text.size(), rect);
+        text.resize(copied);
+      }
+      (void)SDL_SetClipboardText(text.c_str());
+    }
+
+    void pasteFromClipboard()
+    {
+      char *text = SDL_GetClipboardText();
+      if(text == nullptr) return;
+      write(text);
+      SDL_free(text);
     }
 
     SessionId id;
@@ -400,6 +477,10 @@ struct Terminal::Impl
     session.setFocused(windowFocused);
     if(!windowFocused || !acceptKeyboardInput || !session.isRunning()) return false;
 
+    // This is a custom terminal widget rather than ImGui::InputText, so the
+    // SDL backend cannot infer that it needs composed text, IME input, and
+    // paste text. Request SDL text events while the terminal owns focus.
+    SDL_StartTextInput();
     if(!pendingText.empty()) session.write(pendingText);
 
     const ImGuiIO &io = ImGui::GetIO();
@@ -407,31 +488,17 @@ struct Terminal::Impl
     const bool shiftDown = io.KeyShift;
     const bool altDown = io.KeyAlt;
 
-    // Terminal tabs own Ctrl+W; do not also forward it as the shell's ^W.
-    if(ctrlDown && !shiftDown && !altDown && ImGui::IsKeyPressed(ImGuiKey_W, false))
-      return true;
+    const bool clipboardCopy = !altDown &&
+                               ((ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_C, false)) ||
+                                (ctrlDown && !shiftDown && ImGui::IsKeyPressed(ImGuiKey_Insert, false)));
+    const bool clipboardPaste = !altDown &&
+                                ((ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_V, false)) ||
+                                 (!ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_Insert, false)));
+    if(clipboardCopy)
+      session.copyScreenToClipboard();
+    else if(clipboardPaste)
+      session.pasteFromClipboard();
 
-    // Plain Tab and Shift+Tab belong to the shell for completion. Ctrl+Tab
-    // remains reserved for Dear ImGui's global window navigation.
-    if(!ctrlDown && ImGui::IsKeyPressed(ImGuiKey_Tab, false))
-      session.sendKey(ImGuiKey_Tab, false, shiftDown, altDown);
-    for(int key = ImGuiKey_LeftArrow; key <= ImGuiKey_F12; ++key)
-    {
-      if(ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false))
-        session.sendKey(key, ctrlDown, shiftDown, altDown);
-    }
-    if(ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
-      session.sendKey(ImGuiKey_KeypadEnter, ctrlDown, shiftDown, altDown);
-
-    if(ctrlDown && !altDown)
-    {
-      for(int key = ImGuiKey_A; key <= ImGuiKey_Z; ++key)
-      {
-        if(!ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false)) continue;
-        const std::uint32_t letter = notepp::terminal_detail::terminalControlCharacterFromImGui(key);
-        vterm_keyboard_unichar(session.vt, letter, VTERM_MOD_CTRL);
-      }
-    }
     return false;
   }
 
