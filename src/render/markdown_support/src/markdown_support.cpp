@@ -319,6 +319,132 @@ void render_mermaid_pie_chart(const MermaidPieChart &chart, int id)
   ImGui::PopID();
 }
 
+struct KanbanEventBinding
+{
+  std::string diagram_id;
+  std::string column_id;
+  std::string command;
+};
+
+static std::vector<KanbanEventBinding> g_kanban_event_bindings;
+static std::vector<std::string> g_queued_kanban_commands;
+
+static bool parse_event_string(std::string_view text, std::size_t &pos, std::string &out)
+{
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos] != '"') return false;
+  ++pos;
+  out.clear();
+  while(pos < text.size())
+  {
+    const char c = text[pos++];
+    if(c == '"') return true;
+    if(c == '\\' && pos < text.size())
+    {
+      const char escaped = text[pos++];
+      switch(escaped)
+      {
+      case 'n': out.push_back('\n'); break;
+      case 'r': out.push_back('\r'); break;
+      case 't': out.push_back('\t'); break;
+      default: out.push_back(escaped); break;
+      }
+    }
+    else
+      out.push_back(c);
+  }
+  return false;
+}
+
+static bool parse_kanban_event_at(std::string_view text, std::size_t start,
+                                  KanbanEventBinding &out)
+{
+  constexpr std::string_view name = "kanban_on_enter";
+  std::size_t pos = start + name.size();
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != '(') return false;
+  std::string diagram_id;
+  std::string column_id;
+  std::string command;
+  if(!parse_event_string(text, pos, diagram_id)) return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != ',') return false;
+  if(!parse_event_string(text, pos, column_id)) return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != ',') return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  constexpr std::string_view command_name = "command";
+  if(text.substr(pos, command_name.size()) != command_name) return false;
+  pos += command_name.size();
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != '(') return false;
+  if(!parse_event_string(text, pos, command)) return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != ')') return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos >= text.size() || text[pos++] != ')') return false;
+  while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
+  if(pos != text.size()) return false;
+  out = {std::move(diagram_id), std::move(column_id), std::move(command)};
+  return true;
+}
+
+static void index_kanban_events(std::string_view markdown)
+{
+  g_kanban_event_bindings.clear();
+  std::size_t pos = 0;
+  while(pos < markdown.size())
+  {
+    const std::size_t line_end = markdown.find('\n', pos);
+    const std::size_t end = line_end == std::string_view::npos ? markdown.size() : line_end;
+    if(StringUtils::trim(markdown.substr(pos, end - pos)) == "```ui")
+    {
+      std::size_t scan = line_end == std::string_view::npos ? markdown.size() : line_end + 1;
+      const std::size_t body_start = scan;
+      while(scan < markdown.size())
+      {
+        const std::size_t next_end = markdown.find('\n', scan);
+        const std::size_t next = next_end == std::string_view::npos ? markdown.size() : next_end;
+        if(StringUtils::trim(markdown.substr(scan, next - scan)) == "```")
+        {
+          const std::string_view body = markdown.substr(body_start, scan - body_start);
+          constexpr std::string_view event_name = "kanban_on_enter";
+          std::size_t body_pos = 0;
+          while(body_pos < body.size())
+          {
+            const std::size_t body_end = body.find('\n', body_pos);
+            const std::size_t body_line_end = body_end == std::string_view::npos ? body.size() : body_end;
+            const std::string_view raw_line = body.substr(body_pos, body_line_end - body_pos);
+            const std::string_view line = StringUtils::trim(raw_line);
+            if(StringUtils::starts_with(line, event_name))
+            {
+              const std::size_t leading = raw_line.find_first_not_of(" \t\r");
+              const std::size_t found = body_pos + (leading == std::string_view::npos ? 0 : leading);
+              KanbanEventBinding binding;
+              if(parse_kanban_event_at(body, found, binding))
+                g_kanban_event_bindings.push_back(std::move(binding));
+            }
+            body_pos = body_end == std::string_view::npos ? body.size() : body_end + 1;
+          }
+          pos = next_end == std::string_view::npos ? markdown.size() : next_end + 1;
+          break;
+        }
+        scan = next_end == std::string_view::npos ? markdown.size() : next_end + 1;
+      }
+      if(scan >= markdown.size() && pos <= end) pos = markdown.size();
+      continue;
+    }
+    pos = line_end == std::string_view::npos ? markdown.size() : line_end + 1;
+  }
+}
+
+static void on_kanban_drop(std::string_view diagram_id, std::string_view column_id)
+{
+  for(const KanbanEventBinding &binding : g_kanban_event_bindings)
+    if(binding.diagram_id == diagram_id && binding.column_id == column_id)
+      g_queued_kanban_commands.push_back(binding.command);
+}
+
 static std::string kanban_reference_title(std::string_view href)
 {
   return MarkdownView::resolve_link_title(href);
@@ -2024,6 +2150,10 @@ std::string last_persistence_error()
 
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown)
 {
+  index_kanban_events(markdown);
+  g_queued_kanban_commands.clear();
+  MermaidDiagrams::set_kanban_drop_callback(on_kanban_drop);
+
   PreviewRenderResult result;
   bool checkbox_changed = false;
   std::vector<TableReplacement> table_replacements;
@@ -2548,6 +2678,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   // two `kanban` headers stacked on top of each other (which the next
   // re-render then collapses into a single "kanban" column holding all
   // cards, visibly corrupting the board).
+  for(const std::string &command : g_queued_kanban_commands)
+    MarkdownWidgets::execute_terminal_command(command);
+  g_queued_kanban_commands.clear();
+
   if(MermaidDiagrams::g_pending_edit.active())
   {
     auto &pe = MermaidDiagrams::g_pending_edit;

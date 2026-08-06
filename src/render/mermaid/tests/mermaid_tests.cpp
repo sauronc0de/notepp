@@ -421,16 +421,26 @@ void test_kanban_markdown_note_links()
 {
   const std::string src =
       "kanban\n"
+      "%% notepp-id: tasks\n"
       "  todo[Todo]\n"
       "    c1[[Visible label](create-mermaid-action)]\n"
       "    c2[[](notepp-cli.md#notepp-agent-commands)]\n";
   md::KanbanDiagram d;
   expect_true(md::parse_kanban(src, d), "kanban note links parse");
+  expect_true(d.notepp_id == "tasks", "kanban notepp id parsed");
   expect_eq_size(d.columns[0].cards.size(), 2, "two linked cards");
   expect_true(d.columns[0].cards[0].label == "[Visible label](create-mermaid-action)",
               "linked card label preserved");
   expect_true(d.columns[0].cards[1].label == "[](notepp-cli.md#notepp-agent-commands)",
               "empty linked card label preserved");
+}
+
+void test_kanban_note_id_before_header()
+{
+  md::KanbanDiagram d;
+  expect_true(md::parse_kanban("%% notepp-id: tasks\nkanban\n  done[Done]\n", d),
+              "notepp id before header parses");
+  expect_true(d.notepp_id == "tasks", "notepp id before header is preserved");
 }
 
 void test_kanban_missing_header()
@@ -862,6 +872,7 @@ int main()
   test_block_missing_header();
   test_kanban_basic_valid();
   test_kanban_markdown_note_links();
+  test_kanban_note_id_before_header();
   test_kanban_missing_header();
   test_kanban_user_content_roundtrip();
   test_kanban_user_content_convention();

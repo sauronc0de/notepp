@@ -38,6 +38,9 @@ void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);
 void set_terminal_command_handler(TerminalCommandHandler handler);
+// Dispatch a command through the configured terminal handler. Used by
+// interactive diagram events after the current ImGui render pass completes.
+void execute_terminal_command(std::string_view command);
 std::string last_persistence_error();
 void reset_persistence_state();
 

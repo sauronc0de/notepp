@@ -408,6 +408,7 @@ struct KanbanCol
 };
 struct KanbanDiagram
 {
+  std::string notepp_id;
   std::vector<KanbanCol> columns;
 };
 bool parse_kanban(std::string_view src, KanbanDiagram &out);
@@ -415,8 +416,10 @@ void render_kanban(const KanbanDiagram &d, int id);
 
 using KanbanReferenceTitleCallback = std::string (*)(std::string_view href);
 using KanbanReferenceHoverCallback = bool (*)(std::string_view href);
+using KanbanDropCallback = void (*)(std::string_view diagram_id, std::string_view column_id);
 void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
                                     KanbanReferenceHoverCallback hover_callback);
+void set_kanban_drop_callback(KanbanDropCallback callback);
 
 // ── Architecture ─────────────────────────────────────────────────────────────
 struct ArchService

@@ -120,6 +120,11 @@ bool parse_kanban(std::string_view src, KanbanDiagram &out)
   while(L.next(line, indent))
   {
     std::string ll = lc(line);
+    if(line.size() >= 13 && line.substr(0, 13) == "%% notepp-id:")
+    {
+      out.notepp_id = std::string(tr(line.substr(13)));
+      continue;
+    }
     if(!header)
     {
       if(sw(ll, "kanban"))
@@ -131,6 +136,7 @@ bool parse_kanban(std::string_view src, KanbanDiagram &out)
     }
     if(line == "{" || line == "}") continue;
     if(!line.empty() && line.front() == '@') continue;
+    if(line.size() >= 2 && line.substr(0, 2) == "%%") continue;
     std::string_view item_part = line;
     std::string desc;
     std::size_t rb = line.rfind(']');

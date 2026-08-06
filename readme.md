@@ -46,6 +46,9 @@ At build time, this root README is embedded in the application. On a first run w
     - [Full Examples](#138-full-examples)
 14. [Reactive Diagrams (ui-mermaid)](#14-reactive-diagrams-ui-mermaid)
 15. [Mermaid Diagrams](#15-mermaid-diagrams)
+    - [Kanban Board](#1518-kanban-board)
+    - [Linked-note cards](#linked-note-cards)
+    - [Mermaid event commands](#mermaid-event-commands)
     - [Diagram families](#15-mermaid-diagrams) — flowcharts, sequence/class/state diagrams, charts, planning, and architecture
 16. [Embedded Terminal](#16-embedded-terminal)
 
@@ -1582,6 +1585,53 @@ kanban
     t5[Deploy to staging]
 ```
 ````
+
+---
+
+#### Linked-note cards
+
+A card label can be a standard Markdown note reference. The reference is kept as plain Markdown in the editor and becomes an interactive card in preview mode:
+
+````markdown
+```mermaid
+kanban
+  todo[To Do]
+    c1[Read the guide](notepp-cli.md)
+    c2[Agent commands](notepp-cli.md#notepp-agent-commands)
+    c3[](notepp-cli.md#notepp-agent-commands)
+```
+````
+
+- A non-empty reference label is displayed as the card label.
+- An empty label displays the referenced note name or heading title.
+- Hovering a linked card shows a preview of the referenced note or heading instead of the normal card description.
+- In preview mode, drag a note from the **Explorer** onto a Kanban column to automatically create an empty-label reference such as `[](notepp-cli.md)`.
+- Moving or editing cards preserves the Markdown reference in the note source.
+
+#### Mermaid event commands
+
+Give a Mermaid diagram a Notepp ID with a comment. Then declare one or more event handlers in any fenced `ui` block in the same note:
+
+````markdown
+```mermaid
+%% notepp-id: tasks
+kanban
+  todo[To Do]
+    task1[Write documentation]
+  progress[In Progress]
+  done[Done]
+```
+
+```ui
+kanban_on_enter(
+  "tasks",
+  "done",
+  command("echo Task completed")
+)
+```
+````
+
+`kanban_on_enter("diagram-id", "column-id", command("..."))` runs whenever a card is dropped into the matching column, including reordering within that column. Multiple matching handlers run in source order. Commands use Notepp's embedded terminal behavior and are sent to the terminal after the current Kanban interaction completes.
 
 ---
 

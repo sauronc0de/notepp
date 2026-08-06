@@ -67,6 +67,11 @@ void set_terminal_command_handler(TerminalCommandHandler handler)
   g_terminal_command_handler = std::move(handler);
 }
 
+void execute_terminal_command(std::string_view command)
+{
+  if(g_terminal_command_handler) g_terminal_command_handler(command);
+}
+
 std::string last_persistence_error()
 {
   std::string combined;
@@ -1689,7 +1694,8 @@ bool parse_statement_line(std::string_view line, size_t line_offset, size_t line
     else
     {
       stmt.kind = Statement::Kind::Declaration;
-      if(stmt.args.size() != 1) stmt.error = "variable declarations take exactly one argument";
+      if(stmt.name != "kanban_on_enter" && stmt.args.size() != 1)
+        stmt.error = "variable declarations take exactly one argument";
     }
 
     row.statements.push_back(std::move(stmt));
@@ -1775,6 +1781,13 @@ ParsedBlock parse_block(std::string_view body)
     for(const Statement &stmt : row.statements)
     {
       if(stmt.kind == Statement::Kind::Error && !stmt.error.empty()) block.errors.push_back(stmt.error);
+      if(stmt.kind == Statement::Kind::Declaration && stmt.name == "kanban_on_enter")
+      {
+        // Mermaid event declarations are indexed by markdown_support and are
+        // not variables. Keep them out of the declaration table so multiple
+        // handlers do not produce duplicate-variable errors.
+        continue;
+      }
       if(stmt.kind == Statement::Kind::Declaration && stmt.error.empty())
       {
         VariableDecl decl;

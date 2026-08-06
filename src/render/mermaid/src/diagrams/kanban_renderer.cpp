@@ -22,12 +22,18 @@ namespace MermaidDiagrams
 
 static KanbanReferenceTitleCallback g_kanban_reference_title = nullptr;
 static KanbanReferenceHoverCallback g_kanban_reference_hover = nullptr;
+static KanbanDropCallback g_kanban_drop_callback = nullptr;
 
 void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
                                     KanbanReferenceHoverCallback hover_callback)
 {
   g_kanban_reference_title = title_callback;
   g_kanban_reference_hover = hover_callback;
+}
+
+void set_kanban_drop_callback(KanbanDropCallback callback)
+{
+  g_kanban_drop_callback = callback;
 }
 
 namespace kanbanrender
@@ -149,6 +155,7 @@ static std::string serialize_kanban(const KanbanDiagram &d)
 {
   std::ostringstream s;
   s << "kanban\n";
+  if(!d.notepp_id.empty()) s << "%% notepp-id: " << d.notepp_id << "\n";
   for(auto &col : d.columns)
   {
     s << "  " << col.id << "[" << col.label << "]\n";
@@ -309,7 +316,8 @@ void render_kanban(const KanbanDiagram &d, int id)
       }
   }
 
-  // Explorer publishes a separate payload so linking a note never moves it.
+  // Explorer publishes the note-move payload with a reference alongside the
+  // indices, so linking a note never moves it and uses the same drag source.
   // The canvas item covers the columns, therefore the mouse position identifies
   // the destination column without adding invisible items over every card.
   if(kb_hovered && !es.drag_active && ImGui::BeginDragDropTarget())
@@ -339,6 +347,8 @@ void render_kanban(const KanbanDiagram &d, int id)
           card.label = "[](" + href + ")";
           nd.columns[drop_col].cards.push_back(std::move(card));
           g_pending_edit = {id, serialize_kanban(nd)};
+          if(g_kanban_drop_callback != nullptr)
+            g_kanban_drop_callback(d.notepp_id, nd.columns[drop_col].id);
         }
       }
     }
@@ -417,6 +427,8 @@ void render_kanban(const KanbanDiagram &d, int id)
         ins = std::max(0, std::min(ins, static_cast<int>(nd.columns[es.drop_ci].cards.size())));
         nd.columns[es.drop_ci].cards.insert(nd.columns[es.drop_ci].cards.begin() + ins, moved);
         g_pending_edit = {id, serialize_kanban(nd)};
+        if(g_kanban_drop_callback != nullptr)
+          g_kanban_drop_callback(d.notepp_id, nd.columns[es.drop_ci].id);
       }
       es.drag_active = false;
       es.drag_ci = -1;
