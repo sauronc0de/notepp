@@ -363,7 +363,7 @@ static bool parse_event_string(std::string_view text, std::size_t &pos, std::str
 }
 
 static bool parse_kanban_event_at(std::string_view text, std::size_t start,
-                                  KanbanEventBinding &out)
+                                  KanbanEventBinding &out, std::size_t &end_pos)
 {
   constexpr std::string_view name = "kanban_on_enter";
   std::size_t pos = start + name.size();
@@ -390,7 +390,7 @@ static bool parse_kanban_event_at(std::string_view text, std::size_t start,
   while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
   if(pos >= text.size() || text[pos++] != ')') return false;
   while(pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
-  if(pos != text.size()) return false;
+  end_pos = pos;
   out = {std::move(diagram_id), std::move(column_id), std::move(command)};
   return true;
 }
@@ -427,7 +427,8 @@ static void index_kanban_events(std::string_view markdown)
               const std::size_t leading = raw_line.find_first_not_of(" \t\r");
               const std::size_t found = body_pos + (leading == std::string_view::npos ? 0 : leading);
               KanbanEventBinding binding;
-              if(parse_kanban_event_at(body, found, binding))
+              std::size_t event_end = found;
+              if(parse_kanban_event_at(body, found, binding, event_end))
                 g_kanban_event_bindings.push_back(std::move(binding));
             }
             body_pos = body_end == std::string_view::npos ? body.size() : body_end + 1;

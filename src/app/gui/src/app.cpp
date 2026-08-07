@@ -2018,7 +2018,10 @@ App::App(AppConfig config)
         }
 
         bool found_id = false;
-        const std::string href_path = std::filesystem::path(reference).lexically_normal().generic_string();
+        const std::filesystem::path reference_path(reference);
+        const std::filesystem::path requested_path =
+            (reference_path.is_absolute() ? reference_path : config_.dataPath / reference_path)
+                .lexically_normal();
         for(const auto &folder : folders_)
           for(const auto &note : folder.notes)
           {
@@ -2029,18 +2032,10 @@ App::App(AppConfig config)
               break;
             }
             const std::filesystem::path stored_path(note.path);
-            std::string loaded_path;
-            if(stored_path.is_absolute())
-            {
-              std::error_code relative_error;
-              const std::filesystem::path relative_path =
-                  std::filesystem::relative(stored_path, config_.dataPath, relative_error);
-              if(relative_error) continue;
-              loaded_path = relative_path.lexically_normal().generic_string();
-            }
-            else
-              loaded_path = stored_path.lexically_normal().generic_string();
-            if(loaded_path == href_path)
+            const std::filesystem::path stored_absolute =
+                (stored_path.is_absolute() ? stored_path : config_.dataPath / stored_path)
+                    .lexically_normal();
+            if(stored_absolute == requested_path)
             {
               args["id"] = note.id;
               found_id = true;
