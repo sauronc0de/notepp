@@ -25,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -89,6 +90,70 @@ struct ExplorerNoteDragPayload
 static ImVec2 nonzero_invisible_button_size(float w, float h)
 {
   return ImVec2(std::max(1.0f, w), std::max(1.0f, h));
+}
+
+static bool split_command_words(std::string_view command, std::vector<std::string> &words)
+{
+  words.clear();
+  std::string current;
+  char quote = '\0';
+  bool escaped = false;
+  for(const char c : command)
+  {
+    if(escaped)
+    {
+      current.push_back(c);
+      escaped = false;
+    }
+    else if(c == '\\' && quote != '\'')
+      escaped = true;
+    else if(quote != '\0')
+    {
+      if(c == quote)
+        quote = '\0';
+      else
+        current.push_back(c);
+    }
+    else if(c == '\'' || c == '"')
+      quote = c;
+    else if(std::isspace(static_cast<unsigned char>(c)))
+    {
+      if(!current.empty())
+      {
+        words.push_back(std::move(current));
+        current.clear();
+      }
+    }
+    else
+      current.push_back(c);
+  }
+  if(escaped) current.push_back('\\');
+  if(quote != '\0')
+  {
+    words.clear();
+    return false;
+  }
+  if(!current.empty()) words.push_back(std::move(current));
+  return true;
+}
+
+static bool parse_hex_color(std::string_view text, int &r, int &g, int &b)
+{
+  if(text.size() != 7U || text.front() != '#') return false;
+  const auto hex = [](char c) -> int {
+    if(c >= '0' && c <= '9') return c - '0';
+    if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  const int values[] = {hex(text[1]), hex(text[2]), hex(text[3]),
+                        hex(text[4]), hex(text[5]), hex(text[6])};
+  for(const int value : values)
+    if(value < 0) return false;
+  r = values[0] * 16 + values[1];
+  g = values[2] * 16 + values[3];
+  b = values[4] * 16 + values[5];
+  return true;
 }
 
 static constexpr char kToolbarUiWidgetChooserPopup[] = "##tb_ui_widgets_popup";
@@ -1906,6 +1971,128 @@ App::App(AppConfig config)
     terminal_.write(input);
     dirty_ = true;
   });
+  MarkdownWidgets::set_command_action_handler([this](std::string_view command,
+                                                     std::string_view) {
+    std::vector<std::string> words;
+    if(!split_command_words(command, words))
+    {
+      LOG_WARNING("Kanban command has an unterminated quote");
+      return true;
+    }
+    if(words.size() < 3U || words[0] != "note" || words[1] != "color" ||
+       words[2] != "set")
+      return false;
+
+    // Friendly note commands are handled in-process. Legacy notepp-cli and
+    // other shell commands intentionally return false and use the terminal.
+    nlohmann::json args = nlohmann::json::object();
+    std::unordered_set<std::string> seen_options;
+    for(std::size_t i = 3; i < words.size();)
+    {
+      const std::string &option = words[i];
+      const std::string canonical_option = option == "--path" ? "--note" : option;
+      if(canonical_option != "--note" && canonical_option != "--color")
+      {
+        LOG_WARNING("Kanban note color command has an unknown option: ", option);
+        return true;
+      }
+      if(!seen_options.insert(canonical_option).second)
+      {
+        LOG_WARNING("Kanban note color command has a duplicate option: ", option);
+        return true;
+      }
+      if(i + 1U >= words.size() || words[i + 1U].rfind("--", 0) == 0)
+      {
+        LOG_WARNING("Kanban note color command is missing a value for: ", option);
+        return true;
+      }
+      const std::string &value = words[i + 1U];
+      if(canonical_option == "--note")
+      {
+        const std::size_t fragment = value.find('#');
+        const std::string reference = value.substr(0, fragment);
+        if(reference.empty())
+        {
+          LOG_WARNING("Kanban note color command has an empty note reference");
+          return true;
+        }
+
+        bool found_id = false;
+        const std::string href_path = std::filesystem::path(reference).lexically_normal().generic_string();
+        for(const auto &folder : folders_)
+          for(const auto &note : folder.notes)
+          {
+            if(note.id == reference)
+            {
+              args["id"] = note.id;
+              found_id = true;
+              break;
+            }
+            const std::filesystem::path stored_path(note.path);
+            std::string loaded_path;
+            if(stored_path.is_absolute())
+            {
+              std::error_code relative_error;
+              const std::filesystem::path relative_path =
+                  std::filesystem::relative(stored_path, config_.dataPath, relative_error);
+              if(relative_error) continue;
+              loaded_path = relative_path.lexically_normal().generic_string();
+            }
+            else
+              loaded_path = stored_path.lexically_normal().generic_string();
+            if(loaded_path == href_path)
+            {
+              args["id"] = note.id;
+              found_id = true;
+              break;
+            }
+          }
+        if(!found_id)
+        {
+          if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
+             (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
+            args["path"] = reference;
+          else
+            args["name"] = reference;
+        }
+      }
+      else
+      {
+        int r = 0, g = 0, b = 0;
+        if(!parse_hex_color(value, r, g, b))
+        {
+          LOG_WARNING("Kanban note color command has an invalid color: ", value);
+          return true;
+        }
+        args["r"] = r;
+        args["g"] = g;
+        args["b"] = b;
+      }
+      i += 2U;
+    }
+    if(!args.contains("id") && !args.contains("path") && !args.contains("name"))
+    {
+      LOG_WARNING("Kanban note color command is missing --note");
+      return true;
+    }
+    if(!args.contains("r"))
+    {
+      LOG_WARNING("Kanban note color command is missing --color");
+      return true;
+    }
+    if(command_api_ == nullptr)
+    {
+      LOG_WARNING("Command API is unavailable for kanban action");
+      return true;
+    }
+    const nlohmann::json request{{"command", "note.color.set"}, {"args", args}};
+    const auto response = command_api_->execute(request);
+    if(response.ok)
+      post_command_mutation(request, response);
+    else
+      LOG_WARNING("Kanban note color command failed: ", response.body.dump());
+    return true;
+  });
 
   Lang::init(config_.assetsPath / "languages");
   if(!load_project_settings())
@@ -1944,6 +2131,15 @@ void App::rebind_command_ipc()
 void App::post_command_mutation(const nlohmann::json &request,
                                 const notepp::command_api::Response &response)
 {
+  if(frame_ui_active_)
+  {
+    // Note rendering keeps references into folders_. Reloading here (for
+    // example from a Mermaid kanban callback) would invalidate those
+    // references before the rest of the frame has finished drawing.
+    pending_command_mutations_.push_back(PendingCommandMutation{request, response});
+    return;
+  }
+
   (void)response;
   const std::string command = request.value("command", request.value("method", std::string{}));
   const bool mutates = command == "note.create" || command == "note.header.create" ||
@@ -1961,6 +2157,14 @@ void App::post_command_mutation(const nlohmann::json &request,
   discard_pending_text_history();
   load_state();
   dirty_ = true;
+}
+
+void App::flush_pending_command_mutations()
+{
+  std::vector<PendingCommandMutation> pending = std::move(pending_command_mutations_);
+  pending_command_mutations_.clear();
+  for(const PendingCommandMutation &mutation : pending)
+    post_command_mutation(mutation.request, mutation.response);
 }
 
 bool App::load_project_settings()
@@ -2612,6 +2816,7 @@ void App::shutdown()
     atomic_file::set_shared_writes_suspended(false);
   }
   atomic_file::set_shared_writes_suspended(false);
+  MarkdownWidgets::set_command_action_handler({});
   MarkdownWidgets::set_terminal_command_handler({});
   terminal_.stop();
 
@@ -2939,6 +3144,7 @@ bool App::save_state()
 {
   if(atomic_file::shared_writes_suspended()) return false;
   g_project_save_batch.clear();
+  const bool command_mutation_pending = !pending_command_mutations_.empty();
   bool all_saved = true;
   const bool record_text_change =
       !history_replay_in_progress_ &&
@@ -2977,7 +3183,11 @@ bool App::save_state()
   if(g_clipboard_dirty && !save_note_clipboard())
     LOG_ERROR("Cannot save local note clipboard");
   if(!profiles_saved) LOG_ERROR("Cannot save local layout profiles");
-  if(!save_index()) all_saved = false;
+  // Command handlers persist index mutations immediately, but their in-memory
+  // reload is deferred until frame_ui() finishes rendering. Do not serialize
+  // stale folders_ over those changes; markdown and workspace saves above are
+  // still safe to perform for this frame.
+  if(!command_mutation_pending && !save_index()) all_saved = false;
   if(g_drawings_dirty && !save_drawings_state()) all_saved = false;
   if(!MarkdownSupport::flush_preview_state())
   {
@@ -5881,6 +6091,16 @@ bool App::frame_begin()
 }
 void App::frame_ui()
 {
+  frame_ui_active_ = true;
+  struct FrameUiGuard
+  {
+    App &app;
+    ~FrameUiGuard()
+    {
+      app.frame_ui_active_ = false;
+      if(!app.state_dirty_) app.flush_pending_command_mutations();
+    }
+  } frame_ui_guard{*this};
   MarkdownView::begin_sidebar_thumbnail_frame();
   const bool git_disabled_for_frame = git_sync_in_progress_ || close_requested_;
   const auto set_git_sync_enabled = [this](const bool requested) {
@@ -13091,7 +13311,7 @@ void App::frame_ui()
     {
       if(layout_dirty_ && !ImGui::IsAnyMouseDown())
       {
-        const bool index_saved = save_index();
+        const bool index_saved = pending_command_mutations_.empty() ? save_index() : true;
         capture_to_active_profile();
         const bool profiles_saved = save_profiles();
         if(index_saved && profiles_saved) layout_dirty_ = false;
@@ -13922,7 +14142,7 @@ void App::frame_ui()
   {
     if(layout_dirty_ && !ImGui::IsAnyMouseDown())
     {
-      const bool index_saved = save_index();
+      const bool index_saved = pending_command_mutations_.empty() ? save_index() : true;
       capture_to_active_profile();
       const bool profiles_saved = save_profiles();
       if(index_saved && profiles_saved) layout_dirty_ = false;
@@ -13938,4 +14158,5 @@ void App::frame_ui()
   render_command_finder();
   render_editor_actions();
   if(git_disabled_for_frame) ImGui::EndDisabled();
+
 }

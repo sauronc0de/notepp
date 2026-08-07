@@ -18,6 +18,7 @@ struct RenderResult
 };
 
 using TerminalCommandHandler = std::function<void(std::string_view)>;
+using CommandActionHandler = std::function<bool(std::string_view, std::string_view)>;
 
 struct VariableResult
 {
@@ -38,8 +39,11 @@ void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);
 void set_terminal_command_handler(TerminalCommandHandler handler);
-// Dispatch a command through the configured terminal handler. Used by
-// interactive diagram events after the current ImGui render pass completes.
+void set_command_action_handler(CommandActionHandler handler);
+// Dispatch a command through the configured command-action handler, falling
+// back to the terminal for legacy shell commands.
+void execute_command_action(std::string_view command, std::string_view card_reference = {});
+// Dispatch a command through the configured terminal handler.
 void execute_terminal_command(std::string_view command);
 std::string last_persistence_error();
 void reset_persistence_state();

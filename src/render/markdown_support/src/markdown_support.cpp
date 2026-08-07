@@ -326,8 +326,14 @@ struct KanbanEventBinding
   std::string command;
 };
 
+struct QueuedKanbanCommand
+{
+  std::string command;
+  std::string card_reference;
+};
+
 static std::vector<KanbanEventBinding> g_kanban_event_bindings;
-static std::vector<std::string> g_queued_kanban_commands;
+static std::vector<QueuedKanbanCommand> g_queued_kanban_commands;
 
 static bool parse_event_string(std::string_view text, std::size_t &pos, std::string &out)
 {
@@ -438,11 +444,31 @@ static void index_kanban_events(std::string_view markdown)
   }
 }
 
-static void on_kanban_drop(std::string_view diagram_id, std::string_view column_id)
+static void on_kanban_drop(std::string_view diagram_id, std::string_view column_id,
+                           std::string_view card_reference)
 {
   for(const KanbanEventBinding &binding : g_kanban_event_bindings)
     if(binding.diagram_id == diagram_id && binding.column_id == column_id)
-      g_queued_kanban_commands.push_back(binding.command);
+      g_queued_kanban_commands.push_back({binding.command, std::string(card_reference)});
+}
+
+static std::string substitute_kanban_command(std::string_view command,
+                                             std::string_view card_reference)
+{
+  const std::size_t fragment = card_reference.find('#');
+  const std::string_view fragment_free_reference = card_reference.substr(0, fragment);
+  std::string result(command);
+  for(const std::string_view placeholder : {std::string_view{"$note"},
+                                            std::string_view{"$path"}})
+  {
+    std::size_t pos = 0;
+    while((pos = result.find(placeholder, pos)) != std::string::npos)
+    {
+      result.replace(pos, placeholder.size(), fragment_free_reference);
+      pos += fragment_free_reference.size();
+    }
+  }
+  return result;
 }
 
 static std::string kanban_reference_title(std::string_view href)
@@ -458,7 +484,7 @@ static bool kanban_reference_hover(std::string_view href)
 void render_mermaid_block(std::string_view mermaid_type, std::string_view body, int id)
 {
   MermaidDiagrams::set_kanban_reference_callbacks(kanban_reference_title,
-                                                   kanban_reference_hover);
+                                                  kanban_reference_hover);
   const std::string mt = StringUtils::to_lower_copy(mermaid_type);
 
   // ── already-rendered types ──────────────────────────────────────────────
@@ -2152,7 +2178,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
 {
   index_kanban_events(markdown);
   g_queued_kanban_commands.clear();
-  MermaidDiagrams::set_kanban_drop_callback(on_kanban_drop);
+  MermaidDiagrams::set_kanban_drop_reference_callback(on_kanban_drop);
 
   PreviewRenderResult result;
   bool checkbox_changed = false;
@@ -2678,8 +2704,11 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   // two `kanban` headers stacked on top of each other (which the next
   // re-render then collapses into a single "kanban" column holding all
   // cards, visibly corrupting the board).
-  for(const std::string &command : g_queued_kanban_commands)
-    MarkdownWidgets::execute_terminal_command(command);
+  for(const QueuedKanbanCommand &queued : g_queued_kanban_commands)
+  {
+    const std::string command = substitute_kanban_command(queued.command, queued.card_reference);
+    MarkdownWidgets::execute_command_action(command, queued.card_reference);
+  }
   g_queued_kanban_commands.clear();
 
   if(MermaidDiagrams::g_pending_edit.active())

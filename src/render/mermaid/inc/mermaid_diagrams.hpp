@@ -417,9 +417,13 @@ void render_kanban(const KanbanDiagram &d, int id);
 using KanbanReferenceTitleCallback = std::string (*)(std::string_view href);
 using KanbanReferenceHoverCallback = bool (*)(std::string_view href);
 using KanbanDropCallback = void (*)(std::string_view diagram_id, std::string_view column_id);
+using KanbanDropReferenceCallback = void (*)(std::string_view diagram_id,
+                                             std::string_view column_id,
+                                             std::string_view card_reference);
 void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
                                     KanbanReferenceHoverCallback hover_callback);
 void set_kanban_drop_callback(KanbanDropCallback callback);
+void set_kanban_drop_reference_callback(KanbanDropReferenceCallback callback);
 
 // ── Architecture ─────────────────────────────────────────────────────────────
 struct ArchService

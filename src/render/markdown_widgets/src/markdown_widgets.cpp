@@ -34,6 +34,7 @@ namespace MarkdownWidgets
 
 static std::filesystem::path g_widget_document_path;
 static TerminalCommandHandler g_terminal_command_handler;
+static CommandActionHandler g_command_action_handler;
 static atomic_file::SnapshotStore &g_widget_files = atomic_file::shared_snapshot_store();
 static atomic_file::PersistenceGuard g_widget_persistence_guard;
 static std::unordered_map<std::string, std::string> g_widget_persistence_errors;
@@ -65,6 +66,17 @@ void notify_document_saved(const std::filesystem::path &path)
 void set_terminal_command_handler(TerminalCommandHandler handler)
 {
   g_terminal_command_handler = std::move(handler);
+}
+
+void set_command_action_handler(CommandActionHandler handler)
+{
+  g_command_action_handler = std::move(handler);
+}
+
+void execute_command_action(std::string_view command, std::string_view card_reference)
+{
+  if(g_command_action_handler && g_command_action_handler(command, card_reference)) return;
+  execute_terminal_command(command);
 }
 
 void execute_terminal_command(std::string_view command)

@@ -189,6 +189,7 @@ private:
   void rebind_command_ipc();
   void post_command_mutation(const nlohmann::json &request,
                              const notepp::command_api::Response &response);
+  void flush_pending_command_mutations();
   void migrate_legacy_workspace_files();
   bool load_project_settings();
 #if USE_PORTABLE_PATHS
@@ -224,6 +225,13 @@ private:
   notepp::note_storage::NoteContentCache note_content_cache_;
   std::unique_ptr<notepp::command_api::Api> command_api_;
   notepp::command_ipc::Server command_ipc_server_;
+  struct PendingCommandMutation
+  {
+    nlohmann::json request;
+    notepp::command_api::Response response;
+  };
+  std::vector<PendingCommandMutation> pending_command_mutations_;
+  bool frame_ui_active_ = false;
   unsigned long long min_frame_ticks_ = 0;
   unsigned long long last_frame_ticks_ = 0;
 

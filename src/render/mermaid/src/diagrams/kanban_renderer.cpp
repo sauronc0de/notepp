@@ -23,6 +23,7 @@ namespace MermaidDiagrams
 static KanbanReferenceTitleCallback g_kanban_reference_title = nullptr;
 static KanbanReferenceHoverCallback g_kanban_reference_hover = nullptr;
 static KanbanDropCallback g_kanban_drop_callback = nullptr;
+static KanbanDropReferenceCallback g_kanban_drop_reference_callback = nullptr;
 
 void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
                                     KanbanReferenceHoverCallback hover_callback)
@@ -34,6 +35,20 @@ void set_kanban_reference_callbacks(KanbanReferenceTitleCallback title_callback,
 void set_kanban_drop_callback(KanbanDropCallback callback)
 {
   g_kanban_drop_callback = callback;
+}
+
+void set_kanban_drop_reference_callback(KanbanDropReferenceCallback callback)
+{
+  g_kanban_drop_reference_callback = callback;
+}
+
+static void notify_kanban_drop(std::string_view diagram_id, std::string_view column_id,
+                               std::string_view card_reference)
+{
+  if(g_kanban_drop_reference_callback != nullptr)
+    g_kanban_drop_reference_callback(diagram_id, column_id, card_reference);
+  if(g_kanban_drop_callback != nullptr)
+    g_kanban_drop_callback(diagram_id, column_id);
 }
 
 namespace kanbanrender
@@ -213,6 +228,12 @@ static KanbanLink parse_kanban_link(std::string_view text)
   return {true, std::string(text.substr(1, close - 1)), std::string(href)};
 }
 
+static std::string kanban_card_reference(const KanbanCard &card)
+{
+  const KanbanLink link = parse_kanban_link(card.label);
+  return link.valid ? link.href : std::string{};
+}
+
 static std::string kanban_card_display_label(const KanbanCard &card)
 {
   const KanbanLink link = parse_kanban_link(card.label);
@@ -256,6 +277,11 @@ void render_kanban(const KanbanDiagram &d, int id)
   using namespace kanbanrender;
   ImGui::PushID(id);
   auto &es = s_kb_states[id];
+
+  // Keep the previous drag snapshot alive through the frame that releases the
+  // drag; cols may still refer to it while the rest of this function renders.
+  // It is safe to discard it before binding the next frame's columns.
+  if(!es.drag_active) es.work_cols.clear();
 
   const float card_h = 32.0f, col_header_h = 28.0f, hgap = 10.0f, vgap = 6.0f, pad = 10.0f;
   const float min_col_w = 120.0f, max_col_w = 240.0f;
@@ -347,8 +373,7 @@ void render_kanban(const KanbanDiagram &d, int id)
           card.label = "[](" + href + ")";
           nd.columns[drop_col].cards.push_back(std::move(card));
           g_pending_edit = {id, serialize_kanban(nd)};
-          if(g_kanban_drop_callback != nullptr)
-            g_kanban_drop_callback(d.notepp_id, nd.columns[drop_col].id);
+          notify_kanban_drop(d.notepp_id, nd.columns[drop_col].id, href);
         }
       }
     }
@@ -427,15 +452,14 @@ void render_kanban(const KanbanDiagram &d, int id)
         ins = std::max(0, std::min(ins, static_cast<int>(nd.columns[es.drop_ci].cards.size())));
         nd.columns[es.drop_ci].cards.insert(nd.columns[es.drop_ci].cards.begin() + ins, moved);
         g_pending_edit = {id, serialize_kanban(nd)};
-        if(g_kanban_drop_callback != nullptr)
-          g_kanban_drop_callback(d.notepp_id, nd.columns[es.drop_ci].id);
+        notify_kanban_drop(d.notepp_id, nd.columns[es.drop_ci].id,
+                           kanban_card_reference(moved));
       }
       es.drag_active = false;
       es.drag_ci = -1;
       es.drag_ri = -1;
       es.drop_ci = -1;
       es.drop_ri = -1;
-      es.work_cols.clear();
     }
   }
   else if(hov_ci >= 0)
