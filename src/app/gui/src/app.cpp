@@ -2006,7 +2006,19 @@ App::App(AppConfig config)
         LOG_WARNING("Kanban note color command is missing a value for: ", option);
         return true;
       }
-      const std::string &value = words[i + 1U];
+
+      // A note path or title may contain spaces. Quoted values are already
+      // one token, while unquoted paths are accepted by consuming tokens
+      // until the next recognized option (for example, --color).
+      std::size_t value_end = i + 2U;
+      if(canonical_option == "--note")
+        while(value_end < words.size() && words[value_end].rfind("--", 0) != 0) ++value_end;
+      std::string value = words[i + 1U];
+      for(std::size_t part = i + 2U; part < value_end; ++part)
+      {
+        value.push_back(' ');
+        value += words[part];
+      }
       if(canonical_option == "--note")
       {
         const std::size_t fragment = value.find('#');
@@ -2022,6 +2034,9 @@ App::App(AppConfig config)
         const std::filesystem::path requested_path =
             (reference_path.is_absolute() ? reference_path : config_.dataPath / reference_path)
                 .lexically_normal();
+        const std::filesystem::path requested_markdown_path =
+            requested_path.extension().empty() ? std::filesystem::path(requested_path.string() + ".md")
+                                               : requested_path;
         for(const auto &folder : folders_)
           for(const auto &note : folder.notes)
           {
@@ -2035,7 +2050,7 @@ App::App(AppConfig config)
             const std::filesystem::path stored_absolute =
                 (stored_path.is_absolute() ? stored_path : config_.dataPath / stored_path)
                     .lexically_normal();
-            if(stored_absolute == requested_path)
+            if(stored_absolute == requested_path || stored_absolute == requested_markdown_path)
             {
               args["id"] = note.id;
               found_id = true;
@@ -2046,7 +2061,12 @@ App::App(AppConfig config)
         {
           if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
              (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
-            args["path"] = reference;
+          {
+            const std::filesystem::path path_reference(reference);
+            args["path"] = (path_reference.extension().empty()
+                                ? std::filesystem::path(reference).string() + ".md"
+                                : reference);
+          }
           else
             args["name"] = reference;
         }
@@ -2063,7 +2083,7 @@ App::App(AppConfig config)
         args["g"] = g;
         args["b"] = b;
       }
-      i += 2U;
+      i = value_end;
     }
     if(!args.contains("id") && !args.contains("path") && !args.contains("name"))
     {
