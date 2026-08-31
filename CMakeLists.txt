@@ -113,6 +113,8 @@ configure_file(
 )
 
 if(WIN32)
+  set(WINDOWS_STAGE_DIR "${CMAKE_BINARY_DIR}/windows-stage")
+
   find_program(ISCC_EXE
     NAMES ISCC.exe
     PATHS "C:/Program Files (x86)/Inno Setup 6"
@@ -121,24 +123,24 @@ if(WIN32)
 
   add_custom_target(installer ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory
-      "${CMAKE_SOURCE_DIR}/dist/Notepp"
+      "${WINDOWS_STAGE_DIR}"
 
     COMMAND ${CMAKE_COMMAND} -E copy
       "$<TARGET_FILE:${PROJECT_NAME}>"
-      "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+      "${WINDOWS_STAGE_DIR}/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
 
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_SOURCE_DIR}/assets"
-      "${CMAKE_SOURCE_DIR}/dist/Notepp/assets"
+      "${WINDOWS_STAGE_DIR}/assets"
 
     COMMAND ${CMAKE_COMMAND} -E copy
       "${CMAKE_SOURCE_DIR}/THIRD_PARTY_LICENSES"
-      "${CMAKE_SOURCE_DIR}/dist/Notepp/THIRD_PARTY_LICENSES"
+      "${WINDOWS_STAGE_DIR}/THIRD_PARTY_LICENSES"
 
     COMMAND C:/msys64/usr/bin/bash.exe --login
       "${CMAKE_SOURCE_DIR}/tools/tasks/copy_mingw_dlls.sh"
       "${CMAKE_SOURCE_DIR}"
-      "${CMAKE_SOURCE_DIR}/dist/Notepp/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+      "${WINDOWS_STAGE_DIR}/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
 
     COMMAND "${ISCC_EXE}" "${CMAKE_BINARY_DIR}/notepp.iss"
     DEPENDS ${PROJECT_NAME}
