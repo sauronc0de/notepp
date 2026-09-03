@@ -212,8 +212,9 @@ struct VariableDecl
   SourceSpan expr_span;
   bool computed = false;
   size_t line_number = 0;
-  std::string source_file;      // empty = local note; set = path to .globals.md that owns this decl
-  size_t source_body_start = 0; // byte offset of the UI block body within source_file
+  std::string source_file;       // empty = local note; set = path to .globals.md that owns this decl
+  size_t source_body_start = 0;  // byte offset of the UI block body within source_file
+  size_t source_block_index = 0; // UI block index within source_file
 };
 
 struct ParsedBlock
@@ -771,6 +772,7 @@ public:
   ExprResult parse_expression();
   void skip_ws();
   bool eof() const;
+  bool is_literal() const { return !used_computation_; }
 
 private:
   ExprResult parse_ternary();
@@ -794,6 +796,7 @@ private:
   std::string_view source_;
   size_t pos_ = 0;
   EvalContext &ctx_;
+  bool used_computation_ = false;
 };
 
 struct EvalContext
@@ -942,6 +945,7 @@ ExprResult ExprParser::parse_ternary()
   if(!cond.error.empty()) return cond;
   skip_ws();
   if(eof() || peek() != '?') return cond;
+  used_computation_ = true;
   ++pos_;
   ExprResult true_val = parse_expression();
   if(!true_val.error.empty()) return true_val;
@@ -960,6 +964,7 @@ ExprResult ExprParser::parse_logical_or()
   {
     skip_ws();
     if(pos_ + 1 >= source_.size() || source_[pos_] != '|' || source_[pos_ + 1] != '|') break;
+    used_computation_ = true;
     pos_ += 2;
     ExprResult rhs = parse_logical_and();
     if(!rhs.error.empty()) return rhs;
@@ -979,6 +984,7 @@ ExprResult ExprParser::parse_logical_and()
   {
     skip_ws();
     if(pos_ + 1 >= source_.size() || source_[pos_] != '&' || source_[pos_ + 1] != '&') break;
+    used_computation_ = true;
     pos_ += 2;
     ExprResult rhs = parse_comparison();
     if(!rhs.error.empty()) return rhs;
@@ -1044,6 +1050,7 @@ ExprResult ExprParser::parse_comparison()
 
   if(op == CmpOp::None) return lhs;
 
+  used_computation_ = true;
   ExprResult rhs = parse_additive();
   if(!rhs.error.empty()) return rhs;
 
@@ -1095,6 +1102,7 @@ ExprResult ExprParser::parse_additive()
   {
     skip_ws();
     if(eof() || (peek() != '+' && peek() != '-')) break;
+    used_computation_ = true;
     const char op = source_[pos_++];
     ExprResult rhs = parse_multiplicative();
     if(op == '+' && (lhs.value.kind == ValueKind::String || rhs.value.kind == ValueKind::String))
@@ -1120,6 +1128,7 @@ ExprResult ExprParser::parse_multiplicative()
   {
     skip_ws();
     if(eof() || (peek() != '*' && peek() != '/' && peek() != '%')) break;
+    used_computation_ = true;
     const char op = source_[pos_++];
     ExprResult rhs = parse_unary();
     lhs = combine_numeric(lhs, rhs, op);
@@ -1142,6 +1151,7 @@ ExprResult ExprParser::parse_unary()
   // Logical not: '!' not followed by '=' (which would be the != operator)
   if(peek() == '!' && (pos_ + 1 >= source_.size() || source_[pos_ + 1] != '='))
   {
+    used_computation_ = true;
     ++pos_;
     ExprResult inner = parse_unary();
     if(!inner.error.empty()) return inner;
@@ -1155,6 +1165,7 @@ ExprResult ExprParser::parse_unary()
 
 ExprResult ExprParser::parse_call(const std::string &name)
 {
+  used_computation_ = true;
   ++pos_; // consume '('
   std::vector<Value> args;
   skip_ws();
@@ -1392,6 +1403,7 @@ ExprResult ExprParser::parse_primary()
 
   if(peek() == '(')
   {
+    used_computation_ = true;
     ++pos_;
     ExprResult inner = parse_expression();
     if(!inner.error.empty()) return inner;
@@ -1445,6 +1457,7 @@ ExprResult ExprParser::parse_primary()
       return {value, {}};
     }
     skip_ws();
+    used_computation_ = true;
     ExprResult result = peek() == '(' ? parse_call(ident) : ctx_.resolve_variable(ident);
     if(!result.error.empty()) return result;
     while(true)
@@ -1779,7 +1792,7 @@ bool parse_literal_expr(std::string_view expr, Value &out)
   ExprParser parser(expr, ctx);
   ExprResult result = parser.parse_expression();
   parser.skip_ws();
-  if(!result.error.empty() || !parser.eof()) return false;
+  if(!result.error.empty() || !parser.eof() || !parser.is_literal()) return false;
   if(result.value.kind == ValueKind::Invalid) return false;
   out = result.value;
   return true;
@@ -5951,6 +5964,7 @@ static const std::map<std::string, VariableDecl> &load_global_declarations()
     if(content.empty()) continue;
 
     size_t pos = 0;
+    size_t source_block_index = 0;
     while(pos < content.size())
     {
       const size_t fence_pos = content.find("```ui", pos);
@@ -5989,9 +6003,11 @@ static const std::map<std::string, VariableDecl> &load_global_declarations()
         VariableDecl d = parsed_decl;
         d.source_file = globals_path.string();
         d.source_body_start = body_start;
+        d.source_block_index = source_block_index;
         g_globals_decl_cache[name] = std::move(d);
       }
 
+      ++source_block_index;
       pos = block_end;
     }
   }
@@ -6400,6 +6416,7 @@ nlohmann::json command_value_to_json(const Value &value)
 struct CommandBlock
 {
   size_t body_start = 0;
+  size_t body_line = 0;
   ParsedBlock block;
 };
 
@@ -6436,12 +6453,148 @@ std::vector<CommandBlock> command_blocks(std::string_view markdown)
     const std::string body(markdown.substr(body_start, body_end - body_start));
     auto parsed = g_block_parse_cache.find(body);
     if(parsed == g_block_parse_cache.end()) parsed = g_block_parse_cache.emplace(body, parse_block(body)).first;
-    result.push_back({body_start, parsed->second});
+    const size_t body_line =
+        static_cast<size_t>(std::count(markdown.begin(), markdown.begin() + static_cast<std::ptrdiff_t>(body_start), '\n')) + 1;
+    result.push_back({body_start, body_line, parsed->second});
     pos = body_end + 3;
   }
   return result;
 }
+
+VariableValueType inspected_value_type(const Value &value)
+{
+  switch(value.kind)
+  {
+  case ValueKind::Number:
+    return VariableValueType::number;
+  case ValueKind::String:
+    return VariableValueType::string;
+  case ValueKind::Bool:
+    return VariableValueType::boolean;
+  case ValueKind::Array:
+    return VariableValueType::array;
+  case ValueKind::Object:
+    return VariableValueType::object;
+  default:
+    return VariableValueType::invalid;
+  }
+}
+
+bool compatible_value_type(const Value &current, const Value &replacement)
+{
+  return current.kind == replacement.kind;
+}
+
+std::string normalized_source_path(const std::filesystem::path &path)
+{
+  return path.empty() ? std::string{} : path.lexically_normal().generic_string();
+}
+
+std::size_t source_line_at(std::string_view content, std::size_t offset)
+{
+  offset = std::min(offset, content.size());
+  return static_cast<std::size_t>(std::count(content.begin(), content.begin() + static_cast<std::ptrdiff_t>(offset), '\n')) + 1;
+}
 } // namespace
+
+VariableSnapshot inspect_variables(std::string_view markdown)
+{
+  VariableSnapshot snapshot;
+  const auto blocks = command_blocks(markdown);
+  const auto &globals = load_global_declarations();
+  const std::string local_source = normalized_source_path(g_widget_document_path);
+
+  snapshot.groups.reserve(blocks.size() + globals.size());
+  for(std::size_t block_index = 0; block_index < blocks.size(); ++block_index)
+  {
+    const CommandBlock &entry = blocks[block_index];
+    VariableGroup group;
+    group.scope = VariableScope::local;
+    group.block_index = block_index;
+    group.source_file = local_source;
+    group.errors = entry.block.errors;
+    group.variables.reserve(entry.block.declarations.size());
+
+    EvalContext context{entry.block};
+    context.global_declarations = globals.empty() ? nullptr : &globals;
+    for(const auto &[name, declaration] : entry.block.declarations)
+    {
+      InspectedVariable variable;
+      variable.locator.scope = VariableScope::local;
+      variable.locator.block_index = block_index;
+      variable.locator.expression_start = entry.body_start + declaration.expr_span.start;
+      variable.locator.expression_end = entry.body_start + declaration.expr_span.end;
+      variable.locator.name = name;
+      variable.locator.source_file = local_source;
+      variable.locator.original_expression = declaration.expr_source;
+      variable.expression = declaration.expr_source;
+      variable.source_line = entry.body_line + declaration.line_number;
+      variable.computed = declaration.computed;
+
+      const ExprResult evaluated = context.resolve_variable(name);
+      if(!evaluated.error.empty())
+        variable.error = evaluated.error;
+      else
+      {
+        variable.type = inspected_value_type(evaluated.value);
+        variable.value = command_value_to_json(evaluated.value);
+      }
+      group.variables.push_back(std::move(variable));
+      ++snapshot.variable_count;
+    }
+    if(!group.variables.empty() || !group.errors.empty())
+      snapshot.groups.push_back(std::move(group));
+  }
+
+  ParsedBlock empty;
+  EvalContext global_context{empty};
+  global_context.global_declarations = globals.empty() ? nullptr : &globals;
+  std::map<std::pair<std::string, std::size_t>, std::size_t> global_group_indices;
+  std::unordered_map<std::string, std::string> global_sources;
+  for(const auto &[name, declaration] : globals)
+  {
+    const std::string source = normalized_source_path(declaration.source_file);
+    const auto group_key = std::make_pair(source, declaration.source_block_index);
+    auto [group_it, inserted] = global_group_indices.emplace(group_key, snapshot.groups.size());
+    if(inserted)
+    {
+      VariableGroup group;
+      group.scope = VariableScope::global;
+      group.block_index = declaration.source_block_index;
+      group.source_file = source;
+      snapshot.groups.push_back(std::move(group));
+    }
+    VariableGroup &group = snapshot.groups[group_it->second];
+    InspectedVariable variable;
+    variable.locator.scope = VariableScope::global;
+    variable.locator.block_index = group.block_index;
+    variable.locator.expression_start = declaration.source_body_start + declaration.expr_span.start;
+    variable.locator.expression_end = declaration.source_body_start + declaration.expr_span.end;
+    variable.locator.name = name;
+    variable.locator.source_file = source;
+    variable.locator.original_expression = declaration.expr_source;
+    variable.expression = declaration.expr_source;
+    variable.computed = declaration.computed;
+
+    auto source_it = global_sources.find(source);
+    if(source_it == global_sources.end())
+      source_it = global_sources.emplace(source, read_globals_file(source)).first;
+    variable.source_line = source_line_at(source_it->second, variable.locator.expression_start);
+
+    const ExprResult evaluated = global_context.resolve_variable(name);
+    if(!evaluated.error.empty())
+      variable.error = evaluated.error;
+    else
+    {
+      variable.type = inspected_value_type(evaluated.value);
+      variable.value = command_value_to_json(evaluated.value);
+    }
+    group.variables.push_back(std::move(variable));
+    ++snapshot.variable_count;
+  }
+
+  return snapshot;
+}
 
 VariableResult command_get_variable(std::string_view markdown, std::string_view name)
 {
@@ -6496,6 +6649,91 @@ VariableResult command_set_variable(std::string &markdown, std::string_view name
   if(!errors.empty()) return {false, nullptr, errors.front()};
   apply_global_replacements_to_disk(ctx.global_replacements, globals);
   if(ctx.global_replacements.empty()) return {false, nullptr, "unknown variable '" + variable + "'"};
+  const std::string persistence_error = last_persistence_error();
+  if(!persistence_error.empty()) return {false, nullptr, persistence_error};
+  return {true, json, {}};
+}
+
+VariableResult command_set_variable_at(std::string &markdown,
+                                       const VariableLocator &locator,
+                                       const nlohmann::json &json)
+{
+  if(locator.name.empty()) return {false, nullptr, "variable name is required"};
+  std::string conversion_error;
+  const Value replacement = command_value_from_json(json, conversion_error);
+  if(!conversion_error.empty()) return {false, nullptr, conversion_error};
+
+  const auto blocks = command_blocks(markdown);
+  const auto &globals = load_global_declarations();
+  if(locator.scope == VariableScope::local)
+  {
+    if(normalized_source_path(g_widget_document_path) != locator.source_file)
+      return {false, nullptr, "variable locator belongs to another document"};
+    if(locator.block_index >= blocks.size())
+      return {false, nullptr, "variable locator is stale"};
+
+    const CommandBlock &entry = blocks[locator.block_index];
+    const auto declaration_it = entry.block.declarations.find(locator.name);
+    if(declaration_it == entry.block.declarations.end())
+      return {false, nullptr, "variable locator is stale"};
+    const VariableDecl &declaration = declaration_it->second;
+    const std::size_t expression_start = entry.body_start + declaration.expr_span.start;
+    const std::size_t expression_end = entry.body_start + declaration.expr_span.end;
+    if(expression_start != locator.expression_start ||
+       expression_end != locator.expression_end ||
+       declaration.expr_source != locator.original_expression ||
+       expression_end > markdown.size() ||
+       markdown.substr(expression_start, expression_end - expression_start) != locator.original_expression)
+      return {false, nullptr, "variable locator is stale"};
+    if(declaration.computed)
+      return {false, nullptr, "variable '" + locator.name + "' is computed and readonly"};
+
+    EvalContext context{entry.block};
+    context.global_declarations = globals.empty() ? nullptr : &globals;
+    const ExprResult current = context.resolve_variable(locator.name);
+    if(!current.error.empty()) return {false, nullptr, current.error};
+    if(!compatible_value_type(current.value, replacement))
+      return {false, nullptr, "variable type changes are not supported by the inspector"};
+
+    markdown.replace(expression_start, expression_end - expression_start,
+                     serialize_value(replacement));
+    return {true, json, {}};
+  }
+
+  const auto declaration_it = globals.find(locator.name);
+  if(declaration_it == globals.end())
+    return {false, nullptr, "variable locator is stale"};
+  const VariableDecl &declaration = declaration_it->second;
+  const std::string source = normalized_source_path(declaration.source_file);
+  const std::size_t expression_start = declaration.source_body_start + declaration.expr_span.start;
+  const std::size_t expression_end = declaration.source_body_start + declaration.expr_span.end;
+  if(source != locator.source_file ||
+     declaration.source_block_index != locator.block_index ||
+     expression_start != locator.expression_start ||
+     expression_end != locator.expression_end ||
+     declaration.expr_source != locator.original_expression)
+    return {false, nullptr, "variable locator is stale"};
+  if(declaration.computed)
+    return {false, nullptr, "global variable '" + locator.name + "' is computed and readonly"};
+
+  const std::string source_content = read_globals_file(source);
+  if(expression_end > source_content.size() ||
+     source_content.substr(expression_start, expression_end - expression_start) != locator.original_expression)
+    return {false, nullptr, "variable locator is stale"};
+
+  ParsedBlock empty;
+  EvalContext context{empty};
+  context.global_declarations = &globals;
+  const ExprResult current = context.resolve_variable(locator.name);
+  if(!current.error.empty()) return {false, nullptr, current.error};
+  if(!compatible_value_type(current.value, replacement))
+    return {false, nullptr, "variable type changes are not supported by the inspector"};
+
+  std::unordered_map<std::string, std::string> replacements;
+  std::vector<std::string> errors;
+  set_override(context, empty, locator.name, replacement, replacements, errors);
+  if(!errors.empty()) return {false, nullptr, errors.front()};
+  apply_global_replacements_to_disk(context.global_replacements, globals);
   const std::string persistence_error = last_persistence_error();
   if(!persistence_error.empty()) return {false, nullptr, persistence_error};
   return {true, json, {}};

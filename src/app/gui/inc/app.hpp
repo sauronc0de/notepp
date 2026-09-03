@@ -132,6 +132,12 @@ private:
   void apply_preview_history_state(std::string_view note_path, std::string_view text, std::string_view preview_state_snapshot);
   void record_workspace_history_action(std::string_view label, std::string before_snapshot);
   void record_text_history_action(std::string_view label, const std::string &before_text, const std::string &after_text);
+  void apply_global_variable_history_state(const std::filesystem::path &path,
+                                           std::string_view expected,
+                                           std::string_view replacement);
+  void record_global_variable_history_action(const std::filesystem::path &path,
+                                             std::string before,
+                                             std::string after);
   void record_preview_history_action(std::string_view label, std::string_view note_path, const std::string &before_text, const std::string &after_text, const std::string &before_preview_state, const std::string &after_preview_state);
   void update_pending_text_history(std::string_view label, const std::string &before_text, const std::string &after_text, bool start_new_chunk);
   void flush_pending_text_history();
@@ -179,6 +185,7 @@ private:
 
   bool frame_begin();
   void frame_ui();
+  void render_variable_inspector();
   void frame_end();
   void configure_frame_limiter(bool software_gl);
   void limit_frame_rate();
@@ -316,6 +323,8 @@ private:
   int command_finder_navigation_delta_ = 0;
   bool command_finder_window_visible_ = false;
   std::string command_finder_feedback_;
+  bool variable_inspector_visible_ = false;
+  bool variable_inspector_refresh_requested_ = false;
   bool request_open_editor_actions_ = false;
   bool request_close_editor_actions_ = false;
   bool request_activate_editor_actions_ = false;

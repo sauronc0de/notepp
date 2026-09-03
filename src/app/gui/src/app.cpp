@@ -3088,6 +3088,7 @@ void App::shutdown()
 void App::load_state()
 {
   bool first_run = false;
+  variable_inspector_refresh_requested_ = true;
   discard_pending_text_history();
   history_.clear();
   folders_.clear();
@@ -5271,6 +5272,45 @@ void App::record_text_history_action(std::string_view label, const std::string &
       [this, note_path, before_text, context_snapshot]() { apply_text_history_state(note_path, before_text, context_snapshot); }));
 }
 
+void App::apply_global_variable_history_state(const std::filesystem::path &path,
+                                              std::string_view expected,
+                                              std::string_view replacement)
+{
+  const auto loaded = g_project_files.load(path);
+  record_project_read(path, loaded, true);
+  if(!loaded)
+    throw std::runtime_error("cannot read global variable source: " + loaded.message);
+  if(!loaded.snapshot.existed || loaded.snapshot.content != expected)
+    throw std::runtime_error("global variable source changed outside the inspector");
+  if(!write_text_file(path.generic_string(), replacement))
+    throw std::runtime_error("cannot restore global variable source");
+
+  MarkdownWidgets::notify_document_saved(path);
+  variable_inspector_refresh_requested_ = true;
+  dirty_ = true;
+}
+
+void App::record_global_variable_history_action(const std::filesystem::path &path,
+                                                std::string before,
+                                                std::string after)
+{
+  if(history_replay_in_progress_ || path.empty() || before == after) return;
+  flush_pending_text_history();
+
+  const std::string debug_context = "global variable: " + path.generic_string();
+  const std::string before_state = std::move(before);
+  const std::string after_state = std::move(after);
+  history_.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
+      "Edit global variable",
+      debug_context,
+      [this, path, expected = before_state, replacement = after_state]() {
+        apply_global_variable_history_state(path, expected, replacement);
+      },
+      [this, path, expected = after_state, replacement = before_state]() {
+        apply_global_variable_history_state(path, expected, replacement);
+      }));
+}
+
 void App::update_pending_text_history(std::string_view label, const std::string &before_text, const std::string &after_text, bool start_new_chunk)
 {
   if(history_replay_in_progress_ || state_file_path_.empty() || before_text == after_text) return;
@@ -6480,6 +6520,626 @@ bool App::frame_begin()
   ImGui::NewFrame();
   return had_event;
 }
+namespace
+{
+struct InspectorTextCallbackData
+{
+  std::string *text = nullptr;
+};
+
+int inspector_text_resize_callback(ImGuiInputTextCallbackData *data)
+{
+  auto *user = static_cast<InspectorTextCallbackData *>(data->UserData);
+  if(data->EventFlag == ImGuiInputTextFlags_CallbackResize)
+  {
+    user->text->resize(static_cast<std::size_t>(data->BufTextLen));
+    data->Buf = user->text->data();
+  }
+  return 0;
+}
+
+bool inspector_input_text(const char *label, std::string &text,
+                          ImGuiInputTextFlags flags = ImGuiInputTextFlags_None)
+{
+  InspectorTextCallbackData user{&text};
+  const bool changed = ImGui::InputText(
+      label, text.data(), text.capacity() + 1,
+      flags | ImGuiInputTextFlags_CallbackResize,
+      inspector_text_resize_callback, &user);
+  // CallbackResize only grows capacity; synchronize the logical size after
+  // ordinary insertions and deletions that fit the existing buffer.
+  text.resize(std::strlen(text.c_str()));
+  return changed;
+}
+
+bool inspector_input_text_multiline(const char *label, std::string &text,
+                                    ImVec2 size)
+{
+  InspectorTextCallbackData user{&text};
+  const bool changed = ImGui::InputTextMultiline(
+      label, text.data(), text.capacity() + 1, size,
+      ImGuiInputTextFlags_CallbackResize,
+      inspector_text_resize_callback, &user);
+  // Keep the draft length correct when no resize callback was necessary.
+  text.resize(std::strlen(text.c_str()));
+  return changed;
+}
+
+std::string inspector_lower_ascii(std::string_view text)
+{
+  std::string result(text);
+  std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return result;
+}
+
+const char *inspector_type_name(MarkdownWidgets::VariableValueType type)
+{
+  using Type = MarkdownWidgets::VariableValueType;
+  switch(type)
+  {
+  case Type::number:
+    return "number";
+  case Type::string:
+    return "string";
+  case Type::boolean:
+    return "bool";
+  case Type::array:
+    return "array";
+  case Type::object:
+    return "object";
+  default:
+    return "invalid";
+  }
+}
+
+std::string inspector_variable_key(const MarkdownWidgets::InspectedVariable &variable)
+{
+  const auto &locator = variable.locator;
+  std::string key = locator.scope == MarkdownWidgets::VariableScope::local ? "L|" : "G|";
+  key += locator.source_file;
+  key += '|';
+  key += std::to_string(locator.block_index);
+  key += '|';
+  key += std::to_string(locator.expression_start);
+  key += '|';
+  key += locator.name;
+  return key;
+}
+
+std::string inspector_value_text(const MarkdownWidgets::InspectedVariable &variable)
+{
+  if(!variable.error.empty()) return {};
+  if(variable.type == MarkdownWidgets::VariableValueType::string && variable.value.is_string())
+    return variable.value.get<std::string>();
+  const int indent = variable.type == MarkdownWidgets::VariableValueType::array ||
+                             variable.type == MarkdownWidgets::VariableValueType::object
+                         ? 2
+                         : -1;
+  return variable.value.dump(indent);
+}
+
+bool inspector_filter_match(const MarkdownWidgets::InspectedVariable &variable,
+                            std::string_view query)
+{
+  if(query.empty()) return true;
+  std::string searchable = variable.locator.name;
+  searchable += ' ';
+  searchable += inspector_type_name(variable.type);
+  searchable += variable.locator.scope == MarkdownWidgets::VariableScope::global
+                    ? " global "
+                    : " local ";
+  if(variable.type == MarkdownWidgets::VariableValueType::string ||
+     variable.type == MarkdownWidgets::VariableValueType::number ||
+     variable.type == MarkdownWidgets::VariableValueType::boolean)
+  {
+    searchable += inspector_value_text(variable);
+  }
+  searchable = inspector_lower_ascii(searchable);
+  return searchable.find(query) != std::string::npos;
+}
+} // namespace
+
+void App::render_variable_inspector()
+{
+  struct Draft
+  {
+    std::string text;
+  };
+  struct StructuredEditor
+  {
+    bool active = false;
+    bool open_requested = false;
+    bool close_requested = false;
+    std::string key;
+    std::string name;
+    std::string text;
+    MarkdownWidgets::VariableLocator locator;
+    MarkdownWidgets::VariableValueType type = MarkdownWidgets::VariableValueType::invalid;
+  };
+  struct InspectorState
+  {
+    MarkdownWidgets::VariableSnapshot snapshot;
+    std::string snapshot_path;
+    std::string snapshot_markdown;
+    bool initialized = false;
+    char note_query[192] = {};
+    char variable_query[192] = {};
+    std::string filtered_query;
+    std::vector<std::vector<std::size_t>> filtered_indices;
+    std::unordered_map<std::string, Draft> drafts;
+    std::unordered_map<std::string, std::string> row_errors;
+    std::string general_error;
+    StructuredEditor structured;
+  };
+  struct PendingCommit
+  {
+    std::string key;
+    MarkdownWidgets::VariableLocator locator;
+    nlohmann::json value;
+  };
+
+  static InspectorState inspector;
+  std::optional<PendingCommit> pending_commit;
+
+  const auto rebuild_snapshot = [&]() {
+    inspector.snapshot = {};
+    inspector.snapshot_path = state_file_path_;
+    inspector.snapshot_markdown = markdown_text_;
+    inspector.initialized = true;
+    inspector.drafts.clear();
+    inspector.row_errors.clear();
+    inspector.general_error.clear();
+    inspector.structured = {};
+    if(state_file_path_.empty())
+    {
+      inspector.filtered_indices.clear();
+      return;
+    }
+
+    MarkdownWidgets::set_widget_document_path(state_file_path_);
+    inspector.snapshot = MarkdownWidgets::inspect_variables(markdown_text_);
+    inspector.filtered_query.clear();
+    inspector.filtered_indices.clear();
+    for(const auto &group : inspector.snapshot.groups)
+      for(const auto &variable : group.variables)
+        inspector.drafts.emplace(
+            inspector_variable_key(variable), Draft{inspector_value_text(variable)});
+  };
+
+  if(variable_inspector_refresh_requested_ || !inspector.initialized ||
+     inspector.snapshot_path != state_file_path_ ||
+     (state_dirty_ && inspector.snapshot_markdown != markdown_text_))
+  {
+    rebuild_snapshot();
+    variable_inspector_refresh_requested_ = false;
+  }
+
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowViewport(viewport->ID);
+  ImGui::SetNextWindowSize(ImVec2(410.0f, std::max(320.0f, viewport->WorkSize.y * 0.72f)),
+                           ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(
+      ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 420.0f,
+             viewport->WorkPos.y + 36.0f),
+      ImGuiCond_FirstUseEver);
+
+  if(!ImGui::Begin("Variable Inspector", &variable_inspector_visible_,
+                   ImGuiWindowFlags_NoCollapse))
+  {
+    ImGui::End();
+    if(!variable_inspector_visible_)
+    {
+      inspector = {};
+      variable_inspector_refresh_requested_ = true;
+    }
+    return;
+  }
+
+  const char *note_preview = has_active_note() ? note_title_.c_str() : "No active note";
+  if(ImGui::BeginCombo("Note", note_preview))
+  {
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##variable_inspector_note_search", "Search note title or path...",
+                             inspector.note_query, sizeof(inspector.note_query));
+    const std::string query = inspector_lower_ascii(inspector.note_query);
+    std::vector<std::pair<int, int>> matches;
+    for(int folder_index = 0; folder_index < static_cast<int>(folders_.size()); ++folder_index)
+    {
+      const FolderMeta &folder = folders_[static_cast<std::size_t>(folder_index)];
+      for(int note_index = 0; note_index < static_cast<int>(folder.notes.size()); ++note_index)
+      {
+        const NoteMeta &note = folder.notes[static_cast<std::size_t>(note_index)];
+        const std::string searchable =
+            inspector_lower_ascii(folder.name + " " + note.title + " " + note.path);
+        if(query.empty() || searchable.find(query) != std::string::npos)
+          matches.emplace_back(folder_index, note_index);
+      }
+    }
+    if(ImGui::BeginChild("##variable_inspector_note_results", ImVec2(0.0f, 220.0f)))
+    {
+      ImGuiListClipper clipper;
+      clipper.Begin(static_cast<int>(matches.size()));
+      while(clipper.Step())
+      {
+        for(int match_index = clipper.DisplayStart; match_index < clipper.DisplayEnd; ++match_index)
+        {
+          const auto [folder_index, note_index] = matches[static_cast<std::size_t>(match_index)];
+          const FolderMeta &folder = folders_[static_cast<std::size_t>(folder_index)];
+          const NoteMeta &note = folder.notes[static_cast<std::size_t>(note_index)];
+          const std::string label = folder.name + " / " + note.title +
+                                    "###variable_inspector_note_" + note.id;
+          if(ImGui::Selectable(label.c_str(), folder_index == active_folder_idx_ &&
+                                                  note_index == active_note_idx_))
+          {
+            set_active_note(folder_index, note_index);
+            variable_inspector_refresh_requested_ = true;
+            ImGui::CloseCurrentPopup();
+          }
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("%s", note.path.c_str());
+        }
+      }
+    }
+    ImGui::EndChild();
+    ImGui::EndCombo();
+  }
+
+  if(ImGui::Button("Refresh"))
+  {
+    variable_inspector_refresh_requested_ = true;
+    rebuild_snapshot();
+    variable_inspector_refresh_requested_ = false;
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%zu variable%s", inspector.snapshot.variable_count,
+                      inspector.snapshot.variable_count == 1 ? "" : "s");
+
+  if(state_file_path_.empty())
+  {
+    ImGui::Separator();
+    ImGui::TextWrapped("Select a readable note to inspect its UI variables.");
+    ImGui::End();
+    if(!variable_inspector_visible_)
+    {
+      inspector = {};
+      variable_inspector_refresh_requested_ = true;
+    }
+    return;
+  }
+
+  ImGui::SetNextItemWidth(-1.0f);
+  if(ImGui::InputTextWithHint("##variable_inspector_filter", "Search variables...",
+                              inspector.variable_query,
+                              sizeof(inspector.variable_query)))
+    inspector.filtered_query.clear();
+
+  const std::string current_query = inspector_lower_ascii(inspector.variable_query);
+  if(inspector.filtered_query != current_query ||
+     inspector.filtered_indices.size() != inspector.snapshot.groups.size())
+  {
+    inspector.filtered_query = current_query;
+    inspector.filtered_indices.clear();
+    inspector.filtered_indices.reserve(inspector.snapshot.groups.size());
+    for(const auto &group : inspector.snapshot.groups)
+    {
+      std::vector<std::size_t> indices;
+      indices.reserve(group.variables.size());
+      for(std::size_t variable_index = 0; variable_index < group.variables.size(); ++variable_index)
+        if(inspector_filter_match(group.variables[variable_index], current_query))
+          indices.push_back(variable_index);
+      inspector.filtered_indices.push_back(std::move(indices));
+    }
+  }
+
+  const auto request_json_commit = [&](const MarkdownWidgets::InspectedVariable &variable,
+                                       const std::string &key,
+                                       const nlohmann::json &value) {
+    if(!pending_commit.has_value())
+      pending_commit = PendingCommit{key, variable.locator, value};
+  };
+
+  ImGui::Separator();
+  if(ImGui::BeginChild("##variable_inspector_groups", ImVec2(0.0f, 0.0f), false))
+  {
+    for(std::size_t group_index = 0; group_index < inspector.snapshot.groups.size(); ++group_index)
+    {
+      const auto &group = inspector.snapshot.groups[group_index];
+      const auto &visible_indices = inspector.filtered_indices[group_index];
+      if(visible_indices.empty() && group.errors.empty()) continue;
+
+      std::string group_label;
+      ImGuiTreeNodeFlags group_flags = ImGuiTreeNodeFlags_None;
+      if(group.scope == MarkdownWidgets::VariableScope::local)
+      {
+        group_label = "Local - UI block " + std::to_string(group.block_index + 1);
+        group_flags |= ImGuiTreeNodeFlags_DefaultOpen;
+      }
+      else
+      {
+        group_label = "Globals - " + group.source_file + " - UI block " +
+                      std::to_string(group.block_index + 1);
+      }
+      group_label += " (" + std::to_string(visible_indices.size()) + ")###variable_group_" +
+                     std::to_string(group_index);
+      if(!ImGui::CollapsingHeader(group_label.c_str(), group_flags)) continue;
+
+      ImGui::PushID(static_cast<int>(group_index));
+      ImGuiListClipper clipper;
+      constexpr float row_height = 78.0f;
+      clipper.Begin(static_cast<int>(visible_indices.size()), row_height);
+      while(clipper.Step())
+      {
+        for(int visible_index = clipper.DisplayStart;
+            visible_index < clipper.DisplayEnd; ++visible_index)
+        {
+          const auto &variable = group.variables[visible_indices[static_cast<std::size_t>(visible_index)]];
+          const std::string key = inspector_variable_key(variable);
+          auto draft_it = inspector.drafts.find(key);
+          if(draft_it == inspector.drafts.end())
+            draft_it = inspector.drafts.emplace(key, Draft{inspector_value_text(variable)}).first;
+          Draft &draft = draft_it->second;
+
+          ImGui::PushID(key.c_str());
+          ImGui::BeginChild("##variable_row", ImVec2(0.0f, row_height - 4.0f), true,
+                            ImGuiWindowFlags_NoScrollbar);
+          ImGui::TextUnformatted(variable.locator.name.c_str());
+          ImGui::SameLine();
+          ImGui::TextDisabled("[%s] [%s] line %zu",
+                              inspector_type_name(variable.type),
+                              variable.locator.scope == MarkdownWidgets::VariableScope::global
+                                  ? "global"
+                                  : "local",
+                              variable.source_line);
+
+          if(!variable.error.empty())
+          {
+            ImGui::TextColored(ImVec4(0.95f, 0.38f, 0.32f, 1.0f), "%s",
+                               variable.error.c_str());
+          }
+          else if(variable.computed)
+          {
+            const std::string value = inspector_value_text(variable);
+            ImGui::TextDisabled("%s = %s", variable.expression.c_str(), value.c_str());
+            ImGui::TextDisabled("Computed variables are read-only");
+          }
+          else if(variable.type == MarkdownWidgets::VariableValueType::boolean)
+          {
+            bool checked = draft.text == "true";
+            if(ImGui::Checkbox("Value", &checked))
+            {
+              draft.text = checked ? "true" : "false";
+              if(variable.locator.scope == MarkdownWidgets::VariableScope::local)
+                request_json_commit(variable, key, checked);
+            }
+            if(variable.locator.scope == MarkdownWidgets::VariableScope::global)
+            {
+              ImGui::SameLine();
+              if(ImGui::SmallButton("Apply"))
+                request_json_commit(variable, key, checked);
+              ImGui::SameLine();
+              ImGui::TextDisabled("shared value");
+            }
+          }
+          else if(variable.type == MarkdownWidgets::VariableValueType::array ||
+                  variable.type == MarkdownWidgets::VariableValueType::object)
+          {
+            std::string preview = draft.text;
+            std::replace(preview.begin(), preview.end(), '\n', ' ');
+            if(preview.size() > 54)
+            {
+              preview.resize(51);
+              preview += "...";
+            }
+            ImGui::TextUnformatted(preview.c_str());
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Edit JSON..."))
+            {
+              inspector.structured.active = true;
+              inspector.structured.open_requested = true;
+              inspector.structured.close_requested = false;
+              inspector.structured.key = key;
+              inspector.structured.name = variable.locator.name;
+              inspector.structured.text = draft.text;
+              inspector.structured.locator = variable.locator;
+              inspector.structured.type = variable.type;
+            }
+          }
+          else
+          {
+            ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue;
+            if(variable.type == MarkdownWidgets::VariableValueType::number)
+              flags |= ImGuiInputTextFlags_CharsScientific;
+            ImGui::SetNextItemWidth(-62.0f);
+            const bool submitted = inspector_input_text("##value", draft.text, flags);
+            const bool deactivated = ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SameLine();
+            const bool apply = ImGui::SmallButton("Apply");
+            const bool local_commit = variable.locator.scope == MarkdownWidgets::VariableScope::local &&
+                                      (submitted || deactivated || apply);
+            const bool global_commit = variable.locator.scope == MarkdownWidgets::VariableScope::global && apply;
+            if(local_commit || global_commit)
+            {
+              if(variable.type == MarkdownWidgets::VariableValueType::string)
+                request_json_commit(variable, key, draft.text);
+              else
+              {
+                const auto parsed = nlohmann::json::parse(draft.text, nullptr, false);
+                if(parsed.is_discarded() || !parsed.is_number())
+                  inspector.row_errors[key] = "Enter a valid JSON number";
+                else
+                  request_json_commit(variable, key, parsed);
+              }
+            }
+            if(variable.locator.scope == MarkdownWidgets::VariableScope::global)
+            {
+              ImGui::TextDisabled("Shared global: changes can affect other notes");
+              if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                ImGui::SetTooltip("%s", variable.locator.source_file.c_str());
+            }
+          }
+
+          if(const auto error = inspector.row_errors.find(key);
+             error != inspector.row_errors.end())
+            ImGui::TextColored(ImVec4(0.95f, 0.38f, 0.32f, 1.0f), "%s",
+                               error->second.c_str());
+          ImGui::EndChild();
+          ImGui::PopID();
+        }
+      }
+      ImGui::PopID();
+    }
+
+    std::vector<std::string> errors;
+    for(const auto &group : inspector.snapshot.groups)
+    {
+      for(const auto &error : group.errors) errors.push_back(error);
+      for(const auto &variable : group.variables)
+        if(!variable.error.empty())
+          errors.push_back(variable.locator.name + ": " + variable.error);
+    }
+    if(!inspector.general_error.empty()) errors.push_back(inspector.general_error);
+    for(const auto &[key, error] : inspector.row_errors)
+    {
+      static_cast<void>(key);
+      errors.push_back(error);
+    }
+    if(!errors.empty() && ImGui::CollapsingHeader(
+                              ("Errors (" + std::to_string(errors.size()) + ")###variable_errors").c_str(),
+                              ImGuiTreeNodeFlags_DefaultOpen))
+      for(const auto &error : errors) ImGui::BulletText("%s", error.c_str());
+  }
+  ImGui::EndChild();
+
+  if(inspector.structured.open_requested)
+  {
+    ImGui::OpenPopup("Edit variable JSON");
+    inspector.structured.open_requested = false;
+  }
+  ImGui::SetNextWindowSize(ImVec2(540.0f, 390.0f), ImGuiCond_Appearing);
+  if(ImGui::BeginPopupModal("Edit variable JSON", nullptr,
+                            ImGuiWindowFlags_NoSavedSettings))
+  {
+    if(inspector.structured.close_requested || !inspector.structured.active)
+    {
+      inspector.structured.close_requested = false;
+      ImGui::CloseCurrentPopup();
+    }
+    else
+    {
+      ImGui::Text("%s", inspector.structured.name.c_str());
+      if(inspector.structured.locator.scope == MarkdownWidgets::VariableScope::global)
+      {
+        ImGui::TextWrapped("This value is shared through %s. Applying it can affect other notes.",
+                           inspector.structured.locator.source_file.c_str());
+      }
+      inspector_input_text_multiline("##variable_json", inspector.structured.text,
+                                     ImVec2(-1.0f, 250.0f));
+      if(ImGui::Button("Apply"))
+      {
+        const auto parsed = nlohmann::json::parse(
+            inspector.structured.text, nullptr, false);
+        const bool correct_type =
+            inspector.structured.type == MarkdownWidgets::VariableValueType::array
+                ? parsed.is_array()
+                : parsed.is_object();
+        if(parsed.is_discarded() || !correct_type)
+          inspector.row_errors[inspector.structured.key] =
+              inspector.structured.type == MarkdownWidgets::VariableValueType::array
+                  ? "Enter a valid JSON array"
+                  : "Enter a valid JSON object";
+        else if(!pending_commit.has_value())
+          pending_commit = PendingCommit{inspector.structured.key,
+                                         inspector.structured.locator, parsed};
+      }
+      ImGui::SameLine();
+      if(ImGui::Button("Cancel"))
+      {
+        inspector.structured.active = false;
+        ImGui::CloseCurrentPopup();
+      }
+      if(const auto error = inspector.row_errors.find(inspector.structured.key);
+         error != inspector.row_errors.end())
+        ImGui::TextColored(ImVec4(0.95f, 0.38f, 0.32f, 1.0f), "%s",
+                           error->second.c_str());
+    }
+    ImGui::EndPopup();
+  }
+
+  if(pending_commit.has_value())
+  {
+    MarkdownWidgets::set_widget_document_path(state_file_path_);
+    std::string updated_markdown = markdown_text_;
+    std::optional<std::string> global_before;
+    std::filesystem::path global_path;
+    MarkdownWidgets::VariableResult result;
+    bool ready_to_edit = true;
+    if(pending_commit->locator.scope == MarkdownWidgets::VariableScope::global)
+    {
+      flush_pending_text_history();
+      global_path = pending_commit->locator.source_file;
+      const auto loaded = g_project_files.load(global_path);
+      record_project_read(global_path, loaded, true);
+      if(!loaded || !loaded.snapshot.existed)
+      {
+        ready_to_edit = false;
+        result.error = loaded ? "global variable source does not exist" : loaded.message;
+      }
+      else
+        global_before = loaded.snapshot.content;
+    }
+    if(ready_to_edit)
+      result = MarkdownWidgets::command_set_variable_at(
+          updated_markdown, pending_commit->locator, pending_commit->value);
+    if(!result.success)
+    {
+      inspector.row_errors[pending_commit->key] = result.error;
+      inspector.general_error = result.error;
+    }
+    else
+    {
+      inspector.row_errors.erase(pending_commit->key);
+      inspector.general_error.clear();
+      if(global_before.has_value())
+      {
+        const auto loaded = g_project_files.load(global_path);
+        record_project_read(global_path, loaded, true);
+        if(!loaded || !loaded.snapshot.existed)
+        {
+          inspector.general_error = loaded
+                                        ? "Global variable was saved, but its history state could not be read"
+                                        : loaded.message;
+        }
+        else
+          record_global_variable_history_action(
+              global_path, std::move(*global_before), loaded.snapshot.content);
+      }
+      if(pending_commit->locator.scope == MarkdownWidgets::VariableScope::local &&
+         updated_markdown != markdown_text_)
+      {
+        flush_pending_text_history();
+        const std::string before = markdown_text_;
+        markdown_text_ = std::move(updated_markdown);
+        normalize_input_text_buffer(markdown_text_);
+        record_text_history_action("Edit variable", before, markdown_text_);
+        state_dirty_ = true;
+      }
+      dirty_ = true;
+      inspector.structured.active = false;
+      inspector.structured.close_requested = true;
+      rebuild_snapshot();
+    }
+  }
+
+  ImGui::End();
+  if(!variable_inspector_visible_)
+  {
+    inspector = {};
+    variable_inspector_refresh_requested_ = true;
+  }
+}
+
 void App::frame_ui()
 {
   frame_ui_active_ = true;
@@ -6587,7 +7247,7 @@ void App::frame_ui()
     }
     const ImVec2 git_switch_size(30.0f, 16.0f);
     const float git_switch_x = ImGui::GetWindowWidth() - right_margin -
-                               2.0f * btn_sz - 2.0f * btn_gap - git_switch_size.x;
+                               3.0f * btn_sz - 3.0f * btn_gap - git_switch_size.x;
     if(git_sync_enabled_)
     {
       ImGui::SameLine(0.0f, 6.0f);
@@ -6652,6 +7312,17 @@ void App::frame_ui()
     }
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("Restore removed notes"));
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 3.0f * btn_sz -
+                         2.0f * btn_gap - right_margin);
+    if(shaded_icon_button("##explorer_variable_inspector", static_cast<ImTextureID>(0),
+                          ImVec2(btn_sz, btn_sz), "V", variable_inspector_visible_))
+    {
+      variable_inspector_visible_ = !variable_inspector_visible_;
+      variable_inspector_refresh_requested_ = variable_inspector_visible_;
+    }
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+      ImGui::SetTooltip("Show / Hide Variable Inspector");
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -6778,6 +7449,7 @@ void App::frame_ui()
     quick_open,
     find_current_note,
     find_in_project,
+    variable_inspector,
     api_command
   };
   struct CommandFinderState
@@ -9063,7 +9735,8 @@ void App::frame_ui()
         {CommandFinderCommand::hide_folder_notes, "Hide Visible Notes in Active Folder", {}},
         {CommandFinderCommand::quick_open, "Quick Open", {}},
         {CommandFinderCommand::find_current_note, "Find Current Note", {}},
-        {CommandFinderCommand::find_in_project, "Find in Project", {}}};
+        {CommandFinderCommand::find_in_project, "Find in Project", {}},
+        {CommandFinderCommand::variable_inspector, "Show / Hide Variable Inspector", {}}};
     // Keep the finder usable even while the project command adapter is being
     // initialized. The command names are also the protocol's single source
     // of truth; the registry supplies the descriptors when available.
@@ -9174,6 +9847,10 @@ void App::frame_ui()
         break;
       case CommandFinderCommand::find_in_project:
         request_open_project_search_ = true;
+        break;
+      case CommandFinderCommand::variable_inspector:
+        variable_inspector_visible_ = !variable_inspector_visible_;
+        variable_inspector_refresh_requested_ = variable_inspector_visible_;
         break;
       case CommandFinderCommand::api_command:
         if(command_api_ != nullptr)
@@ -14212,6 +14889,8 @@ void App::frame_ui()
       deferred_sidebar_snapshot_before.clear();
     }
 
+    if(variable_inspector_visible_) render_variable_inspector();
+
     if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
     {
       if(layout_dirty_ && !ImGui::IsAnyMouseDown())
@@ -14263,6 +14942,7 @@ void App::frame_ui()
       record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
       deferred_sidebar_snapshot_before.clear();
     }
+    if(variable_inspector_visible_) render_variable_inspector();
     render_search_dialog();
     render_note_switcher();
     render_note_reference_label();
@@ -15104,6 +15784,8 @@ void App::frame_ui()
     record_workspace_after("Edit workspace", std::move(deferred_sidebar_snapshot_before));
     deferred_sidebar_snapshot_before.clear();
   }
+
+  if(variable_inspector_visible_) render_variable_inspector();
 
   if(notepp::sync_coordinator::project_writes_allowed(git_sync_in_progress_))
   {
