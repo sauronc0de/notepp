@@ -7343,7 +7343,7 @@ void App::frame_ui()
 
     if(search_dialog.focus_input)
     {
-      ImGui::SetKeyboardFocusHere();
+      if(ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) ImGui::SetKeyboardFocusHere();
       search_dialog.focus_input = false;
     }
 
@@ -7353,6 +7353,24 @@ void App::frame_ui()
         search_dialog.query,
         sizeof(search_dialog.query),
         ImGuiInputTextFlags_AutoSelectAll);
+    if(editor_search)
+    {
+      ImGui::SameLine();
+      const bool has_results = !search_dialog.results.empty();
+      ImGui::BeginDisabled(!has_results);
+      if(ImGui::ArrowButton("##search_previous", ImGuiDir_Up))
+      {
+        --search_navigation_delta_;
+        search_dialog.focus_input = true;
+      }
+      ImGui::SameLine();
+      if(ImGui::ArrowButton("##search_next", ImGuiDir_Down))
+      {
+        ++search_navigation_delta_;
+        search_dialog.focus_input = true;
+      }
+      ImGui::EndDisabled();
+    }
 
     const std::string current_query(search_dialog.query);
     bool search_selection_moved = false;
