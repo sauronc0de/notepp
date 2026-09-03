@@ -6111,6 +6111,22 @@ bool App::frame_begin()
       }
     }
 
+    // Ctrl+Enter must use the switcher's highlighted result even when ImGui's
+    // NavWindow still belongs to the editor during this SDL event pass.
+    if(note_switcher_window_visible_ &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
+       event.type == SDL_KEYDOWN && event.key.repeat == 0 &&
+       (event.key.keysym.mod & KMOD_CTRL) != 0 &&
+       (event.key.keysym.mod & KMOD_SHIFT) == 0 &&
+       (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
+    {
+      request_note_switcher_activate_ = true;
+      request_note_switcher_edit_ = !note_reference_selecting_ &&
+                                    !note_header_create_selecting_ &&
+                                    !note_color_set_selecting_;
+      continue;
+    }
+
     // While editing a note, swallow editor control shortcuts before ImGui sees them
     // so our grouped history handles them instead of InputText's per-character stack.
     if(editing_mode_ &&
@@ -6474,17 +6490,15 @@ bool App::frame_begin()
       continue;
     }
     if(!editing_mode_ &&
-       has_active_note() &&
        event.type == SDL_KEYDOWN &&
        event.key.repeat == 0 &&
        ctrl_down &&
        !shift_down &&
        (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER))
     {
-      editing_mode_ = true;
-      request_close_note_switcher_ = true;
-      request_focus_active_note_ = true;
-      request_focus_editor_ = true;
+      // Resolve the canvas/sidebar selection in frame_ui(), where its state is
+      // available. This prevents editing stale text from the previous note.
+      request_edit_selected_note_ = true;
       continue;
     }
     if(!editing_mode_ &&
@@ -7904,6 +7918,8 @@ void App::frame_ui()
     note_switcher_navigation_delta_ = 0;
     request_open_note_switcher_ = false;
     request_note_switcher_activate_ = false;
+    request_note_switcher_edit_ = false;
+    request_edit_selected_note_ = false;
     note_switcher_window_visible_ = false;
     request_close_note_switcher_ = false;
     note_header_create_selecting_ = false;
@@ -9095,6 +9111,7 @@ void App::frame_ui()
     note_switcher_selected_idx_ = -1;
     note_switcher_navigation_delta_ = 0;
     request_note_switcher_activate_ = false;
+    request_note_switcher_edit_ = false;
     search_dialog.visible = false;
     search_selected_idx_ = -1;
     search_navigation_delta_ = 0;
@@ -9116,6 +9133,7 @@ void App::frame_ui()
       }
       request_close_note_switcher_ = false;
       request_note_switcher_activate_ = false;
+      request_note_switcher_edit_ = false;
       note_switcher_navigation_delta_ = 0;
     }
     note_switcher_window_visible_ = note_switcher.visible;
@@ -9179,6 +9197,8 @@ void App::frame_ui()
     if(request_note_switcher_activate_)
     {
       request_note_switcher_activate_ = false;
+      const bool edit_selected_note = request_note_switcher_edit_;
+      request_note_switcher_edit_ = false;
       if(note_switcher_selected_idx_ >= 0 &&
          note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
       {
@@ -9191,7 +9211,15 @@ void App::frame_ui()
         else if(note_color_set_selecting_)
           begin_note_color_set(result);
         else
+        {
           navigate_to_note_switcher_result(result);
+          if(edit_selected_note)
+          {
+            editing_mode_ = true;
+            request_focus_active_note_ = true;
+            request_focus_editor_ = true;
+          }
+        }
         note_switcher.visible = false;
       }
     }
@@ -10568,6 +10596,50 @@ void App::frame_ui()
       focus_visible_note(next, request_cycle_visible_notes_);
     }
     request_cycle_visible_notes_ = 0;
+  }
+  if(request_edit_selected_note_)
+  {
+    int target_note_idx = -1;
+    if(active_folder_idx_ >= 0 && active_folder_idx_ < static_cast<int>(folders_.size()))
+    {
+      const auto &notes = folders_[static_cast<std::size_t>(active_folder_idx_)].notes;
+      if(has_active_note() &&
+         (selected_note_indices.empty() || selected_note_indices.count(active_note_idx_) != 0))
+        target_note_idx = active_note_idx_;
+      else
+      {
+        for(const int selected_idx : selected_note_indices)
+        {
+          if(selected_idx >= 0 && selected_idx < static_cast<int>(notes.size()))
+          {
+            target_note_idx = selected_idx;
+            break;
+          }
+        }
+      }
+    }
+    if(target_note_idx >= 0)
+    {
+      const bool active_note_changed = target_note_idx != active_note_idx_;
+      const bool active_note_buffer_is_stale =
+          active_folder_idx_ < 0 || active_folder_idx_ >= static_cast<int>(folders_.size()) ||
+          target_note_idx >= static_cast<int>(folders_[static_cast<std::size_t>(active_folder_idx_)].notes.size()) ||
+          state_file_path_ != folders_[static_cast<std::size_t>(active_folder_idx_)]
+                               .notes[static_cast<std::size_t>(target_note_idx)]
+                               .path;
+      if(active_note_changed)
+        set_active_note(active_folder_idx_, target_note_idx);
+      else if(active_note_buffer_is_stale)
+        load_note_content_for_active();
+    }
+    if(has_active_note())
+    {
+      editing_mode_ = true;
+      request_close_note_switcher_ = true;
+      request_focus_active_note_ = true;
+      request_focus_editor_ = true;
+    }
+    request_edit_selected_note_ = false;
   }
   if(request_focus_active_note_)
   {

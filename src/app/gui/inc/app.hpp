@@ -366,6 +366,8 @@ private:
   bool request_close_note_switcher_ = false;
   bool request_search_activate_ = false;
   bool request_note_switcher_activate_ = false;
+  bool request_note_switcher_edit_ = false;
+  bool request_edit_selected_note_ = false;
   int search_navigation_delta_ = 0;
   int search_selected_idx_ = -1;
   int note_switcher_navigation_delta_ = 0;
