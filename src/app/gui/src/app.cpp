@@ -7640,7 +7640,7 @@ void App::frame_ui()
     }
     const ImVec2 git_switch_size(30.0f, 16.0f);
     const float git_switch_x = ImGui::GetWindowWidth() - right_margin -
-                               3.0f * btn_sz - 3.0f * btn_gap - git_switch_size.x;
+                               2.0f * btn_sz - 2.0f * btn_gap - git_switch_size.x;
     if(git_sync_enabled_)
     {
       ImGui::SameLine(0.0f, 6.0f);
@@ -7705,17 +7705,6 @@ void App::frame_ui()
     }
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
       ImGui::SetTooltip("%s", Lang::t("Restore removed notes"));
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 3.0f * btn_sz -
-                         2.0f * btn_gap - right_margin);
-    if(shaded_icon_button("##explorer_variable_inspector", static_cast<ImTextureID>(0),
-                          ImVec2(btn_sz, btn_sz), "V", variable_inspector_visible_))
-    {
-      variable_inspector_visible_ = !variable_inspector_visible_;
-      variable_inspector_refresh_requested_ = variable_inspector_visible_;
-    }
-    if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
-      ImGui::SetTooltip("Show / Hide Variable Inspector");
     ImGui::Separator();
   }
   if(request_sync_files)
@@ -13350,6 +13339,21 @@ void App::frame_ui()
         if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
           ImGui::SetTooltip("%s", Lang::t("Terminal"));
       };
+      const auto render_variable_inspector_button = [&]() {
+        ImGui::SameLine();
+        const char *icon_name = variable_inspector_visible_ ? "variable-on.png"
+                                                            : "variable-off.png";
+        const ImTextureID variable_icon = get_toolbar_icon_texture(icon_name);
+        const ImVec2 variable_sz = icon_sz(icon_name);
+        if(shaded_icon_button("##variable_inspector_btn", variable_icon, variable_sz,
+                              "V", variable_inspector_visible_))
+        {
+          variable_inspector_visible_ = !variable_inspector_visible_;
+          variable_inspector_refresh_requested_ = variable_inspector_visible_;
+        }
+        if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+          ImGui::SetTooltip("Show / Hide Variable Inspector");
+      };
 
       if(!editing_mode_)
       {
@@ -13565,6 +13569,7 @@ void App::frame_ui()
       }
 
       if(editing_mode_) render_terminal_button();
+      render_variable_inspector_button();
 
       const float left_toolbar_right = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
 
