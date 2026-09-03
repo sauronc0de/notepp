@@ -13858,40 +13858,45 @@ void App::frame_ui()
             0,
             2.0f);
         constexpr float corner_accent_size = 10.0f;
+        constexpr float corner_accent_inset = 3.0f;
         const ImU32 accent_color = ImGui::GetColorU32(with_alpha(note_accent, 0.95f));
         const ImVec2 note_max(pos.x + size.x, pos.y + size.y);
+        const ImVec2 accent_min(pos.x + corner_accent_inset, pos.y + corner_accent_inset);
+        const ImVec2 accent_max(note_max.x - corner_accent_inset, note_max.y - corner_accent_inset);
         ImDrawList *foreground_draw_list = ImGui::GetForegroundDrawList(note_viewport);
         foreground_draw_list->PushClipRect(pos, note_max, true);
-        foreground_draw_list->AddLine(pos, ImVec2(pos.x + corner_accent_size, pos.y), accent_color, 1.5f);
-        foreground_draw_list->AddLine(pos, ImVec2(pos.x, pos.y + corner_accent_size), accent_color, 1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(note_max.x - corner_accent_size, pos.y),
-            ImVec2(note_max.x, pos.y),
+            accent_min, ImVec2(accent_min.x + corner_accent_size, accent_min.y), accent_color, 1.5f);
+        foreground_draw_list->AddLine(
+            accent_min, ImVec2(accent_min.x, accent_min.y + corner_accent_size), accent_color, 1.5f);
+        foreground_draw_list->AddLine(
+            ImVec2(accent_max.x - corner_accent_size, accent_min.y),
+            ImVec2(accent_max.x, accent_min.y),
             accent_color,
             1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(note_max.x, pos.y),
-            ImVec2(note_max.x, pos.y + corner_accent_size),
+            ImVec2(accent_max.x, accent_min.y),
+            ImVec2(accent_max.x, accent_min.y + corner_accent_size),
             accent_color,
             1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(pos.x, note_max.y - corner_accent_size),
-            ImVec2(pos.x, note_max.y),
+            ImVec2(accent_min.x, accent_max.y - corner_accent_size),
+            ImVec2(accent_min.x, accent_max.y),
             accent_color,
             1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(pos.x, note_max.y),
-            ImVec2(pos.x + corner_accent_size, note_max.y),
+            ImVec2(accent_min.x, accent_max.y),
+            ImVec2(accent_min.x + corner_accent_size, accent_max.y),
             accent_color,
             1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(note_max.x - corner_accent_size, note_max.y),
-            ImVec2(note_max.x, note_max.y),
+            ImVec2(accent_max.x - corner_accent_size, accent_max.y),
+            accent_max,
             accent_color,
             1.5f);
         foreground_draw_list->AddLine(
-            ImVec2(note_max.x, note_max.y - corner_accent_size),
-            ImVec2(note_max.x, note_max.y),
+            ImVec2(accent_max.x, accent_max.y - corner_accent_size),
+            accent_max,
             accent_color,
             1.5f);
         foreground_draw_list->PopClipRect();
