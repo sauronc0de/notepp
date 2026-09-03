@@ -78,6 +78,7 @@ float g_dbg_swap_ms_local [[maybe_unused]] = 0.0f;
 
 void App::frame_end()
 {
+  render_note_comparison();
   render_history_indicator();
   ImGui::Render();
 

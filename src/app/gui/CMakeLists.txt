@@ -66,6 +66,7 @@ target_link_libraries(${PROJECT_NAME}
     string_utils
     sync_coordinator
     note_history
+    note_diff
     note_index
     lang
     layout_profile_state

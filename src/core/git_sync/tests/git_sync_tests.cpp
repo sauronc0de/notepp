@@ -374,6 +374,137 @@ void test_state_name_round_trip()
   expect(gs::state_from_name("unknown") == gs::SyncState::error, "unknown state becomes error");
 }
 
+void test_read_head_is_read_only_and_rejects_truncated_output()
+{
+  const fs::path root = fs::temp_directory_path() / "notepp_git_head_fake";
+  std::error_code error;
+  fs::remove_all(root, error);
+  fs::create_directories(root);
+
+  bool status_seen = false;
+  FakeRunner runner([&](const std::vector<std::string> &arguments, const process::RunOptions &) {
+    const auto has = [&](std::string_view value) {
+      return std::find(arguments.begin(), arguments.end(), value) != arguments.end();
+    };
+    if(has("status")) status_seen = true;
+    if(has("--version")) return exited(0, "git version 2.40\\n");
+    if(has("--show-toplevel")) return exited(0, root.string() + "\\n");
+    if(has("log")) return exited(0, "subject\\n");
+    if(has("show"))
+    {
+      process::Result truncated = exited(0, "partial");
+      truncated.output_truncated = true;
+      return truncated;
+    }
+    if(has("rev-parse"))
+      return exited(0, "0123456789abcdef0123456789abcdef01234567\\n");
+    return exited(2, {}, "unexpected fake command");
+  });
+
+  const gs::HeadContentResult result = gs::Client(runner).read_head(root, root / "note.md");
+  expect(!result.success && !result.missing && !result.detail.empty(),
+         "truncated HEAD content is rejected");
+  expect(!status_seen, "read-only HEAD lookup never invokes Git status");
+  fs::remove_all(root, error);
+}
+
+void test_read_head_rejects_malformed_head_output()
+{
+  const fs::path root = fs::temp_directory_path() / "notepp_git_head_malformed_fake";
+  std::error_code error;
+  fs::remove_all(root, error);
+  fs::create_directories(root);
+
+  FakeRunner runner([&](const std::vector<std::string> &arguments, const process::RunOptions &) {
+    const auto has = [&](std::string_view value) {
+      return std::find(arguments.begin(), arguments.end(), value) != arguments.end();
+    };
+    if(has("--version")) return exited(0, "git version 2.40");
+    if(has("--show-toplevel")) return exited(0, root.string());
+    if(has("rev-parse")) return exited(0, "not-a-full-object-id");
+    return exited(2, {}, "unexpected fake command");
+  });
+
+  const gs::HeadContentResult result = gs::Client(runner).read_head(root, root / "note.md");
+  expect(!result.success && !result.missing &&
+             result.detail == "Git returned an invalid HEAD object ID",
+         "malformed HEAD output is rejected before Git show");
+  fs::remove_all(root, error);
+}
+
+void test_read_head_classifies_missing_paths()
+{
+  const fs::path root = fs::temp_directory_path() / "notepp_git_head_missing_fake";
+  std::error_code error;
+  fs::remove_all(root, error);
+  fs::create_directories(root);
+
+  bool used_captured_commit = false;
+  const auto make_runner = [&](std::string show_error) {
+    return FakeRunner([root, show_error = std::move(show_error), &used_captured_commit](
+                          const std::vector<std::string> &arguments, const process::RunOptions &) {
+      const auto has = [&](std::string_view value) {
+        return std::find(arguments.begin(), arguments.end(), value) != arguments.end();
+      };
+      if(has("--version")) return exited(0, "git version 2.40");
+      if(has("--show-toplevel")) return exited(0, root.string());
+      if(has("log")) return exited(0, "subject");
+      if(has("show"))
+      {
+        used_captured_commit = std::find(arguments.begin(), arguments.end(),
+                                         "0123456789abcdef0123456789abcdef01234567:note.md") != arguments.end();
+        return exited(128, {}, show_error);
+      }
+      if(has("rev-parse"))
+        return exited(0, "0123456789abcdef0123456789abcdef01234567");
+      return exited(2, {}, "unexpected fake command");
+    });
+  };
+
+  const gs::HeadContentResult missing =
+      gs::Client(make_runner("fatal: path 'note.md' does not exist in '0123456789abcdef'\n"))
+          .read_head(root, root / "note.md");
+  expect(missing.missing && !missing.success, "Git missing paths are reported as missing");
+  expect(used_captured_commit, "Git blob lookup uses the captured immutable commit");
+
+  const gs::HeadContentResult failed =
+      gs::Client(make_runner("fatal: repository object database is corrupt\n"))
+          .read_head(root, root / "note.md");
+  expect(!failed.missing && !failed.success && !failed.detail.empty(),
+         "unrelated Git show failures are not reported as new files");
+  fs::remove_all(root, error);
+}
+
+void test_read_head_rejects_head_change_for_missing_path()
+{
+  const fs::path root = fs::temp_directory_path() / "notepp_git_head_missing_race_fake";
+  std::error_code error;
+  fs::remove_all(root, error);
+  fs::create_directories(root);
+
+  int head_reads = 0;
+  FakeRunner runner([&](const std::vector<std::string> &arguments, const process::RunOptions &) {
+    const auto has = [&](std::string_view value) {
+      return std::find(arguments.begin(), arguments.end(), value) != arguments.end();
+    };
+    if(has("--version")) return exited(0, "git version 2.40");
+    if(has("--show-toplevel")) return exited(0, root.string());
+    if(has("log")) return exited(0, "subject");
+    if(has("show"))
+      return exited(128, {}, "fatal: path 'note.md' does not exist in '0123456789abcdef0123456789abcdef01234567'");
+    if(has("rev-parse"))
+      return exited(0, ++head_reads == 1
+                           ? "0123456789abcdef0123456789abcdef01234567"
+                           : "fedcba9876543210fedcba9876543210fedcba98");
+    return exited(2, {}, "unexpected fake command");
+  });
+
+  const gs::HeadContentResult result = gs::Client(runner).read_head(root, root / "note.md");
+  expect(!result.success && !result.missing && result.detail.find("HEAD changed") != std::string::npos,
+         "HEAD changes are rejected before missing-path classification");
+  fs::remove_all(root, error);
+}
+
 void test_real_repository_integration()
 {
   if(!git({"--version"}).succeeded())
@@ -414,6 +545,13 @@ void test_real_repository_integration()
   process::SystemRunner runner;
   gs::Client client(runner);
   expect(client.inspect(project).state == gs::SyncState::clean, "real repository reports clean");
+  const gs::HeadContentResult head_content = client.read_head(project, project / "config" / "notes_index.json");
+  expect(head_content.success && head_content.content == "{}\n", "read-only HEAD content is retrieved");
+  expect(!head_content.commit_id.empty() && head_content.subject == "initial",
+         "HEAD comparison returns commit metadata");
+  const gs::HeadContentResult outside = client.read_head(project, base / "outside.md");
+  expect(!outside.success && outside.detail.find("outside") != std::string::npos,
+         "HEAD comparison rejects paths outside the project");
 
   std::ofstream(project / "notes" / "local.md") << "local note\n";
   std::ofstream(project / "notes" / "deleted.md.bak") << "undo backup\n";
@@ -459,6 +597,10 @@ int main()
   test_offline_close_keeps_local_commit();
   test_exception_conversion();
   test_state_name_round_trip();
+  test_read_head_is_read_only_and_rejects_truncated_output();
+  test_read_head_rejects_malformed_head_output();
+  test_read_head_classifies_missing_paths();
+  test_read_head_rejects_head_change_for_missing_path();
   test_real_repository_integration();
   if(failures != 0)
   {

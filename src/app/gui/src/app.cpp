@@ -657,6 +657,7 @@ namespace
 {
 constexpr Uint32 kProjectFilesChangedEvent = SDL_USEREVENT + 17;
 constexpr Uint32 kGitSyncCompletedEvent = SDL_USEREVENT + 18;
+constexpr Uint32 kNoteComparisonCompletedEvent = SDL_USEREVENT + 19;
 
 Uint32 project_file_watch_timer_callback(Uint32 interval, void *)
 {
@@ -2648,6 +2649,7 @@ void App::advance_close()
 
 void App::reload_project_after_git_pull()
 {
+  invalidate_note_comparison();
   // Git changed a coherent project tree. Any edits made while the operation was
   // running are first preserved through checked saves; stale files become visible
   // recovery copies rather than overwriting pulled data.
@@ -2786,6 +2788,7 @@ bool App::switch_project(const std::filesystem::path &new_root)
   }
   if(!save_imgui_settings())
     LOG_ERROR("Cannot save local ImGui workspace state before project switch");
+  invalidate_note_comparison();
   notepp::project_settings::Store new_project_settings(
       new_root / "config" / "project_settings.json");
   const auto new_settings = new_project_settings.load(false);
@@ -2987,7 +2990,8 @@ int App::run()
         const Uint64 dbg_t2 = SDL_GetPerformanceCounter();
 #endif
         frame_end();
-        dirty_ = imgui_active || animation_active || terminal_active || sidebar_thumbnail_work_deferred;
+        dirty_ = imgui_active || animation_active || terminal_active || sidebar_thumbnail_work_deferred ||
+                 comparison_git_pending_;
         limit_frame_rate();
 #ifdef NOTEPP_DEBUG_UI
         const Uint64 dbg_t3 = SDL_GetPerformanceCounter();
@@ -3048,6 +3052,22 @@ void App::shutdown()
     git_operation_kind_ = GitOperationKind::none;
     atomic_file::set_shared_writes_suspended(false);
   }
+  if(comparison_git_future_.valid())
+  {
+    try
+    {
+      comparison_git_future_.get();
+    }
+    catch(const std::exception &error)
+    {
+      LOG_ERROR("Stopping note comparison: ", error.what());
+    }
+    catch(...)
+    {
+      LOG_ERROR("Stopping note comparison");
+    }
+    comparison_git_pending_ = false;
+  }
   atomic_file::set_shared_writes_suspended(false);
   MarkdownWidgets::set_command_action_handler({});
   MarkdownWidgets::set_terminal_command_handler({});
@@ -3093,6 +3113,7 @@ void App::load_state()
   history_.clear();
   folders_.clear();
   pending_fs_delete_paths_.clear();
+  detached_edit_checkpoints_.clear();
   active_folder_idx_ = 0;
   active_note_idx_ = 0;
   folder_overview_mode_ = false;
@@ -3377,12 +3398,13 @@ void App::load_state()
   if(uuid_migrated || paths_migrated || fingerprints_migrated) save_index();
 }
 
-bool App::save_state()
+bool App::save_state(bool reset_edit_checkpoint)
 {
   if(atomic_file::shared_writes_suspended()) return false;
   g_project_save_batch.clear();
   const bool command_mutation_pending = !pending_command_mutations_.empty();
   bool all_saved = true;
+  bool note_saved = false;
   const bool record_text_change =
       !history_replay_in_progress_ &&
       !state_file_path_.empty() &&
@@ -3407,6 +3429,7 @@ bool App::save_state()
         folders_[static_cast<std::size_t>(active_folder_idx_)]
             .notes[static_cast<std::size_t>(active_note_idx_)]
             .content_fingerprint = notepp::note_index::content_fingerprint(markdown_text_);
+      note_saved = true;
     }
     else
       all_saved = false;
@@ -3447,6 +3470,12 @@ bool App::save_state()
   last_save_succeeded_ = all_saved &&
                          g_project_save_batch.canonical_saves_succeeded() &&
                          g_unresolved_persistence_errors.empty();
+  if(reset_edit_checkpoint && note_saved && last_save_succeeded_)
+  {
+    edit_checkpoint_path_ = state_file_path_;
+    edit_checkpoint_text_ = markdown_text_;
+    detached_edit_checkpoints_.erase(state_file_path_);
+  }
   return last_save_succeeded_;
 }
 
@@ -4413,6 +4442,9 @@ bool App::sync_project_files()
           moved_note.path = norm;
           moved_note.title = title;
           moved_note.unresolved_stored_path.clear();
+          const bool active_note_moved = state_file_path_ == old_path.string();
+          migrate_edit_checkpoint(old_path.string(), norm);
+          if(active_note_moved) state_file_path_ = norm;
           const int target_folder = find_or_create_folder(folder_name);
           folders_[static_cast<std::size_t>(target_folder)].notes.push_back(std::move(moved_note));
           if(g_project_files.known_snapshot(old_path) != nullptr)
@@ -4426,6 +4458,8 @@ bool App::sync_project_files()
             g_project_persistence_guard.forget(old_path);
           }
           MarkdownSupport::notify_document_moved(old_path, p);
+          if(state_file_path_ == old_path.string()) state_file_path_ = p.string();
+          migrate_edit_checkpoint(old_path.string(), p.string());
           reconciled_rename = true;
           changed = true;
         }
@@ -4563,11 +4597,17 @@ void App::invalidate_note_cache(const std::string &path)
   note_content_cache_.invalidate(path);
 }
 
-void App::load_note_content_for_active()
+void App::load_note_content_for_active(bool preserve_edit_checkpoint)
 {
-  if(!history_replay_in_progress_) flush_pending_text_history();
-
   const std::string previous_note_path = state_file_path_;
+  std::optional<std::string> checkpoint_to_preserve;
+  if(preserve_edit_checkpoint && edit_checkpoint_text_ && edit_checkpoint_path_ == state_file_path_)
+    checkpoint_to_preserve = *edit_checkpoint_text_;
+  if(edit_checkpoint_text_ && !edit_checkpoint_path_.empty() && !checkpoint_to_preserve)
+    detached_edit_checkpoints_.try_emplace(edit_checkpoint_path_, *edit_checkpoint_text_);
+  edit_checkpoint_path_.clear();
+  edit_checkpoint_text_.reset();
+  if(!history_replay_in_progress_) flush_pending_text_history();
   const auto clear_search_match_state_if_note_changed = [&]() {
     if(state_file_path_ == previous_note_path) return;
     search_editor_scroll_note_path_.clear();
@@ -4593,6 +4633,8 @@ void App::load_note_content_for_active()
   {
     state_file_path_.clear();
     note_title_ = "Note";
+    active_note_read_failed_ = false;
+    active_note_read_error_.clear();
     markdown_text_.clear();
     discard_pending_text_history();
     request_undo_edit_ = false;
@@ -4603,10 +4645,13 @@ void App::load_note_content_for_active()
 
   NoteMeta &n = folders_[(size_t)active_folder_idx_].notes[(size_t)active_note_idx_];
   state_file_path_ = n.path;
+  const bool note_changed = previous_note_path != state_file_path_;
   note_title_ = n.title;
   if(!n.unresolved_stored_path.empty())
   {
     state_file_path_.clear();
+    active_note_read_failed_ = true;
+    active_note_read_error_ = "The note path could not be resolved";
     markdown_text_.clear();
     discard_pending_text_history();
     request_undo_edit_ = false;
@@ -4619,7 +4664,10 @@ void App::load_note_content_for_active()
   record_project_read(state_file_path_, loaded_note, true);
   if(!loaded_note)
   {
+    if(!note_changed) detached_edit_checkpoints_.erase(state_file_path_);
     LOG_ERROR(loaded_note.message);
+    active_note_read_failed_ = true;
+    active_note_read_error_ = loaded_note.message;
     markdown_text_.clear();
     // Do not immediately persist the empty placeholder. If the user edits it,
     // normal editor change tracking marks it dirty and save_project_text()
@@ -4628,6 +4676,25 @@ void App::load_note_content_for_active()
   }
   else if(loaded_note.snapshot.existed)
   {
+    if(note_changed)
+    {
+      if(const auto checkpoint = detached_edit_checkpoints_.find(state_file_path_);
+         checkpoint != detached_edit_checkpoints_.end())
+      {
+        edit_checkpoint_path_ = state_file_path_;
+        edit_checkpoint_text_ = std::move(checkpoint->second);
+        detached_edit_checkpoints_.erase(checkpoint);
+      }
+    }
+    else if(checkpoint_to_preserve)
+    {
+      edit_checkpoint_path_ = state_file_path_;
+      edit_checkpoint_text_ = std::move(checkpoint_to_preserve);
+    }
+    else
+      detached_edit_checkpoints_.erase(state_file_path_);
+    active_note_read_failed_ = false;
+    active_note_read_error_.clear();
     markdown_text_ = loaded_note.snapshot.content;
     const std::string fingerprint = notepp::note_index::content_fingerprint(markdown_text_);
     if(n.content_fingerprint != fingerprint)
@@ -4639,6 +4706,9 @@ void App::load_note_content_for_active()
   }
   else
   {
+    detached_edit_checkpoints_.erase(state_file_path_);
+    active_note_read_failed_ = false;
+    active_note_read_error_.clear();
     markdown_text_.clear();
     update_note_cache(state_file_path_, markdown_text_);
     state_dirty_ = true;
@@ -4706,7 +4776,15 @@ void App::rename_note_storage_for_title(const std::string &new_title)
     return;
   }
 
+  const std::string old_path = state_file_path_;
   state_file_path_ = new_path.string();
+  if(edit_checkpoint_path_ == old_path) edit_checkpoint_path_ = state_file_path_;
+  if(const auto checkpoint = detached_edit_checkpoints_.find(old_path);
+     checkpoint != detached_edit_checkpoints_.end())
+  {
+    detached_edit_checkpoints_[state_file_path_] = std::move(checkpoint->second);
+    detached_edit_checkpoints_.erase(checkpoint);
+  }
   note_title_ = safe_title;
   sync_active_note_meta();
   state_dirty_ = true;
@@ -4724,6 +4802,7 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
   FolderMeta &f = folders_[(size_t)folder_idx];
   NoteMeta &n = f.notes[(size_t)note_idx];
   std::filesystem::path new_path = make_note_path(f.name, safe_title);
+  const std::string old_path_string = n.path;
 
   if(new_path.string() != n.path)
   {
@@ -4738,11 +4817,18 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
       return;
     }
     n.path = new_path.string();
+    if(const auto checkpoint = detached_edit_checkpoints_.find(old_path_string);
+       checkpoint != detached_edit_checkpoints_.end())
+    {
+      detached_edit_checkpoints_[n.path] = std::move(checkpoint->second);
+      detached_edit_checkpoints_.erase(checkpoint);
+    }
   }
 
   n.title = safe_title;
   if(folder_idx == active_folder_idx_ && note_idx == active_note_idx_)
   {
+    if(edit_checkpoint_path_ == old_path_string) edit_checkpoint_path_ = n.path;
     state_file_path_ = n.path;
     note_title_ = n.title;
   }
@@ -4752,6 +4838,7 @@ void App::rename_note_by_index(int folder_idx, int note_idx, const std::string &
 void App::push_undo_snapshot_from(const std::string &snapshot)
 {
   if(history_replay_in_progress_ || state_file_path_.empty()) return;
+  capture_edit_checkpoint(snapshot);
   deferred_text_snapshot_before_ = snapshot;
 }
 
@@ -5045,6 +5132,9 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   }
 
   folders_ = std::move(restored_folders);
+  detached_edit_checkpoints_.clear();
+  edit_checkpoint_path_.clear();
+  edit_checkpoint_text_.reset();
   g_folder_drawings = std::move(restored_drawings);
   g_draw_undo.clear();
   g_draw_redo.clear();
@@ -5148,6 +5238,8 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
     throw std::invalid_argument("text undo context snapshot is malformed");
   if(note_path.empty()) throw std::invalid_argument("text undo note path is empty");
 
+  const std::string saved_checkpoint_path = edit_checkpoint_path_;
+  const std::optional<std::string> saved_checkpoint = edit_checkpoint_text_;
   discard_pending_text_history();
   if(!write_text_file(std::string(note_path), text))
     throw std::runtime_error("cannot restore note text for undo");
@@ -5187,6 +5279,11 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
   {
     markdown_text_.assign(text.begin(), text.end());
     normalize_input_text_buffer(markdown_text_);
+    if(saved_checkpoint && saved_checkpoint_path == state_file_path_)
+    {
+      edit_checkpoint_path_ = saved_checkpoint_path;
+      edit_checkpoint_text_ = *saved_checkpoint;
+    }
   }
 
   state_dirty_ = true;
@@ -5702,6 +5799,12 @@ bool App::frame_begin()
       had_event = true;
       continue;
     }
+    if(event.type == kNoteComparisonCompletedEvent)
+    {
+      dirty_ = true;
+      had_event = true;
+      continue;
+    }
     if(event.type == kProjectFilesChangedEvent)
     {
       if(!git_sync_in_progress_ && sync_project_files()) had_event = true;
@@ -6022,6 +6125,7 @@ bool App::frame_begin()
       const bool edit_find_project_shortcut = edit_ctrl_down && edit_shift_down && edit_key_sym == SDLK_f;
       const bool edit_undo_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_z;
       const bool edit_redo_shortcut = edit_ctrl_down && (edit_key_sym == SDLK_y || (edit_shift_down && edit_key_sym == SDLK_z));
+      const bool edit_save_shortcut = edit_ctrl_down && !edit_shift_down && edit_key_sym == SDLK_s;
       const bool edit_editor_actions_shortcut =
           edit_ctrl_down && !edit_shift_down &&
           (edit_key_sym == SDLK_RETURN || edit_key_sym == SDLK_KP_ENTER);
@@ -6043,6 +6147,15 @@ bool App::frame_begin()
         else
         {
           request_exit_edit_mode_ = true;
+        }
+        continue;
+      }
+      if(edit_save_shortcut)
+      {
+        if(event.key.repeat == 0)
+        {
+          explicit_save_requested_ = true;
+          state_dirty_ = true;
         }
         continue;
       }
@@ -7120,6 +7233,7 @@ void App::render_variable_inspector()
       {
         flush_pending_text_history();
         const std::string before = markdown_text_;
+        capture_edit_checkpoint(before);
         markdown_text_ = std::move(updated_markdown);
         normalize_input_text_buffer(markdown_text_);
         record_text_history_action("Edit variable", before, markdown_text_);
@@ -7140,8 +7254,287 @@ void App::render_variable_inspector()
   }
 }
 
+void App::start_note_comparison_git_request()
+{
+  comparison_request_generation_ = note_content_generation_;
+  const std::filesystem::path root = config_.projectRoot;
+  const std::filesystem::path path = comparison_path_;
+  comparison_git_pending_ = true;
+  comparison_git_future_ = std::async(std::launch::async, [this, root, path] {
+    notepp::git_sync::HeadContentResult result = git_client_.read_head(root, path);
+    SDL_Event event{};
+    event.type = kNoteComparisonCompletedEvent;
+    SDL_PushEvent(&event);
+    return result;
+  });
+}
+
+void App::invalidate_note_comparison()
+{
+  comparison_visible_ = false;
+  comparison_stale_ = true;
+  comparison_git_request_queued_ = false;
+  comparison_git_result_ = {};
+  ++note_content_generation_;
+}
+
+void App::capture_edit_checkpoint(std::string_view before_text)
+{
+  if(state_file_path_.empty() || active_note_read_failed_) return;
+  if(!edit_checkpoint_text_ || edit_checkpoint_path_ != state_file_path_)
+  {
+    edit_checkpoint_path_ = state_file_path_;
+    edit_checkpoint_text_ = std::string(before_text);
+  }
+}
+
+void App::capture_edit_checkpoint_for_path(std::string_view path, std::string_view before_text)
+{
+  if(path.empty()) return;
+  detached_edit_checkpoints_.try_emplace(std::string(path), before_text);
+}
+
+void App::migrate_edit_checkpoint(std::string_view old_path, std::string_view new_path)
+{
+  if(old_path.empty() || new_path.empty() || old_path == new_path) return;
+  if(edit_checkpoint_path_ == old_path) edit_checkpoint_path_ = std::string(new_path);
+  const auto checkpoint = detached_edit_checkpoints_.find(std::string(old_path));
+  if(checkpoint == detached_edit_checkpoints_.end()) return;
+  detached_edit_checkpoints_.try_emplace(std::string(new_path), std::move(checkpoint->second));
+  detached_edit_checkpoints_.erase(checkpoint);
+}
+
+void App::begin_note_comparison()
+{
+  if(!has_active_note()) return;
+  comparison_path_ = state_file_path_;
+  comparison_text_ = markdown_text_;
+  comparison_current_read_failed_ = active_note_read_failed_;
+  comparison_edit_checkpoint_text_.reset();
+  if(edit_checkpoint_text_ && edit_checkpoint_path_ == comparison_path_)
+    comparison_edit_checkpoint_text_ = *edit_checkpoint_text_;
+  else if(const auto checkpoint = detached_edit_checkpoints_.find(comparison_path_.string());
+          checkpoint != detached_edit_checkpoints_.end())
+    comparison_edit_checkpoint_text_ = checkpoint->second;
+  comparison_git_result_ = {};
+  comparison_stale_ = false;
+  comparison_baseline_ = ComparisonBaseline::edit_checkpoint;
+  comparison_visible_ = true;
+  comparison_git_request_queued_ = false;
+  comparison_git_pending_ = false;
+  if(comparison_current_read_failed_) return;
+  if(comparison_git_future_.valid())
+  {
+    if(comparison_git_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+      comparison_git_future_.get();
+    else
+    {
+      comparison_git_request_queued_ = true;
+      comparison_git_pending_ = true;
+      return;
+    }
+  }
+  start_note_comparison_git_request();
+}
+
+void App::render_note_comparison()
+{
+  if(comparison_git_pending_ && comparison_git_future_.valid() &&
+     comparison_git_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+  {
+    notepp::git_sync::HeadContentResult result = comparison_git_future_.get();
+    comparison_git_pending_ = false;
+    const bool current_request = comparison_request_generation_ == note_content_generation_ &&
+                                 comparison_path_ == state_file_path_;
+    if(comparison_git_request_queued_)
+    {
+      comparison_git_request_queued_ = false;
+      start_note_comparison_git_request();
+    }
+    else if(current_request)
+      comparison_git_result_ = std::move(result);
+    else
+      comparison_stale_ = true;
+  }
+  if(!comparison_visible_) return;
+  std::optional<std::string> current_checkpoint = edit_checkpoint_text_;
+  if((!current_checkpoint || edit_checkpoint_path_ != state_file_path_) &&
+     !state_file_path_.empty())
+  {
+    if(const auto checkpoint = detached_edit_checkpoints_.find(state_file_path_);
+       checkpoint != detached_edit_checkpoints_.end())
+      current_checkpoint = checkpoint->second;
+  }
+  if(comparison_path_ != state_file_path_ || comparison_text_ != markdown_text_ ||
+     comparison_edit_checkpoint_text_ != current_checkpoint ||
+     comparison_current_read_failed_ != active_note_read_failed_ ||
+     comparison_request_generation_ != note_content_generation_)
+    comparison_stale_ = true;
+
+  bool open = comparison_visible_;
+  ImGui::SetNextWindowSize(ImVec2(760.0f, 520.0f), ImGuiCond_FirstUseEver);
+  if(!ImGui::Begin("Note comparison", &open, ImGuiWindowFlags_NoSavedSettings))
+  {
+    ImGui::End();
+    comparison_visible_ = open;
+    return;
+  }
+  std::error_code relative_error;
+  const std::filesystem::path relative_path =
+      std::filesystem::relative(comparison_path_, config_.projectRoot, relative_error);
+  const bool relative_outside =
+      std::any_of(relative_path.begin(), relative_path.end(), [](const auto &part) {
+        return part == "..";
+      });
+  const std::string display_path =
+      !relative_error && !relative_path.empty() && relative_path != "." && !relative_outside
+          ? relative_path.generic_string()
+          : comparison_path_.generic_string();
+  ImGui::Text("%s", display_path.c_str());
+  if(comparison_stale_)
+  {
+    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                       "The note changed while this comparison was open. Refresh to compare again.");
+    if(ImGui::Button("Refresh")) begin_note_comparison();
+    ImGui::End();
+    comparison_visible_ = open;
+    return;
+  }
+  const char *checkpoint_label = comparison_edit_checkpoint_text_.has_value()
+                                     ? "Since editing began"
+                                     : "Since editing began (unavailable)";
+  if(ImGui::RadioButton(checkpoint_label,
+                        comparison_baseline_ == ComparisonBaseline::edit_checkpoint))
+    comparison_baseline_ = ComparisonBaseline::edit_checkpoint;
+  ImGui::SameLine();
+  const bool git_available = comparison_git_pending_ || comparison_git_result_.success || comparison_git_result_.missing;
+  if(!git_available) ImGui::BeginDisabled();
+  if(ImGui::RadioButton("Last Git commit (HEAD)", comparison_baseline_ == ComparisonBaseline::git_head))
+    comparison_baseline_ = ComparisonBaseline::git_head;
+  if(!git_available) ImGui::EndDisabled();
+  if(!git_available && !comparison_git_result_.detail.empty())
+  {
+    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Git comparison unavailable: %s",
+                       comparison_git_result_.detail.c_str());
+  }
+  ImGui::SameLine();
+  if(ImGui::Button("Refresh")) begin_note_comparison();
+
+  std::string baseline;
+  std::string metadata;
+  bool available = !comparison_current_read_failed_;
+  if(comparison_current_read_failed_)
+  {
+    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Cannot compare note: %s",
+                       active_note_read_error_.c_str());
+  }
+  else if(comparison_baseline_ == ComparisonBaseline::edit_checkpoint)
+  {
+    if(comparison_edit_checkpoint_text_)
+      baseline = *comparison_edit_checkpoint_text_;
+    else
+      available = false;
+  }
+  else if(comparison_git_pending_)
+  {
+    ImGui::TextUnformatted("Reading HEAD...");
+    ImGui::End();
+    comparison_visible_ = open;
+    return;
+  }
+  else if(comparison_git_result_.success)
+  {
+    baseline = comparison_git_result_.content;
+    metadata = comparison_git_result_.commit_id.substr(0U, std::min<std::size_t>(7U, comparison_git_result_.commit_id.size()));
+    if(!comparison_git_result_.subject.empty()) metadata += " - " + comparison_git_result_.subject;
+  }
+  else if(comparison_git_result_.missing)
+  {
+    metadata = "new in working tree";
+    baseline.clear();
+  }
+  else
+    available = false;
+
+  if(!available)
+  {
+    const char *unavailable_message =
+        comparison_baseline_ == ComparisonBaseline::edit_checkpoint
+            ? "Edit checkpoint unavailable"
+            : comparison_git_result_.detail.c_str();
+    ImGui::TextDisabled("%s", unavailable_message);
+  }
+  else
+  {
+    if(!metadata.empty()) ImGui::TextDisabled("%s", metadata.c_str());
+    const char *baseline_name = comparison_baseline_ == ComparisonBaseline::edit_checkpoint
+                                    ? "Since editing began"
+                                    : "HEAD";
+    ImGui::Text("Previous vs Current editor (%s)", baseline_name);
+    const notepp::note_diff::Result diff = notepp::note_diff::compare(comparison_text_, baseline);
+    if(!diff.success)
+      ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", diff.error.c_str());
+    else if(diff.same)
+      ImGui::TextUnformatted("No differences");
+    else
+    {
+      ImGui::Text("Added: %zu  Removed: %zu  Changed: %zu", diff.added, diff.removed, diff.changed);
+      std::string copy;
+      for(const auto &line : diff.paired_lines)
+      {
+        if(line.baseline_present) copy += "- " + line.baseline_text + '\n';
+        if(line.current_present) copy += "+ " + line.current_text + '\n';
+      }
+      if(ImGui::Button("Copy diff")) ImGui::SetClipboardText(copy.c_str());
+      ImGui::BeginChild("##note_diff", ImVec2(0.0f, 0.0f), true,
+                        ImGuiWindowFlags_HorizontalScrollbar);
+      ImGui::PushFont(font_terminal_ != nullptr ? font_terminal_ : ImGui::GetFont());
+      if(ImGui::BeginTable("##note_diff_table", 2,
+                           ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                               ImGuiTableFlags_SizingStretchProp))
+      {
+        ImGui::TableSetupColumn("Previous", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        const ImVec4 removed_color(1.0f, 0.42f, 0.42f, 1.0f);
+        const ImVec4 added_color(0.42f, 1.0f, 0.52f, 1.0f);
+        for(const auto &line : diff.paired_lines)
+        {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          if(line.baseline_present)
+          {
+            const bool removed = !line.current_present || line.changed;
+            if(removed) ImGui::PushStyleColor(ImGuiCol_Text, removed_color);
+            ImGui::TextUnformatted(line.baseline_text.c_str());
+            if(removed) ImGui::PopStyleColor();
+          }
+          ImGui::TableSetColumnIndex(1);
+          if(line.current_present)
+          {
+            const bool added = !line.baseline_present || line.changed;
+            if(added) ImGui::PushStyleColor(ImGuiCol_Text, added_color);
+            ImGui::TextUnformatted(line.current_text.c_str());
+            if(added) ImGui::PopStyleColor();
+          }
+        }
+        ImGui::EndTable();
+      }
+      ImGui::PopFont();
+      ImGui::EndChild();
+    }
+  }
+  ImGui::End();
+  comparison_visible_ = open;
+}
+
 void App::frame_ui()
 {
+  if(observed_markdown_text_ != markdown_text_)
+  {
+    observed_markdown_text_ = markdown_text_;
+    ++note_content_generation_;
+  }
   frame_ui_active_ = true;
   struct FrameUiGuard
   {
@@ -10604,6 +10997,8 @@ void App::frame_ui()
                 g_folder_drawings.erase(it);
                 g_drawings_dirty = true;
               }
+              for(const auto &[old_path, new_path] : moves)
+                migrate_edit_checkpoint(old_path.string(), new_path.string());
               save_index();
               flash_mark_folder(rf.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
               if(rename_folder_idx == active_folder_idx_) load_note_content_for_active();
@@ -11283,6 +11678,9 @@ void App::frame_ui()
             std::snprintf(rename_note_buf, sizeof(rename_note_buf), "%s", n.title.c_str());
             open_rename_note_popup = true;
           }
+          if(ImGui::MenuItem(Lang::t("Compare"), nullptr, false,
+                             !multi_selected_here && fi == active_folder_idx_ && ni == active_note_idx_))
+            begin_note_comparison();
           if(ImGui::MenuItem(Lang::t("Edit note")))
           {
             const int prev_folder = active_folder_idx_;
@@ -11914,6 +12312,14 @@ void App::frame_ui()
         if(ni < 0 || ni >= (int)df.notes.size()) continue;
         const std::string del_path = df.notes[(size_t)ni].path;
         if(!del_path.empty() && !soft_delete_project_file(del_path)) continue;
+        if(del_path == state_file_path_ || edit_checkpoint_path_ == del_path)
+        {
+          invalidate_note_comparison();
+          edit_checkpoint_path_.clear();
+          edit_checkpoint_text_.reset();
+          comparison_edit_checkpoint_text_.reset();
+        }
+        detached_edit_checkpoints_.erase(del_path);
         queue_pending_delete_path(del_path);
         df.notes.erase(df.notes.begin() + ni);
       }
@@ -11959,9 +12365,26 @@ void App::frame_ui()
         FolderMeta &df = folders_[(size_t)idx];
         std::vector<std::pair<std::filesystem::path, std::filesystem::path>> moves;
         for(const NoteMeta &note : df.notes)
-          if(!note.path.empty()) moves.emplace_back(note.path, note.path + ".bak");
+        {
+          if(note.path.empty()) continue;
+          if(note.path == state_file_path_ || edit_checkpoint_path_ == note.path)
+          {
+            edit_checkpoint_path_.clear();
+            edit_checkpoint_text_.reset();
+            comparison_edit_checkpoint_text_.reset();
+          }
+          detached_edit_checkpoints_.erase(note.path);
+          if(note.path == comparison_path_)
+          {
+            invalidate_note_comparison();
+          }
+          moves.emplace_back(note.path, note.path + ".bak");
+        }
         if(!move_project_files(moves)) continue;
-        for(const NoteMeta &note : df.notes) queue_pending_delete_path(note.path);
+        for(const NoteMeta &note : df.notes)
+        {
+          if(!note.path.empty()) queue_pending_delete_path(note.path);
+        }
         folders_.erase(folders_.begin() + idx);
       }
       if(!parent_folder_to_mark.empty()) flash_mark_folder(parent_folder_to_mark, ImVec4(0.90f, 0.32f, 0.32f, 1.0f));
@@ -12116,6 +12539,9 @@ void App::frame_ui()
           src.notes.push_back(std::move(nm));
           continue;
         }
+        const std::string old_path = nm.path;
+        migrate_edit_checkpoint(old_path, new_path);
+        if(state_file_path_ == old_path) state_file_path_ = new_path;
         nm.path = new_path;
         remove_pending_delete_path(new_path);
         nm.hidden = false;
@@ -12135,7 +12561,7 @@ void App::frame_ui()
       force_open_folder_idx = dst_fi;
       if(dst_fi != prev_folder)
         apply_folder_settings(dst_fi);
-      load_note_content_for_active();
+      load_note_content_for_active(true);
       save_index();
       flash_mark_folder(dst.name, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
     }
@@ -12206,7 +12632,11 @@ void App::frame_ui()
           if(!move_project_files(moves)) continue;
           for(std::size_t note_index = 0; note_index < mf.notes.size(); ++note_index)
           {
-            mf.notes[note_index].path = moves[note_index].second.string();
+            const std::string old_path = moves[note_index].first.string();
+            const std::string new_path = moves[note_index].second.string();
+            migrate_edit_checkpoint(old_path, new_path);
+            if(state_file_path_ == old_path) state_file_path_ = new_path;
+            mf.notes[note_index].path = new_path;
             remove_pending_delete_path(mf.notes[note_index].path);
           }
           mf.name = new_name;
@@ -12237,7 +12667,7 @@ void App::frame_ui()
         flash_mark_folder(moved_root, ImVec4(0.22f, 0.62f, 0.95f, 1.0f));
         if(active_folder_idx_ >= 0 && active_folder_idx_ < (int)folders_.size())
         {
-          load_note_content_for_active();
+          load_note_content_for_active(true);
         }
       }
     }
@@ -12519,6 +12949,7 @@ void App::frame_ui()
           snippet.insert(snippet.begin(), '\n');
           ++cursor_offset;
         }
+        capture_edit_checkpoint(markdown_text_);
         push_undo_snapshot();
         markdown_text_.insert(static_cast<size_t>(p), snippet);
         const int cursor = p + std::max(0, cursor_offset);
@@ -14316,6 +14747,7 @@ void App::frame_ui()
           int end = std::clamp(note_reference_selection_end_, 0, static_cast<int>(markdown_text_.size()));
           if(start > end) std::swap(start, end);
           const std::string link = "[" + note_reference_label_ + "](" + note_reference_target_ + ")";
+          capture_edit_checkpoint(markdown_text_);
           push_undo_snapshot();
           markdown_text_.replace(static_cast<size_t>(start), static_cast<size_t>(end - start), link);
           const int cursor = start + static_cast<int>(link.size());
@@ -14375,6 +14807,7 @@ void App::frame_ui()
         normalize_input_text_buffer(markdown_text_);
         if(changed)
         {
+          capture_edit_checkpoint(before_edit);
           update_pending_text_history(
               "Edit text",
               before_edit,
@@ -14438,12 +14871,14 @@ void App::frame_ui()
           const std::string preview_state_after = capture_preview_state_snapshot();
           if(is_current_note_document)
           {
+            capture_edit_checkpoint(markdown_text_);
             markdown_text_ = preview_text;
             normalize_input_text_buffer(markdown_text_);
             state_dirty_ = true;
           }
           else if(preview_text != preview_before)
           {
+            capture_edit_checkpoint_for_path(n.path, preview_before);
             if(write_text_file(n.path, preview_text))
               update_note_cache(n.path, preview_text);
           }
@@ -14667,6 +15102,8 @@ void App::frame_ui()
 
           if(is_editing_this)
           {
+            capture_edit_checkpoint(markdown_text_);
+            push_undo_snapshot();
             const int insert_pos =
                 (fmt_folder.cursor_pos >= 0 &&
                  fmt_folder.cursor_pos <= (int)markdown_text_.size())
@@ -14683,6 +15120,10 @@ void App::frame_ui()
           else
           {
             std::string note_content = read_file_text(n.path);
+            if(is_current_note_document)
+              capture_edit_checkpoint(note_content);
+            else
+              capture_edit_checkpoint_for_path(n.path, note_content);
             note_content += img_insert;
             write_text_file(n.path, note_content);
             if(is_current_note_document)
@@ -14784,6 +15225,14 @@ void App::frame_ui()
             if(idx < 0 || idx >= (int)f.notes.size()) continue;
             const std::string del_path = f.notes[(size_t)idx].path;
             if(!del_path.empty() && !soft_delete_project_file(del_path)) continue;
+            if(del_path == state_file_path_ || del_path == comparison_path_)
+              invalidate_note_comparison();
+            if(del_path == edit_checkpoint_path_)
+            {
+              edit_checkpoint_path_.clear();
+              edit_checkpoint_text_.reset();
+            }
+            detached_edit_checkpoints_.erase(del_path);
             queue_pending_delete_path(del_path);
             f.notes.erase(f.notes.begin() + idx);
           }
@@ -14900,7 +15349,15 @@ void App::frame_ui()
         const bool profiles_saved = save_profiles();
         if(index_saved && profiles_saved) layout_dirty_ = false;
       }
-      if(state_dirty_ && save_state()) state_dirty_ = false;
+      if(state_dirty_ || explicit_save_requested_)
+      {
+        const bool explicit_save = explicit_save_requested_;
+        if(save_state(explicit_save))
+        {
+          state_dirty_ = false;
+          explicit_save_requested_ = false;
+        }
+      }
       if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
       if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     }
@@ -15351,6 +15808,7 @@ void App::frame_ui()
     normalize_input_text_buffer(markdown_text_);
     if(text_changed)
     {
+      capture_edit_checkpoint(before_edit);
       update_pending_text_history(
           "Edit text",
           before_edit,
@@ -15382,6 +15840,7 @@ void App::frame_ui()
                 ? fmt.cursor_pos
                 : (int)markdown_text_.size();
         const std::string before_drop = markdown_text_;
+        capture_edit_checkpoint(before_drop);
         markdown_text_.insert((size_t)insert_pos, img_insert);
         const int new_cursor = insert_pos + (int)img_insert.size();
         fmt.pending_select_range = true;
@@ -15796,7 +16255,15 @@ void App::frame_ui()
       const bool profiles_saved = save_profiles();
       if(index_saved && profiles_saved) layout_dirty_ = false;
     }
-    if(state_dirty_ && save_state()) state_dirty_ = false;
+    if(state_dirty_ || explicit_save_requested_)
+    {
+      const bool explicit_save = explicit_save_requested_;
+      if(save_state(explicit_save))
+      {
+        state_dirty_ = false;
+        explicit_save_requested_ = false;
+      }
+    }
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
   }

@@ -16,6 +16,14 @@ namespace
 constexpr auto kLocalTimeout = std::chrono::seconds(5);
 constexpr auto kNetworkTimeout = std::chrono::seconds(30);
 
+bool is_full_object_id(std::string_view value)
+{
+  if(value.size() != 40U && value.size() != 64U) return false;
+  return std::all_of(value.begin(), value.end(), [](char character) {
+    return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+  });
+}
+
 std::string trim(std::string value)
 {
   while(!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
@@ -150,8 +158,17 @@ bool is_offline_error(std::string_view detail)
   return false;
 }
 
+bool is_missing_head_path_error(std::string_view detail)
+{
+  return contains_case_insensitive(detail, "does not exist in '") ||
+         contains_case_insensitive(detail, "exists on disk, but not in '") ||
+         (contains_case_insensitive(detail, "pathspec") &&
+          contains_case_insensitive(detail, "did not match any file"));
+}
+
 process::Result run_git(const process::Runner &runner, const std::filesystem::path &root,
-                        std::vector<std::string> arguments, bool network)
+                        std::vector<std::string> arguments, bool network,
+                        std::size_t max_output_bytes = 64U * 1024U)
 {
   std::vector<std::string> full_arguments{
       "-c", "credential.interactive=never",
@@ -167,7 +184,7 @@ process::Result run_git(const process::Runner &runner, const std::filesystem::pa
 
   process::RunOptions options;
   options.timeout = network ? kNetworkTimeout : kLocalTimeout;
-  options.max_output_bytes = 64U * 1024U;
+  options.max_output_bytes = max_output_bytes;
   options.environment_overrides["LC_ALL"] = "C";
   options.environment_overrides["LANG"] = "C";
   options.environment_overrides["GIT_TERMINAL_PROMPT"] = "0";
@@ -204,6 +221,17 @@ Status command_failure(const process::Result &result, std::string_view action, b
       detail = "Git authentication was rejected. Check the system Git credentials.";
     else if(is_tls_error(detail))
       detail = "Git TLS or certificate validation failed. Check the system Git configuration.";
+  }
+  if(detail.empty())
+  {
+    if(result.termination == process::Termination::timed_out)
+      detail = "The Git command timed out. Try again or check the repository state.";
+    else if(result.termination == process::Termination::spawn_failed)
+      detail = "Install Git or make the Git executable available on PATH.";
+    else if(result.termination == process::Termination::exited)
+      detail = "Git exited with status " + std::to_string(result.exit_code) + ". Check the repository state and try again.";
+    else
+      detail = "Git did not complete. Try again.";
   }
   status.detail = redact(std::move(detail));
   return status;
@@ -460,6 +488,105 @@ std::optional<Status> stage_and_commit(const process::Runner &runner,
 } // namespace
 
 Client::Client(const process::Runner &runner) : runner_(runner) {}
+
+HeadContentResult Client::read_head(const std::filesystem::path &project_root,
+                                    const std::filesystem::path &note_path) const
+{
+  HeadContentResult result;
+  const process::Result version = run_git(runner_, {}, {"--version"}, false);
+  if(!version.succeeded() || version.output_truncated)
+  {
+    result.detail = "System Git is unavailable";
+    return result;
+  }
+  const process::Result repository_result =
+      run_git(runner_, project_root, {"rev-parse", "--show-toplevel"}, false);
+  if(!repository_result.succeeded() || repository_result.output_truncated)
+  {
+    result.detail = repository_result.succeeded()
+                        ? "Cannot resolve the Git repository root"
+                        : redact(trim(repository_result.stderr_text.empty() ? repository_result.error
+                                                                            : repository_result.stderr_text));
+    if(result.detail.empty()) result.detail = "The selected project is not a Git repository";
+    return result;
+  }
+  const std::filesystem::path repository_root(trim(repository_result.stdout_text));
+  if(!same_root(project_root, repository_root))
+  {
+    result.detail = "The selected project must be the Git repository root";
+    return result;
+  }
+
+  std::error_code error;
+  const auto root = std::filesystem::weakly_canonical(project_root, error);
+  const auto absolute_note = std::filesystem::absolute(note_path, error).lexically_normal();
+  if(error || root.empty())
+  {
+    result.detail = "Cannot resolve the project path";
+    return result;
+  }
+  const auto relative = absolute_note.lexically_relative(root);
+  const std::string relative_text = relative.generic_string();
+  if(relative.empty() || relative_text.empty() || relative_text == "." || relative_text == ".." ||
+     relative_text.starts_with("../") || relative.is_absolute())
+  {
+    result.detail = "The note path is outside the project";
+    return result;
+  }
+
+  const process::Result head = run_git(runner_, project_root, {"rev-parse", "HEAD"}, false);
+  if(!head.succeeded())
+  {
+    result.detail = redact(trim(head.stderr_text.empty() ? head.error : head.stderr_text));
+    if(result.detail.empty()) result.detail = "Cannot resolve HEAD";
+    return result;
+  }
+  if(head.output_truncated)
+  {
+    result.detail = "Git returned incomplete HEAD metadata";
+    return result;
+  }
+  result.commit_id = trim(head.stdout_text);
+  if(!is_full_object_id(result.commit_id))
+  {
+    result.detail = "Git returned an invalid HEAD object ID";
+    return result;
+  }
+  const process::Result subject = run_git(runner_, project_root,
+                                          {"log", "-1", "--format=%s", "HEAD"}, false);
+  if(!subject.succeeded() || subject.output_truncated)
+  {
+    result.detail = subject.succeeded() ? "Git returned incomplete commit metadata"
+                                        : redact(trim(subject.stderr_text.empty() ? subject.error : subject.stderr_text));
+    if(result.detail.empty()) result.detail = "Cannot read the HEAD commit metadata";
+    return result;
+  }
+  result.subject = trim(subject.stdout_text);
+
+  const std::string spec = result.commit_id + ":" + relative_text;
+  const process::Result blob = run_git(runner_, project_root, {"show", "--format=", spec}, false,
+                                       1024U * 1024U);
+  const process::Result verify = run_git(runner_, project_root, {"rev-parse", "HEAD"}, false);
+  if(!verify.succeeded() || verify.output_truncated || trim(verify.stdout_text) != result.commit_id)
+  {
+    result.detail = "HEAD changed while reading the note; refresh and try again";
+    return result;
+  }
+  if(!blob.succeeded() || blob.output_truncated)
+  {
+    const std::string detail = trim(blob.stderr_text.empty() ? blob.error : blob.stderr_text);
+    result.missing = blob.termination == process::Termination::exited && blob.exit_code != 0 &&
+                     !blob.output_truncated && is_missing_head_path_error(detail);
+    result.detail = blob.output_truncated
+                        ? "Git returned incomplete note content"
+                        : (result.missing ? "The note does not exist at HEAD" : redact(detail));
+    if(result.detail.empty()) result.detail = "Cannot read the note at HEAD";
+    return result;
+  }
+  result.content = blob.stdout_text;
+  result.success = true;
+  return result;
+}
 
 Status Client::inspect(const std::filesystem::path &project_root) const
 {

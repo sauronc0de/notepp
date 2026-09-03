@@ -1,11 +1,13 @@
 #pragma once
 
 #include "app_settings.hpp"
+#include "atomic_file.hpp"
 #include "command_api.hpp"
 #include "command_ipc.hpp"
 #include "emoji_picker.hpp"
 #include "git_sync.hpp"
 #include "note_history.hpp"
+#include "note_diff.hpp"
 #include "note_model.hpp"
 #include "note_storage.hpp"
 #include "project_settings.hpp"
@@ -13,6 +15,7 @@
 
 #include <imgui.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -93,11 +96,11 @@ private:
   void init_sdl_gl();
   void init_imgui();
   void load_state();
-  bool save_state();
+  bool save_state(bool reset_edit_checkpoint = false);
   bool save_index();
   void sync_active_folder_settings();
   void apply_folder_settings(int folder_idx);
-  void load_note_content_for_active();
+  void load_note_content_for_active(bool preserve_edit_checkpoint = false);
   const std::string &cached_note_text(const std::string &path);
   void update_note_cache(const std::string &path, std::string text);
   void invalidate_note_cache(const std::string &path);
@@ -149,6 +152,13 @@ private:
   void show_history_indicator(std::string_view prefix, std::string_view label, ImVec4 accent);
   void render_history_indicator() const;
   void render_debug_history_window() const;
+  void invalidate_note_comparison();
+  void capture_edit_checkpoint(std::string_view before_text);
+  void capture_edit_checkpoint_for_path(std::string_view path, std::string_view before_text);
+  void migrate_edit_checkpoint(std::string_view old_path, std::string_view new_path);
+  void begin_note_comparison();
+  void start_note_comparison_git_request();
+  void render_note_comparison();
   void shutdown();
 
   using NoteLayoutData = notepp::note_model::NoteLayoutData;
@@ -387,6 +397,8 @@ private:
   int search_editor_match_length_ = 0;
   std::string note_title_ = "Note";
   std::string state_file_path_;
+  bool active_note_read_failed_ = false;
+  std::string active_note_read_error_;
   using NoteMeta = notepp::note_model::NoteMeta;
   using FolderMeta = notepp::note_model::FolderMeta;
   struct PendingDroppedFile
@@ -423,6 +435,7 @@ private:
   bool folder_overview_mode_ = false;
   mutable bool layout_dirty_ = false;
   bool state_dirty_ = false;
+  bool explicit_save_requested_ = false;
   bool last_save_succeeded_ = false;
   int index_schema_version_ = 3;
   bool index_paths_portable_ = true;
@@ -452,6 +465,29 @@ private:
     double until = 0.0;
   };
   HistoryIndicator history_indicator_;
+
+  enum class ComparisonBaseline
+  {
+    edit_checkpoint,
+    git_head
+  };
+  bool comparison_visible_ = false;
+  bool comparison_git_pending_ = false;
+  bool comparison_git_request_queued_ = false;
+  bool comparison_stale_ = false;
+  bool comparison_current_read_failed_ = false;
+  std::uint64_t note_content_generation_ = 0;
+  std::uint64_t comparison_request_generation_ = 0;
+  std::string observed_markdown_text_;
+  ComparisonBaseline comparison_baseline_ = ComparisonBaseline::edit_checkpoint;
+  std::filesystem::path comparison_path_;
+  std::string comparison_text_;
+  std::filesystem::path edit_checkpoint_path_;
+  std::optional<std::string> edit_checkpoint_text_;
+  std::unordered_map<std::string, std::string> detached_edit_checkpoints_;
+  std::optional<std::string> comparison_edit_checkpoint_text_;
+  notepp::git_sync::HeadContentResult comparison_git_result_;
+  std::future<notepp::git_sync::HeadContentResult> comparison_git_future_;
 
   std::string markdown_text_ =
       "# Notes (Markdown preview)\n"

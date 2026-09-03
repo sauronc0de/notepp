@@ -5,6 +5,7 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace notepp::git_sync
 {
@@ -43,12 +44,24 @@ struct OperationResult
   Status status;
 };
 
+struct HeadContentResult
+{
+  bool success = false;
+  bool missing = false;
+  std::string content;
+  std::string commit_id;
+  std::string subject;
+  std::string detail;
+};
+
 class Client
 {
 public:
   explicit Client(const process::Runner &runner);
 
   [[nodiscard]] Status inspect(const std::filesystem::path &project_root) const;
+  [[nodiscard]] HeadContentResult read_head(const std::filesystem::path &project_root,
+                                            const std::filesystem::path &note_path) const;
   [[nodiscard]] OperationResult pull_on_open(const std::filesystem::path &project_root) const;
   [[nodiscard]] OperationResult commit_and_push(const std::filesystem::path &project_root,
                                                 std::string_view message) const;
