@@ -34,7 +34,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "associate_notepp"; Description: "Associate .notepp files with Notepp"; GroupDescription: "File associations:"; Flags: unchecked
 
 [Files]
-Source: "@CMAKE_SOURCE_DIR@\dist\Notepp\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "@CMAKE_BINARY_DIR@\windows-stage\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
