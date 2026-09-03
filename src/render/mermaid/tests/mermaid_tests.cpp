@@ -461,19 +461,28 @@ void test_kanban_user_content_roundtrip()
   // "\x8CFailed" and overflow a char).
   const std::string src =
       std::string("kanban\n"
-                  "  a[") + "\xF0\x9F\x94\x8D" + " To Investigate]\n"
-      "    c1[Undermountain]: Necessitem diners o m" + "\xC3\xA9" + "s poder per anar al undermountain.\n"
-      "    c4[Find anchor team]: Hauria de trobar alguna cosa que ens uneixi a tots. \\n Fer alguna cosa perqu" + "\xC3\xA8" + " tots vagin m" + "\xC3\xA9" + "s o menys a una. \\n Feia molt que no podia est" + "\xC3\xA0" + " tant temps amb unes mateixes persones sense haver de fugir.\\n Haig de lluitar per la unitat.\n"
-      "  a[" + "\xF0\x9F\x93\x9D" + " Available]\n"
-      "    c2[Somni]: Un somni misterios amb una ciutat i una criatura terrorifica. Possiblament al Undermountain ja que era un lloc tancat.\n"
-      "    c2[Escriptor]: Vol veurens a la taverna\n"
-      "    c3[Tresor de Neverenguer]: Ajudarem al fill Neverenguer a trobar el tresor si existeix. Ens d" + "\xC3\xB3" + "na entrades per anar a l'Opera amb en Mirth. Clarament el penjoll tenia alguna pista de tot plegat.\n"
-      "  a[" + "\xE2\x9A\x94" + " In Progress]\n"
-      "    c1[Necklace]: Fill the necklace with charms related to my 7 lifes\n"
-      "    c2[Obrir una taverna]\n"
-      "  a[" + "\xE2\x9C\x85" + " Completed]\n"
-      "    c1[Bolo]: Ha perdut un amic pels carrers de la ciutat amb la violencia que hi ha " + "\xC3\xBA" + "ltimament pels carrers de prop del port. 500 Dracs per trobar el seu amic. (50 per avan" + "\xC3\xA7" + "at)\n"
-      "  a[" + "\xE2\x9D\x8C" + " Failed]\n";
+                  "  a[") +
+      "\xF0\x9F\x94\x8D" + " To Investigate]\n"
+                           "    c1[Undermountain]: Necessitem diners o m" +
+      "\xC3\xA9" + "s poder per anar al undermountain.\n"
+                   "    c4[Find anchor team]: Hauria de trobar alguna cosa que ens uneixi a tots. \\n Fer alguna cosa perqu" +
+      "\xC3\xA8" + " tots vagin m" + "\xC3\xA9" + "s o menys a una. \\n Feia molt que no podia est" + "\xC3\xA0" + " tant temps amb unes mateixes persones sense haver de fugir.\\n Haig de lluitar per la unitat.\n"
+                                                                                                                   "  a[" +
+      "\xF0\x9F\x93\x9D" + " Available]\n"
+                           "    c2[Somni]: Un somni misterios amb una ciutat i una criatura terrorifica. Possiblament al Undermountain ja que era un lloc tancat.\n"
+                           "    c2[Escriptor]: Vol veurens a la taverna\n"
+                           "    c3[Tresor de Neverenguer]: Ajudarem al fill Neverenguer a trobar el tresor si existeix. Ens d" +
+      "\xC3\xB3" + "na entrades per anar a l'Opera amb en Mirth. Clarament el penjoll tenia alguna pista de tot plegat.\n"
+                   "  a[" +
+      "\xE2\x9A\x94" + " In Progress]\n"
+                       "    c1[Necklace]: Fill the necklace with charms related to my 7 lifes\n"
+                       "    c2[Obrir una taverna]\n"
+                       "  a[" +
+      "\xE2\x9C\x85" + " Completed]\n"
+                       "    c1[Bolo]: Ha perdut un amic pels carrers de la ciutat amb la violencia que hi ha " +
+      "\xC3\xBA" + "ltimament pels carrers de prop del port. 500 Dracs per trobar el seu amic. (50 per avan" + "\xC3\xA7" + "at)\n"
+                                                                                                                            "  a[" +
+      "\xE2\x9D\x8C" + " Failed]\n";
 
   md::KanbanDiagram d;
   expect_true(md::parse_kanban(src, d), "user kanban parses");
@@ -541,14 +550,24 @@ void test_kanban_user_content_convention()
 {
   const std::string src =
       "kanban\n"
-      "  inv[" "\xF0\x9F\x94\x8D" " To Investigate]\n"
-      "    inv1[Undermountain]: Necessitem diners o m" "\xC3\xA9" "s poder per anar al undermountain.\n"
+      "  inv["
+      "\xF0\x9F\x94\x8D"
+      " To Investigate]\n"
+      "    inv1[Undermountain]: Necessitem diners o m"
+      "\xC3\xA9"
+      "s poder per anar al undermountain.\n"
       "    inv2[Find anchor team]: Haig de lluitar per la unitat.\n"
-      "  avail[" "\xF0\x9F\x93\x9D" " Available]\n"
+      "  avail["
+      "\xF0\x9F\x93\x9D"
+      " Available]\n"
       "    avail1[Somni]: Possiblement al Undermountain ja que era un lloc tancat.\n"
-      "  prog[" "\xE2\x9A\x94" " In Progress]\n"
+      "  prog["
+      "\xE2\x9A\x94"
+      " In Progress]\n"
       "    prog1[Necklace]: Fill the necklace with charms related to my 7 lifes\n"
-      "  done[" "\xE2\x9C\x85" " Completed]\n"
+      "  done["
+      "\xE2\x9C\x85"
+      " Completed]\n"
       "    done1[Bolo]: Ha perdut un amic.\n";
 
   md::KanbanDiagram d;

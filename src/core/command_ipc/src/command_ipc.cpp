@@ -56,7 +56,11 @@ std::string read_line(int fd, int timeout_ms)
     if(count <= 0) break;
     result.append(buffer, static_cast<std::size_t>(count));
     const auto newline = result.find('\n');
-    if(newline != std::string::npos) { result.resize(newline); break; }
+    if(newline != std::string::npos)
+    {
+      result.resize(newline);
+      break;
+    }
   }
   return result;
 }
@@ -70,8 +74,8 @@ bool Server::open(std::string endpoint, std::string *error)
   close();
 #ifdef _WIN32
   const HANDLE pipe = CreateNamedPipeA(endpoint.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-      PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1024 * 1024, 1024 * 1024,
-      0, nullptr);
+                                       PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 1024 * 1024, 1024 * 1024,
+                                       0, nullptr);
   if(pipe == INVALID_HANDLE_VALUE)
   {
     set_error(error, "cannot create named pipe");
@@ -81,7 +85,10 @@ bool Server::open(std::string endpoint, std::string *error)
   overlapped->hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
   if(overlapped->hEvent == nullptr)
   {
-    delete overlapped; CloseHandle(pipe); set_error(error, "cannot create named pipe event"); return false;
+    delete overlapped;
+    CloseHandle(pipe);
+    set_error(error, "cannot create named pipe event");
+    return false;
   }
   handle_ = pipe;
   connect_event_ = overlapped->hEvent;
@@ -97,7 +104,11 @@ bool Server::open(std::string endpoint, std::string *error)
     return false;
   }
   descriptor_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if(descriptor_ < 0) { set_error(error, std::strerror(errno)); return false; }
+  if(descriptor_ < 0)
+  {
+    set_error(error, std::strerror(errno));
+    return false;
+  }
   address.sun_family = AF_UNIX;
   std::strncpy(address.sun_path, endpoint.c_str(), sizeof(address.sun_path) - 1U);
   ::unlink(endpoint.c_str());
@@ -145,7 +156,11 @@ std::size_t Server::poll(const Handler &handler, std::size_t max_requests)
     ResetEvent(static_cast<HANDLE>(connect_event_));
     const BOOL connected = ConnectNamedPipe(pipe, connect);
     const DWORD connect_error = connected ? ERROR_SUCCESS : GetLastError();
-    if(connect_error == ERROR_IO_PENDING) { connect_pending_ = true; return 0; }
+    if(connect_error == ERROR_IO_PENDING)
+    {
+      connect_pending_ = true;
+      return 0;
+    }
     if(connect_error != ERROR_SUCCESS && connect_error != ERROR_PIPE_CONNECTED) return 0;
   }
   if(connect_pending_)
@@ -155,24 +170,39 @@ std::size_t Server::poll(const Handler &handler, std::size_t max_requests)
     if(!GetOverlappedResult(pipe, connect, &ignored, FALSE)) return 0;
     connect_pending_ = false;
   }
-  char buffer[1024]; std::string request;
+  char buffer[1024];
+  std::string request;
   while(request.size() < 1024U * 1024U)
   {
-    OVERLAPPED read{}; read.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    OVERLAPPED read{};
+    read.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     if(read.hEvent == nullptr) break;
     DWORD count = 0;
     const BOOL started = ReadFile(pipe, buffer, sizeof(buffer), &count, &read);
-    if(!started && GetLastError() != ERROR_IO_PENDING) { CloseHandle(read.hEvent); break; }
+    if(!started && GetLastError() != ERROR_IO_PENDING)
+    {
+      CloseHandle(read.hEvent);
+      break;
+    }
     if(!started && WaitForSingleObject(read.hEvent, 250) != WAIT_OBJECT_0)
-    { CancelIo(pipe); CloseHandle(read.hEvent); break; }
-    if(!started && !GetOverlappedResult(pipe, &read, &count, FALSE)) { CloseHandle(read.hEvent); break; }
+    {
+      CancelIo(pipe);
+      CloseHandle(read.hEvent);
+      break;
+    }
+    if(!started && !GetOverlappedResult(pipe, &read, &count, FALSE))
+    {
+      CloseHandle(read.hEvent);
+      break;
+    }
     CloseHandle(read.hEvent);
     if(count == 0U) break;
     request.append(buffer, count);
     if(request.find('\n') != std::string::npos) break;
   }
   const std::string response = handler(request);
-  OVERLAPPED write{}; write.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  OVERLAPPED write{};
+  write.hEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
   DWORD written = 0;
   if(write.hEvent != nullptr)
   {
@@ -237,9 +267,13 @@ std::string Client::request(std::string_view endpoint, std::string_view request,
   DWORD written = 0;
   if(!WriteFile(pipe, framed.data(), static_cast<DWORD>(framed.size()), &written, nullptr))
   {
-    set_error(error, "cannot write named pipe"); CloseHandle(pipe); return {};
+    set_error(error, "cannot write named pipe");
+    CloseHandle(pipe);
+    return {};
   }
-  char buffer[1024]; DWORD count = 0; std::string response;
+  char buffer[1024];
+  DWORD count = 0;
+  std::string response;
   while(response.size() < 1024U * 1024U && ReadFile(pipe, buffer, sizeof(buffer), &count, nullptr) && count != 0U)
   {
     response.append(buffer, count);
@@ -250,21 +284,31 @@ std::string Client::request(std::string_view endpoint, std::string_view request,
   return response;
 #else
   const int descriptor = ::socket(AF_UNIX, SOCK_STREAM, 0);
-  if(descriptor < 0) { set_error(error, std::strerror(errno)); return {}; }
+  if(descriptor < 0)
+  {
+    set_error(error, std::strerror(errno));
+    return {};
+  }
   sockaddr_un address{};
   address.sun_family = AF_UNIX;
   if(endpoint.empty() || endpoint.size() >= sizeof(address.sun_path))
   {
-    set_error(error, "IPC endpoint is empty or too long"); ::close(descriptor); return {};
+    set_error(error, "IPC endpoint is empty or too long");
+    ::close(descriptor);
+    return {};
   }
   std::strncpy(address.sun_path, endpoint.data(), sizeof(address.sun_path) - 1U);
   if(::connect(descriptor, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0)
   {
-    set_error(error, std::strerror(errno)); ::close(descriptor); return {};
+    set_error(error, std::strerror(errno));
+    ::close(descriptor);
+    return {};
   }
   if(!write_all(descriptor, request))
   {
-    set_error(error, std::strerror(errno)); ::close(descriptor); return {};
+    set_error(error, std::strerror(errno));
+    ::close(descriptor);
+    return {};
   }
   const std::string response = read_line(descriptor, 30000);
   ::shutdown(descriptor, SHUT_RDWR);

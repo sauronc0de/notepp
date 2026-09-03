@@ -33,6 +33,7 @@ namespace MarkdownWidgets
 {
 
 static std::filesystem::path g_widget_document_path;
+static std::filesystem::path g_widget_project_root;
 static TerminalCommandHandler g_terminal_command_handler;
 static CommandActionHandler g_command_action_handler;
 static atomic_file::SnapshotStore &g_widget_files = atomic_file::shared_snapshot_store();
@@ -46,6 +47,16 @@ void reset_widget_caches();
 void set_widget_document_path(std::filesystem::path path)
 {
   g_widget_document_path = std::move(path);
+}
+
+void set_widget_project_root(std::filesystem::path path)
+{
+  g_widget_project_root = std::move(path);
+}
+
+std::filesystem::path widget_document_path()
+{
+  return g_widget_document_path;
 }
 
 void notify_document_moved(const std::filesystem::path &from,
@@ -749,6 +760,7 @@ struct ExprResult
 };
 
 struct EvalContext;
+static ExprResult load_variables_from_note(std::string_view requested_path);
 
 class ExprParser
 {
@@ -774,7 +786,7 @@ private:
   ExprResult parse_array();
   ExprResult parse_object();
   bool consume(char c);
-  static ExprResult call_builtin(const std::string &name, const std::vector<Value> &args);
+  ExprResult call_builtin(const std::string &name, const std::vector<Value> &args);
   char peek() const;
   static ExprResult combine_numeric(const ExprResult &lhs, const ExprResult &rhs, char op);
   static ExprResult combine_string_concat(const ExprResult &lhs, const ExprResult &rhs);
@@ -1146,6 +1158,22 @@ ExprResult ExprParser::parse_call(const std::string &name)
   ++pos_; // consume '('
   std::vector<Value> args;
   skip_ws();
+  // Paths are commonly pasted from Explorer. Accept both a quoted string and
+  // the documented unquoted get_variables(project/path.md) spelling.
+  if(name == "get_variables" && peek() != ')' && peek() != '"')
+  {
+    const std::size_t start = pos_;
+    const std::size_t close = source_.find(')', start);
+    if(close == std::string_view::npos) return {{}, "expected ')'"};
+    const std::string_view raw = trim(source_.substr(start, close - start));
+    if(raw.empty() || raw.find(',') != std::string_view::npos)
+      return {{}, "get_variables() expects one note path"};
+    Value path;
+    path.kind = ValueKind::String;
+    path.str.assign(raw);
+    args.push_back(std::move(path));
+    pos_ = close;
+  }
   if(peek() != ')')
   {
     while(true)
@@ -1164,6 +1192,12 @@ ExprResult ExprParser::parse_call(const std::string &name)
 
 ExprResult ExprParser::call_builtin(const std::string &name, const std::vector<Value> &args)
 {
+  if(name == "get_variables")
+  {
+    if(args.size() != 1U || args[0].kind != ValueKind::String)
+      return {{}, "get_variables() expects one note path"};
+    return load_variables_from_note(args[0].str);
+  }
   if(name == "len")
   {
     if(args.size() != 1) return {{}, "len() expects 1 argument"};
@@ -1411,27 +1445,49 @@ ExprResult ExprParser::parse_primary()
       return {value, {}};
     }
     skip_ws();
-    if(peek() == '(') return parse_call(ident);
-    ExprResult result = ctx_.resolve_variable(ident);
+    ExprResult result = peek() == '(' ? parse_call(ident) : ctx_.resolve_variable(ident);
     if(!result.error.empty()) return result;
     while(true)
     {
       skip_ws();
+      if(peek() == '.')
+      {
+        ++pos_;
+        if(pos_ >= source_.size() || !is_ident_start(source_[pos_]))
+          return {{}, "expected object field after '.'"};
+        const std::size_t field_start = pos_++;
+        while(pos_ < source_.size() && is_ident_char(source_[pos_])) ++pos_;
+        const std::string field(source_.substr(field_start, pos_ - field_start));
+        if(result.value.kind != ValueKind::Object)
+          return {{}, "cannot access a field on a non-object value"};
+        const Value *value = find_object_field(result.value, field);
+        if(value == nullptr) return {{}, "unknown object field '" + field + "'"};
+        result = {*value, {}};
+        continue;
+      }
       if(peek() != '[') break;
       ++pos_;
       ExprResult idx = parse_expression();
       if(!idx.error.empty()) return idx;
-      if(!consume(']')) return {{}, "expected ']' after array index"};
-      if(result.value.kind != ValueKind::Array)
-        return {{}, "cannot index into non-array value"};
-      if(idx.value.kind != ValueKind::Number || !idx.value.is_integer)
-        return {{}, "array index must be an integer"};
-      const int i = static_cast<int>(idx.value.number);
-      const int sz = static_cast<int>(result.value.array.size());
-      const int actual = i < 0 ? sz + i : i;
-      if(actual < 0 || actual >= sz)
-        return {{}, "array index out of bounds"};
-      result = {result.value.array[static_cast<size_t>(actual)], {}};
+      if(!consume(']')) return {{}, "expected ']' after index"};
+      if(result.value.kind == ValueKind::Array)
+      {
+        if(idx.value.kind != ValueKind::Number || !idx.value.is_integer)
+          return {{}, "array index must be an integer"};
+        const int i = static_cast<int>(idx.value.number);
+        const int sz = static_cast<int>(result.value.array.size());
+        const int actual = i < 0 ? sz + i : i;
+        if(actual < 0 || actual >= sz) return {{}, "array index out of bounds"};
+        result = {result.value.array[static_cast<size_t>(actual)], {}};
+      }
+      else if(result.value.kind == ValueKind::Object && idx.value.kind == ValueKind::String)
+      {
+        const Value *value = find_object_field(result.value, idx.value.str);
+        if(value == nullptr) return {{}, "unknown object field '" + idx.value.str + "'"};
+        result = {*value, {}};
+      }
+      else
+        return {{}, "cannot index this value"};
     }
     return result;
   }
@@ -5584,10 +5640,10 @@ void render_button(EvalContext &ctx, const ParsedBlock &block, const Statement &
         errors.push_back("button() command error: " + command_result.error);
       else if(command_result.value.kind != ValueKind::String)
         errors.push_back("button() command argument must evaluate to a string");
-      else if(!g_terminal_command_handler)
-        errors.push_back("button() terminal command handler is unavailable");
+      else if(!g_terminal_command_handler && !g_command_action_handler)
+        errors.push_back("button() command handler is unavailable");
       else
-        g_terminal_command_handler(command_result.value.str);
+        execute_command_action(command_result.value.str);
     }
     else
     {
@@ -5870,7 +5926,7 @@ static void apply_global_replacements_to_disk(
 
 static const std::map<std::string, VariableDecl> &load_global_declarations()
 {
-  const int cur_frame = ImGui::GetFrameCount();
+  const int cur_frame = GImGui != nullptr ? ImGui::GetFrameCount() : -1;
   if(cur_frame == g_globals_decl_cache_frame && g_globals_decl_cache_doc == g_widget_document_path)
     return g_globals_decl_cache;
 
@@ -6134,6 +6190,90 @@ static ParsedBlock collect_note_ui_declarations(std::string_view markdown)
   return merged;
 }
 
+namespace
+{
+ExprResult load_variables_from_note(std::string_view requested_path)
+{
+  if(g_widget_project_root.empty())
+    return {{}, "get_variables() project root is unavailable"};
+  std::filesystem::path requested(std::string(trim(requested_path)));
+  if(requested.empty() || requested.is_absolute())
+    return {{}, "get_variables() path must be project-root-relative"};
+  for(const auto &component : requested)
+    if(component == "..") return {{}, "get_variables() path must not escape the project"};
+  if(requested.extension().empty()) requested += ".md";
+
+  std::vector<std::filesystem::path> candidates;
+  candidates.push_back(g_widget_project_root / requested);
+  const std::string root_name = g_widget_project_root.filename().generic_string();
+  auto root_component = std::find_if(requested.begin(), requested.end(), [&](const auto &part) {
+    return part.generic_string() == root_name;
+  });
+  if(root_component != requested.end())
+  {
+    std::filesystem::path suffix;
+    for(++root_component; root_component != requested.end(); ++root_component)
+      suffix /= *root_component;
+    if(!suffix.empty())
+    {
+      candidates.push_back(g_widget_project_root / suffix);
+      candidates.push_back(g_widget_project_root / "notes" / suffix);
+    }
+  }
+
+  std::filesystem::path target;
+  for(auto candidate : candidates)
+  {
+    candidate = candidate.lexically_normal();
+    const std::filesystem::path relative = candidate.lexically_relative(g_widget_project_root);
+    const bool escaping = relative.empty() || std::any_of(relative.begin(), relative.end(),
+                                                          [](const auto &part) { return part == ".."; });
+    std::error_code exists_error;
+    if(!escaping && std::filesystem::is_regular_file(candidate, exists_error) && !exists_error)
+    {
+      target = std::move(candidate);
+      break;
+    }
+  }
+  if(target.empty()) return {{}, "get_variables() note was not found"};
+
+  const auto loaded = atomic_file::read_text(target);
+  if(!loaded) return {{}, "get_variables() cannot read note: " + loaded.message};
+  ParsedBlock declarations = collect_note_ui_declarations(loaded.snapshot.content);
+
+  const std::filesystem::path previous_document = g_widget_document_path;
+  g_widget_document_path = target;
+  invalidate_globals_decl_cache();
+  const std::map<std::string, VariableDecl> globals = load_global_declarations();
+  g_widget_document_path = previous_document;
+  invalidate_globals_decl_cache();
+
+  EvalContext context{declarations};
+  context.global_declarations = globals.empty() ? nullptr : &globals;
+  Value result;
+  result.kind = ValueKind::Object;
+  std::set<std::string> names;
+  for(const auto &[name, declaration] : globals)
+  {
+    static_cast<void>(declaration);
+    names.insert(name);
+  }
+  for(const auto &[name, declaration] : declarations.declarations)
+  {
+    static_cast<void>(declaration);
+    names.insert(name);
+  }
+  for(const std::string &name : names)
+  {
+    ExprResult value = context.resolve_variable(name);
+    if(!value.error.empty())
+      return {{}, "get_variables() cannot evaluate '" + name + "': " + value.error};
+    result.object.emplace_back(name, std::move(value.value));
+  }
+  return {std::move(result), {}};
+}
+} // namespace
+
 std::string resolve_ui_mermaid_template(std::string_view note_markdown, std::string_view template_body)
 {
   ParsedBlock note_decls = collect_note_ui_declarations(note_markdown);
@@ -6183,8 +6323,16 @@ namespace
 Value command_value_from_json(const nlohmann::json &json, std::string &error)
 {
   Value value;
-  if(json.is_string()) { value.kind = ValueKind::String; value.str = json.get<std::string>(); }
-  else if(json.is_boolean()) { value.kind = ValueKind::Bool; value.boolean = json.get<bool>(); }
+  if(json.is_string())
+  {
+    value.kind = ValueKind::String;
+    value.str = json.get<std::string>();
+  }
+  else if(json.is_boolean())
+  {
+    value.kind = ValueKind::Bool;
+    value.boolean = json.get<bool>();
+  }
   else if(json.is_number())
   {
     value.kind = ValueKind::Number;
@@ -6198,7 +6346,11 @@ Value command_value_from_json(const nlohmann::json &json, std::string &error)
     {
       std::string item_error;
       value.array.push_back(command_value_from_json(item, item_error));
-      if(!item_error.empty()) { error = item_error; return {}; }
+      if(!item_error.empty())
+      {
+        error = item_error;
+        return {};
+      }
     }
   }
   else if(json.is_object())
@@ -6208,10 +6360,15 @@ Value command_value_from_json(const nlohmann::json &json, std::string &error)
     {
       std::string item_error;
       value.object.emplace_back(it.key(), command_value_from_json(it.value(), item_error));
-      if(!item_error.empty()) { error = item_error; return {}; }
+      if(!item_error.empty())
+      {
+        error = item_error;
+        return {};
+      }
     }
   }
-  else error = "variables do not support null values";
+  else
+    error = "variables do not support null values";
   return value;
 }
 
@@ -6219,9 +6376,12 @@ nlohmann::json command_value_to_json(const Value &value)
 {
   switch(value.kind)
   {
-  case ValueKind::String: return value.str;
-  case ValueKind::Bool: return value.boolean;
-  case ValueKind::Number: return value.number;
+  case ValueKind::String:
+    return value.str;
+  case ValueKind::Bool:
+    return value.boolean;
+  case ValueKind::Number:
+    return value.number;
   case ValueKind::Array: {
     nlohmann::json result = nlohmann::json::array();
     for(const auto &item : value.array) result.push_back(command_value_to_json(item));
@@ -6232,7 +6392,8 @@ nlohmann::json command_value_to_json(const Value &value)
     for(const auto &[key, item] : value.object) result[key] = command_value_to_json(item);
     return result;
   }
-  default: return nullptr;
+  default:
+    return nullptr;
   }
 }
 
@@ -6252,7 +6413,11 @@ std::vector<CommandBlock> command_blocks(std::string_view markdown)
     if(fence == std::string_view::npos) break;
     const size_t line_end = markdown.find('\n', fence);
     if(line_end == std::string_view::npos) break;
-    if(trim(markdown.substr(fence, line_end - fence)) != "```ui") { pos = line_end + 1; continue; }
+    if(trim(markdown.substr(fence, line_end - fence)) != "```ui")
+    {
+      pos = line_end + 1;
+      continue;
+    }
     const size_t body_start = line_end + 1;
     size_t scan = body_start;
     size_t body_end = std::string_view::npos;
@@ -6260,7 +6425,11 @@ std::vector<CommandBlock> command_blocks(std::string_view markdown)
     {
       const size_t next = markdown.find('\n', scan);
       const size_t end = next == std::string_view::npos ? markdown.size() : next;
-      if(trim(markdown.substr(scan, end - scan)) == "```") { body_end = scan; break; }
+      if(trim(markdown.substr(scan, end - scan)) == "```")
+      {
+        body_end = scan;
+        break;
+      }
       scan = next == std::string_view::npos ? markdown.size() : next + 1;
     }
     if(body_end == std::string_view::npos) break;

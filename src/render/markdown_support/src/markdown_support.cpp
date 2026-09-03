@@ -350,10 +350,18 @@ static bool parse_event_string(std::string_view text, std::size_t &pos, std::str
       const char escaped = text[pos++];
       switch(escaped)
       {
-      case 'n': out.push_back('\n'); break;
-      case 'r': out.push_back('\r'); break;
-      case 't': out.push_back('\t'); break;
-      default: out.push_back(escaped); break;
+      case 'n':
+        out.push_back('\n');
+        break;
+      case 'r':
+        out.push_back('\r');
+        break;
+      case 't':
+        out.push_back('\t');
+        break;
+      default:
+        out.push_back(escaped);
+        break;
       }
     }
     else
@@ -681,6 +689,8 @@ struct PreviewSourceOffsetRequest
 {
   std::string document_key;
   std::size_t offset = 0;
+  std::size_t length = 0;
+  bool reveal_pending = true;
 };
 
 std::optional<PreviewHeadingRequest> g_preview_heading_request;
@@ -2111,7 +2121,8 @@ void request_preview_heading(std::string_view document_path,
       heading_occurrence_index};
 }
 
-void request_preview_source_offset(std::string_view document_path, std::size_t offset)
+void request_preview_source_offset(std::string_view document_path, std::size_t offset,
+                                   std::size_t length)
 {
   if(document_path.empty())
   {
@@ -2120,7 +2131,7 @@ void request_preview_source_offset(std::string_view document_path, std::size_t o
   }
 
   g_preview_source_offset_request = PreviewSourceOffsetRequest{
-      portable_document_key(document_path), offset};
+      portable_document_key(document_path), offset, length, true};
 }
 
 void notify_document_moved(const std::filesystem::path &from,
@@ -2187,6 +2198,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
 
   std::string normal_chunk;
   normal_chunk.reserve(markdown.size());
+  std::size_t normal_chunk_source_start = 0;
 
   struct HeaderUi
   {
@@ -2293,11 +2305,24 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   auto flush_chunk = [&]() {
     if(normal_chunk.empty()) return;
 
-    // Do not cull a whole markdown chunk based only on its starting Y position.
-    // Large notes may have a chunk whose start has scrolled above the viewport
-    // while later content is still visible; replacing it with a Dummy makes the
-    // preview appear blank. Proper virtualization needs block-level measured
-    // heights, not coarse chunk-start culling.
+    // Preserve raw-source search semantics. Plain rendered text gets an exact
+    // active-glyph highlight. Matches containing Markdown syntax stay scroll-
+    // only rather than risking a malformed render tree.
+    if(source_offset_request && source_offset_request->length != 0U &&
+       source_offset_request->offset >= normal_chunk_source_start)
+    {
+      const std::size_t local = source_offset_request->offset - normal_chunk_source_start;
+      if(local <= normal_chunk.size() &&
+         source_offset_request->length <= normal_chunk.size() - local)
+      {
+        const std::string_view match(normal_chunk.data() + local, source_offset_request->length);
+        if(match.find_first_of("[]`*_<>") == std::string_view::npos)
+        {
+          normal_chunk.insert(local + source_offset_request->length, "[/color]");
+          normal_chunk.insert(local, "[color=#FFD84D]");
+        }
+      }
+    }
     MarkdownView::render(normal_chunk);
     normal_chunk.clear();
   };
@@ -2314,8 +2339,15 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
            source_offset_request->offset >= start && source_offset_request->offset <= end;
   };
   auto consume_source_offset_reveal = [&]() {
-    ImGui::SetScrollHereY(0.5f);
-    g_preview_source_offset_request.reset();
+    if(source_offset_request && source_offset_request->reveal_pending)
+      ImGui::SetScrollHereY(0.5f);
+    if(g_preview_source_offset_request)
+    {
+      if(g_preview_source_offset_request->length == 0U)
+        g_preview_source_offset_request.reset();
+      else
+        g_preview_source_offset_request->reveal_pending = false;
+    }
   };
 
   size_t pos = 0;
@@ -2481,7 +2513,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(detect_mermaid_type(resolved, mermaid_type))
           render_mermaid_block(mermaid_type, resolved, static_cast<int>(line_start));
         else
+        {
+          normal_chunk_source_start = line_start;
           normal_chunk.append(markdown.data() + line_start, block_end - line_start);
+        }
         if(source_offset_in_range(line_start, block_end))
         {
           flush_chunk();
@@ -2528,6 +2563,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         }
         else
         {
+          if(normal_chunk.empty()) normal_chunk_source_start = line_start;
           normal_chunk.append(markdown.data() + line_start, block_end - line_start);
         }
         if(source_offset_in_range(line_start, block_end))
@@ -2645,6 +2681,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     else if(source_offset_in_range(line_start, line_end))
     {
       flush_chunk();
+      normal_chunk_source_start = line_start;
       normal_chunk.append(line.data(), line.size());
       if(has_newline) normal_chunk.push_back('\n');
       flush_chunk();
@@ -2652,6 +2689,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     }
     else
     {
+      if(normal_chunk.empty()) normal_chunk_source_start = line_start;
       normal_chunk.append(line.data(), line.size());
       if(has_newline) normal_chunk.push_back('\n');
     }

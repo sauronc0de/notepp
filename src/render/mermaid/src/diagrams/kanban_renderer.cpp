@@ -126,7 +126,11 @@ static std::string next_card_id_for_column(const KanbanDiagram &d, int col_idx)
     for(std::size_t k = prefix.size(); k < s.size(); ++k)
     {
       const char c = s[k];
-      if(c < '0' || c > '9') { valid = false; break; }
+      if(c < '0' || c > '9')
+      {
+        valid = false;
+        break;
+      }
       n = n * 10 + (c - '0');
     }
     if(valid) mx = std::max(mx, n);

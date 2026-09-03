@@ -7,6 +7,7 @@
 #include "terminal.hpp"
 #include "terminal_key_map.hpp"
 #include "terminal_selection.hpp"
+#include "terminal_shortcuts.hpp"
 #include "pty.hpp"
 
 #include <imgui.h>
@@ -120,9 +121,13 @@ std::string read_pty_for(notepp::terminal::PtyBackend &pty, std::chrono::millise
   std::array<char, 4096> buffer{};
   while(std::chrono::steady_clock::now() < deadline)
   {
-    struct pollfd descriptor{pty.readHandle(), POLLIN, 0};
+    struct pollfd descriptor
+    {
+      pty.readHandle(), POLLIN, 0
+    };
     const int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        deadline - std::chrono::steady_clock::now()).count());
+                                               deadline - std::chrono::steady_clock::now())
+                                               .count());
     const int result = ::poll(&descriptor, 1, std::max(1, std::min(remaining, 25)));
     if(result <= 0 || (descriptor.revents & POLLIN) == 0) continue;
     const int count = pty.read(buffer.data(), buffer.size());
@@ -217,6 +222,31 @@ void test_selection_range()
          "a reversed drag includes its normalized start cell");
   expect(!terminalSelectionContains(TerminalCell{-1, -1}, TerminalCell{0, 0}, 0, 0),
          "an empty selection contains no cells");
+}
+
+void test_clipboard_shortcut_classification()
+{
+  using notepp::terminal_detail::ClipboardAction;
+  using notepp::terminal_detail::ClipboardKey;
+  using notepp::terminal_detail::terminalClipboardAction;
+  expect(terminalClipboardAction(ClipboardKey::C, true, true, false, false) ==
+             ClipboardAction::Copy,
+         "Ctrl+Shift+C copies terminal selection");
+  expect(terminalClipboardAction(ClipboardKey::V, true, true, false, false) ==
+             ClipboardAction::Paste,
+         "Ctrl+Shift+V pastes once");
+  expect(terminalClipboardAction(ClipboardKey::Insert, true, false, false, false) ==
+             ClipboardAction::Copy,
+         "Ctrl+Insert copies terminal selection");
+  expect(terminalClipboardAction(ClipboardKey::Insert, false, true, false, false) ==
+             ClipboardAction::Paste,
+         "Shift+Insert pastes once");
+  expect(terminalClipboardAction(ClipboardKey::V, false, false, false, true) ==
+             ClipboardAction::Paste,
+         "Command+V follows macOS paste convention");
+  expect(terminalClipboardAction(ClipboardKey::C, true, false, false, false) ==
+             ClipboardAction::None,
+         "Ctrl+C remains a shell interrupt");
 }
 
 void test_special_key_mapping()
@@ -362,6 +392,7 @@ int main()
   test_natural_shell_exit_is_reaped();
 #endif
   test_selection_range();
+  test_clipboard_shortcut_classification();
   test_special_key_mapping();
   test_first_render_does_not_crash();
   if(failures != 0)

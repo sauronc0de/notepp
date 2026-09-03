@@ -16,6 +16,7 @@
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <unordered_set>
 
@@ -23,8 +24,11 @@ namespace
 {
 SDL_Window *viewport_platform_window_local(const ImGuiViewport *viewport)
 {
+  // imgui_impl_sdl2 stores the SDL window ID in PlatformHandle.
   if(viewport == nullptr) return nullptr;
-  return static_cast<SDL_Window *>(viewport->PlatformHandle);
+  const auto window_id = static_cast<Uint32>(reinterpret_cast<std::uintptr_t>(viewport->PlatformHandle));
+  if(window_id == 0) return nullptr;
+  return SDL_GetWindowFromID(window_id);
 }
 
 const ImGuiViewport *find_platform_viewport_by_id_local(const ImGuiPlatformIO &platform_io, ImGuiID viewport_id)
@@ -86,10 +90,26 @@ void App::frame_end()
 
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
   ImGuiIO &io = ImGui::GetIO();
+  SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
+  SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
+  if(detach_transition_pending_)
+  {
+    if(detach_transition_target_)
+      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    else if((io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
+    {
+      // Let the backend reconcile once, then synchronously destroy secondary
+      // platform windows before disabling viewport processing.
+      ImGui::UpdatePlatformWindows();
+      ImGui::DestroyPlatformWindows();
+      SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+      io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+      pinned_topmost_viewports_.clear();
+    }
+    detach_transition_pending_ = false;
+  }
   if(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
   {
-    SDL_Window *backup_current_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
 
     ImGuiPlatformIO &platform_io = ImGui::GetPlatformIO();

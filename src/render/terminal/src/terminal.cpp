@@ -322,17 +322,13 @@ struct Terminal::Impl
       }
     }
 
-    void copyScreenToClipboard() const
+    void copySelectionToClipboard() const
     {
-      if(screen == nullptr) return;
+      if(screen == nullptr || !hasSelection()) return;
 
-      VTermRect rect{0, rows, 0, cols};
-      if(hasSelection())
-      {
-        const VTermPos first = selectionStart();
-        const VTermPos last = selectionEnd();
-        rect = VTermRect{first.row, last.row + 1, first.col, last.col + 1};
-      }
+      const VTermPos first = selectionStart();
+      const VTermPos last = selectionEnd();
+      const VTermRect rect{first.row, last.row + 1, first.col, last.col + 1};
       const std::size_t length = vterm_screen_get_text(screen, nullptr, 0, rect);
       std::string text(length, '\0');
       if(length != 0)
@@ -630,21 +626,6 @@ struct Terminal::Impl
     const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
     if(escapePressed) session.clearSelection();
 
-    const bool ctrlDown = io.KeyCtrl;
-    const bool shiftDown = io.KeyShift;
-    const bool altDown = io.KeyAlt;
-
-    const bool clipboardCopy = !altDown &&
-                               ((ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_C, false)) ||
-                                (ctrlDown && !shiftDown && ImGui::IsKeyPressed(ImGuiKey_Insert, false)));
-    const bool clipboardPaste = !altDown &&
-                                ((ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_V, false)) ||
-                                 (!ctrlDown && shiftDown && ImGui::IsKeyPressed(ImGuiKey_Insert, false)));
-    if(clipboardCopy)
-      session.copyScreenToClipboard();
-    else if(clipboardPaste)
-      session.pasteFromClipboard();
-
     return false;
   }
 
@@ -716,8 +697,8 @@ bool Terminal::selectAdjacentSession(bool previous)
                                        : static_cast<std::size_t>(std::distance(impl_->sessions.begin(), current));
   const std::size_t count = impl_->sessions.size();
   const std::size_t nextIndex = previous
-                                     ? (currentIndex + count - 1U) % count
-                                     : (currentIndex + 1U) % count;
+                                    ? (currentIndex + count - 1U) % count
+                                    : (currentIndex + 1U) % count;
   impl_->selected_id = impl_->sessions[nextIndex]->id;
   impl_->selection_request_id = impl_->selected_id;
   return true;
@@ -796,6 +777,18 @@ void Terminal::write(std::string_view bytes)
 void Terminal::clearSelection()
 {
   if(Impl::Session *session = impl_->selected(); session != nullptr) session->clearSelection();
+}
+
+void Terminal::copySelectionToClipboard()
+{
+  if(Impl::Session *session = impl_->selected(); session != nullptr)
+    session->copySelectionToClipboard();
+}
+
+void Terminal::pasteClipboard()
+{
+  if(Impl::Session *session = impl_->selected(); session != nullptr)
+    session->pasteFromClipboard();
 }
 
 void Terminal::sendKey(int imguiKey, bool ctrl, bool shift, bool alt)

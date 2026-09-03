@@ -127,6 +127,9 @@ static std::vector<ParsedMarkdownCacheEntry> g_markdown_cache;
 static unsigned long long g_markdown_cache_clock = 0;
 static float g_render_width = 0.0f;
 static std::filesystem::path g_document_path;
+static std::filesystem::path g_project_root;
+static MarkdownView::InternalLinkHandler g_internal_link_handler;
+static MarkdownView::InternalLinkColorHandler g_internal_link_color_handler;
 static bool g_hover_preview_enabled = true;
 
 enum class UrlFetchState
@@ -416,6 +419,14 @@ static std::string slugify_heading(std::string_view s)
   return out;
 }
 
+static std::string unique_heading_anchor(std::string_view title, std::size_t duplicate_index)
+{
+  std::string anchor = slugify_heading(title);
+  if(!anchor.empty() && duplicate_index != 0U)
+    anchor += "-" + std::to_string(duplicate_index);
+  return anchor;
+}
+
 struct InternalLinkTarget
 {
   bool valid = false;
@@ -444,13 +455,11 @@ static InternalLinkTarget resolve_internal_link(std::string_view href)
     if(rel.extension().empty()) rel += ".md";
 
     std::vector<std::filesystem::path> candidates;
+    // Created references use project-root-relative destinations. Source-note
+    // relative links remain supported for existing documents.
+    if(!g_project_root.empty()) candidates.push_back(g_project_root / rel);
     if(!g_document_path.empty())
-    {
-      // The GUI supplies the project notes directory as the document path;
-      // prefer it so Explorer-created project-relative links resolve there.
-      candidates.push_back(std::filesystem::path(g_document_path) / rel);
       candidates.push_back(std::filesystem::path(g_document_path).parent_path() / rel);
-    }
     candidates.push_back(std::filesystem::path(DATA_PATH) / "notes" / rel);
 
     for(const auto &candidate : candidates)
@@ -512,6 +521,7 @@ static MarkdownSection extract_section_markdown(std::string_view markdown, std::
   size_t pos = 0;
   size_t match_start = std::string_view::npos;
   int match_level = 0;
+  std::unordered_map<std::string, std::size_t> anchor_counts;
   while(pos < markdown.size())
   {
     const size_t line_start = pos;
@@ -524,9 +534,11 @@ static MarkdownSection extract_section_markdown(std::string_view markdown, std::
     if(parse_heading_line(line, level, title))
     {
       const std::string slug = slugify_heading(title);
+      const std::size_t duplicate_index = anchor_counts[slug]++;
+      const std::string unique_anchor = unique_heading_anchor(title, duplicate_index);
       if(match_start == std::string_view::npos)
       {
-        if(slug == anchor)
+        if(unique_anchor == anchor)
         {
           match_start = line_start;
           match_level = level;
@@ -1419,9 +1431,15 @@ struct MyMarkdown : public imgui_md
   {
     const ImGuiStyle &st = ImGui::GetStyle();
 
-    // Link: use a bright readable accent independent of the note background
     if(!m_href.empty())
+    {
+      const InternalLinkTarget target = resolve_internal_link(m_href);
+      if(target.valid && g_internal_link_color_handler)
+      {
+        if(const auto color = g_internal_link_color_handler(target.note_path)) return *color;
+      }
       return markdown_link_color();
+    }
 
     // Inline code: usually make it a bit “warm” or distinct
     if(m_is_code)
@@ -1450,11 +1468,17 @@ struct MyMarkdown : public imgui_md
 
   void open_url() const override
   {
+    const InternalLinkTarget target = resolve_internal_link(m_href);
+    if(target.valid)
+    {
+      if(g_internal_link_handler && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        g_internal_link_handler(target.note_path, target.anchor);
+      return;
+    }
 #if defined(__EMSCRIPTEN__)
     // no-op or use JS bridge
 #else
-    if(!resolve_internal_link(m_href).valid && !m_href.empty())
-      SDL_OpenURL(m_href.c_str());
+    if(!m_href.empty()) SDL_OpenURL(m_href.c_str());
 #endif
   }
 };
@@ -1480,6 +1504,26 @@ void MarkdownView::set_render_width(float width)
 void MarkdownView::set_document_path(std::filesystem::path path)
 {
   g_document_path = std::move(path);
+}
+
+void MarkdownView::set_project_root(std::filesystem::path path)
+{
+  g_project_root = std::move(path);
+}
+
+void MarkdownView::set_internal_link_handler(InternalLinkHandler handler)
+{
+  g_internal_link_handler = std::move(handler);
+}
+
+void MarkdownView::set_internal_link_color_handler(InternalLinkColorHandler handler)
+{
+  g_internal_link_color_handler = std::move(handler);
+}
+
+std::string MarkdownView::heading_anchor(std::string_view title, std::size_t duplicate_index)
+{
+  return unique_heading_anchor(title, duplicate_index);
 }
 
 void MarkdownView::set_assets_path(std::filesystem::path path)

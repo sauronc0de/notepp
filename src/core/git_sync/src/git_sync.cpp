@@ -385,7 +385,7 @@ process::Result push_upstream(const process::Runner &runner, const std::filesyst
 std::vector<std::string> project_pathspec()
 {
   std::vector<std::string> paths = {"notes", "assets", ":(glob)config/notes_index.json",
-                                   "notepp.project.json"};
+                                    "notepp.project.json"};
   paths.insert(paths.end(), {":(exclude,glob)**/*.bak", ":(exclude,glob)**/*.~npp-t-*",
                              ":(exclude,glob)**/*.~notepp-conflict-*",
                              ":(exclude,glob)**/*notepp-local-conflict*",

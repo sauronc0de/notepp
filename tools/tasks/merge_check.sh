@@ -36,6 +36,12 @@
 # ==============================================================================
 set -Eeuo pipefail
 
+# Release verification must be reproducible on minimal containers where the
+# host locale may be configured but not generated. Tool output is parsed below,
+# so use the universally available C locale and avoid Perl locale warnings.
+export LANG=C
+export LC_ALL=C
+
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="0.1.0"
@@ -462,9 +468,6 @@ run_format_phase() {
 # ------------------------------------------------------------------------------
 # Main flow
 # ------------------------------------------------------------------------------
-mkdir -p "${LOG_DIR}"
-: > "${LOG_FILE}"
-
 print_banner "Notepp merge check" "Develop + Release + Tests — Linux gate"
 
 if [ "${DO_CLEAN}" -eq 1 ]; then
@@ -473,6 +476,11 @@ if [ "${DO_CLEAN}" -eq 1 ]; then
   printf '   This will discard ccache state and any prior compile_commands.json.\n'
   rm -rf "${PROJECT_ROOT}/build"
 fi
+
+# --clean removes the log directory too. Create and open the gate log only
+# after the optional wipe so every subsequent phase has a valid sink.
+mkdir -p "${LOG_DIR}"
+: > "${LOG_FILE}"
 
 {
   printf 'Merge check — log opened at %s\n' "$(date -Iseconds)"

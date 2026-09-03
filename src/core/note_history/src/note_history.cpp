@@ -4,6 +4,52 @@
 
 namespace NoteHistory
 {
+NavigationHistory::NavigationHistory(std::size_t limit)
+    : limit_(limit == 0U ? 1U : limit)
+{
+}
+
+void NavigationHistory::clear()
+{
+  entries_.clear();
+  current_ = 0U;
+}
+
+void NavigationHistory::visit(NavigationLocation location)
+{
+  if(location.note_path.empty()) return;
+  if(!entries_.empty() && entries_[current_] == location) return;
+  if(!entries_.empty() && current_ + 1U < entries_.size())
+    entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(current_ + 1U), entries_.end());
+  entries_.push_back(std::move(location));
+  if(entries_.size() > limit_) entries_.erase(entries_.begin());
+  current_ = entries_.size() - 1U;
+}
+
+std::optional<NavigationLocation> NavigationHistory::back()
+{
+  if(!can_back()) return std::nullopt;
+  --current_;
+  return entries_[current_];
+}
+
+std::optional<NavigationLocation> NavigationHistory::forward()
+{
+  if(!can_forward()) return std::nullopt;
+  ++current_;
+  return entries_[current_];
+}
+
+bool NavigationHistory::can_back() const noexcept
+{
+  return !entries_.empty() && current_ > 0U;
+}
+
+bool NavigationHistory::can_forward() const noexcept
+{
+  return !entries_.empty() && current_ + 1U < entries_.size();
+}
+
 LambdaCommand::LambdaCommand(std::string label, std::string debug_context, Fn execute, Fn undo)
     : label_(std::move(label)),
       debug_context_(std::move(debug_context)),
@@ -41,6 +87,7 @@ void HistoryManager::clear()
 {
   undo_stack_.clear();
   redo_stack_.clear();
+  last_error_.clear();
 }
 
 void HistoryManager::push_executed(std::unique_ptr<Command> command)
@@ -53,11 +100,27 @@ void HistoryManager::push_executed(std::unique_ptr<Command> command)
 
 bool HistoryManager::undo()
 {
+  last_error_.clear();
   if(undo_stack_.empty()) return false;
 
   std::unique_ptr<Command> command = std::move(undo_stack_.back());
   undo_stack_.pop_back();
-  command->undo();
+  try
+  {
+    command->undo();
+  }
+  catch(const std::exception &error)
+  {
+    last_error_ = error.what();
+    undo_stack_.push_back(std::move(command));
+    return false;
+  }
+  catch(...)
+  {
+    last_error_ = "history command failed with an unknown exception";
+    undo_stack_.push_back(std::move(command));
+    return false;
+  }
   trim_if_needed(redo_stack_);
   redo_stack_.push_back(std::move(command));
   return true;
@@ -65,11 +128,27 @@ bool HistoryManager::undo()
 
 bool HistoryManager::redo()
 {
+  last_error_.clear();
   if(redo_stack_.empty()) return false;
 
   std::unique_ptr<Command> command = std::move(redo_stack_.back());
   redo_stack_.pop_back();
-  command->execute();
+  try
+  {
+    command->execute();
+  }
+  catch(const std::exception &error)
+  {
+    last_error_ = error.what();
+    redo_stack_.push_back(std::move(command));
+    return false;
+  }
+  catch(...)
+  {
+    last_error_ = "history command failed with an unknown exception";
+    redo_stack_.push_back(std::move(command));
+    return false;
+  }
   trim_if_needed(undo_stack_);
   undo_stack_.push_back(std::move(command));
   return true;
@@ -107,6 +186,11 @@ std::vector<DebugEntry> HistoryManager::debug_undo_entries() const
     entries.push_back(DebugEntry{(*it)->label(), (*it)->debug_context()});
   }
   return entries;
+}
+
+std::string_view HistoryManager::last_error() const noexcept
+{
+  return last_error_;
 }
 
 std::vector<DebugEntry> HistoryManager::debug_redo_entries() const

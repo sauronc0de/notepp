@@ -54,8 +54,15 @@ bool load_index(const project::ProjectInfo &project, IndexData &out, std::string
   }
   if(loaded.snapshot.existed)
   {
-    try { out.document = Json::parse(loaded.snapshot.content); }
-    catch(const std::exception &e) { error = e.what(); return false; }
+    try
+    {
+      out.document = Json::parse(loaded.snapshot.content);
+    }
+    catch(const std::exception &e)
+    {
+      error = e.what();
+      return false;
+    }
     if(!out.document.is_object() || !out.document.value("folders", Json{}).is_array())
     {
       error = "notes index is not a valid object";
@@ -77,7 +84,11 @@ bool save_index(const project::ProjectInfo &project, const Json &document, std::
   std::string text = document.dump(2);
   text.push_back('\n');
   const auto saved = atomic_file::save_text(index_path(project), text);
-  if(!saved) { error = saved.message; return false; }
+  if(!saved)
+  {
+    error = saved.message;
+    return false;
+  }
   return true;
 }
 
@@ -118,7 +129,18 @@ bool select_note(const project::ProjectInfo &project, const Json &args,
   const Json &folders = index.document["folders"];
   const std::string id = args.value("id", std::string{});
   const std::string path = args.value("path", std::string{});
-  const std::string name = args.value("name", args.value("title", std::string{}));
+  std::string name = args.value("name", std::string{});
+  // `title` is a legacy note-selector alias only when no explicit selector is
+  // present. Header commands use `title` for the heading being created/found.
+  if(id.empty() && path.empty() && name.empty())
+    name = args.value("title", std::string{});
+  const int selector_count = static_cast<int>(!id.empty()) + static_cast<int>(!path.empty()) +
+                             static_cast<int>(!name.empty());
+  if(selector_count != 1)
+  {
+    error = "provide exactly one note selector: id, path, or name";
+    return false;
+  }
   const std::filesystem::path requested_path(path);
   std::filesystem::path requested_canonical;
   if(!path.empty() && !path_within_notes(project, requested_path, true, requested_canonical))
@@ -126,6 +148,7 @@ bool select_note(const project::ProjectInfo &project, const Json &args,
     error = "absolute, parent, or escaping paths are not allowed";
     return false;
   }
+  bool found = false;
   for(std::size_t fi = 0; fi < folders.size(); ++fi)
   {
     const Json &notes = folders[fi].value("notes", Json::array());
@@ -138,9 +161,18 @@ bool select_note(const project::ProjectInfo &project, const Json &args,
                                             note_path(project, note) == requested_canonical)) ||
                          (!name.empty() && (note.value("title", std::string{}) == name ||
                                             note.value("name", std::string{}) == name));
-      if(match) { folder_idx = fi; note_idx = ni; return true; }
+      if(!match) continue;
+      if(found)
+      {
+        error = "note selector is ambiguous; use a unique id or project-root-relative path";
+        return false;
+      }
+      folder_idx = fi;
+      note_idx = ni;
+      found = true;
     }
   }
+  if(found) return true;
   error = "note was not found; provide id, path, or name";
   return false;
 }
@@ -161,7 +193,8 @@ std::vector<std::tuple<std::size_t, std::size_t, std::string>> headings(std::str
   {
     const std::size_t end = text.find('\n', start);
     const std::size_t next = end == std::string_view::npos ? text.size() : end + 1U;
-    int level = 0; std::string_view title;
+    int level = 0;
+    std::string_view title;
     if(parse_heading_line(text.substr(start, end == std::string_view::npos ? text.size() - start : end - start), level, title))
       result.emplace_back(start, static_cast<std::size_t>(level), std::string(title));
     start = next;
@@ -181,9 +214,12 @@ std::string Response::serialize() const
   Json envelope;
   envelope["success"] = ok;
   envelope["ok"] = ok;
-  if(ok) envelope["result"] = body;
-  else if(body.contains("error")) envelope["error"] = body.at("error");
-  else envelope["error"] = body;
+  if(ok)
+    envelope["result"] = body;
+  else if(body.contains("error"))
+    envelope["error"] = body.at("error");
+  else
+    envelope["error"] = body;
   return envelope.dump();
 }
 
@@ -198,7 +234,7 @@ Json Api::capabilities() const
 {
   static constexpr std::string_view names[] = {
       "app.capabilities", "note.list", "note.get", "note.create",
-      "note.header.list", "note.header.get", "note.header.create",
+      "note.header.list", "note.header.get", "note.header.create", "note.line.create",
       "note.color.set", "note.variable.get", "note.variable.set"};
   Json commands = Json::array();
   for(const auto name : names) commands.push_back(Json{{"name", name}});
@@ -210,12 +246,12 @@ Response Api::execute(const Json &request)
   if(!request.is_object()) return failure("invalid_request", "request must be a JSON object");
   const std::string command = request.value("command", request.value("method", std::string{}));
   if(command.empty()) return failure("invalid_request", "missing command");
-  const Json args = request.contains("args") ? request.at("args") :
-                    request.value("arguments", Json::object());
+  const Json args = request.contains("args") ? request.at("args") : request.value("arguments", Json::object());
   if(!args.is_object()) return failure("invalid_request", "args must be an object");
   if(command == "app.capabilities") return success(capabilities());
 
-  IndexData index; std::string error;
+  IndexData index;
+  std::string error;
   if(!load_index(project_, index, error)) return failure("index_error", error);
   if(command == "note.list")
   {
@@ -276,7 +312,8 @@ Response Api::execute(const Json &request)
     const auto saved = atomic_file::save_text(absolute, content);
     if(!saved) return failure("io_error", saved.message);
     Json note{{"id", relative.lexically_relative(project_.notes).generic_string()},
-              {"title", title}, {"path", absolute.lexically_relative(project_.root).generic_string()},
+              {"title", title},
+              {"path", absolute.lexically_relative(project_.root).generic_string()},
               {"content_fingerprint", note_index::content_fingerprint(content)}};
     index.document["folders"][target]["notes"].push_back(note);
     if(!save_index(project_, index.document, error)) return failure("io_error", error);
@@ -323,8 +360,10 @@ Response Api::execute(const Json &request)
   if(command == "note.header.get")
   {
     const std::string wanted = args.value("title", args.value("name", std::string{}));
+    const auto count = std::count_if(hs.begin(), hs.end(), [&](const auto &h) { return std::get<2>(h) == wanted; });
+    if(count == 0) return failure("not_found", "header was not found");
+    if(count > 1) return failure("ambiguous_heading", "header title is duplicated; use a unique heading title");
     const auto found = std::find_if(hs.begin(), hs.end(), [&](const auto &h) { return std::get<2>(h) == wanted; });
-    if(found == hs.end()) return failure("not_found", "header was not found");
     return success(Json{{"header", header_json(std::get<0>(*found), std::get<1>(*found), std::get<2>(*found))}});
   }
   if(command == "note.header.create")
@@ -342,11 +381,17 @@ Response Api::execute(const Json &request)
     if(level < 1 || level > 6) return failure("invalid_args", "header level must be between 1 and 6");
     if(!parent.empty())
     {
+      const auto parent_count = std::count_if(hs.begin(), hs.end(), [&](const auto &h) { return std::get<2>(h) == parent; });
+      if(parent_count == 0) return failure("not_found", "parent header was not found");
+      if(parent_count > 1) return failure("ambiguous_heading", "parent header title is duplicated");
       const auto found = std::find_if(hs.begin(), hs.end(), [&](const auto &h) { return std::get<2>(h) == parent; });
-      if(found == hs.end()) return failure("not_found", "parent header was not found");
       level = static_cast<int>(std::get<1>(*found)) + 1;
       for(const auto &candidate : hs)
-        if(std::get<0>(candidate) > std::get<0>(*found) && std::get<1>(candidate) <= std::get<1>(*found)) { insert = std::get<0>(candidate); break; }
+        if(std::get<0>(candidate) > std::get<0>(*found) && std::get<1>(candidate) <= std::get<1>(*found))
+        {
+          insert = std::get<0>(candidate);
+          break;
+        }
     }
     if(level < 1 || level > 6) return failure("invalid_args", "parent heading would exceed level 6");
     std::string updated = text;
@@ -359,6 +404,41 @@ Response Api::execute(const Json &request)
     if(!save_index(project_, index.document, error)) return failure("io_error", error);
     return success(Json{{"header", Json{{"level", level}, {"title", title}}}});
   }
+  if(command == "note.line.create")
+  {
+    const std::string heading = args.value("heading", args.value("header", std::string{}));
+    const std::string line = args.value("line", args.value("text", std::string{}));
+    if(heading.empty() || heading.find_first_of("\r\n") != std::string::npos)
+      return failure("invalid_args", "heading must be a single non-empty line");
+    if(line.empty() || line.find_first_of("\r\n") != std::string::npos)
+      return failure("invalid_args", "line must be a single non-empty line");
+    const auto match_count = std::count_if(hs.begin(), hs.end(), [&](const auto &h) {
+      return std::get<2>(h) == heading;
+    });
+    if(match_count == 0) return failure("not_found", "heading was not found");
+    if(match_count > 1)
+      return failure("ambiguous_heading", "heading title is duplicated; line was not added");
+    const auto found = std::find_if(hs.begin(), hs.end(), [&](const auto &h) {
+      return std::get<2>(h) == heading;
+    });
+    std::size_t insert = text.size();
+    for(const auto &candidate : hs)
+      if(std::get<0>(candidate) > std::get<0>(*found) &&
+         std::get<1>(candidate) <= std::get<1>(*found))
+      {
+        insert = std::get<0>(candidate);
+        break;
+      }
+    std::string updated = text;
+    if(insert != 0U && updated[insert - 1U] != '\n') updated.insert(insert++, 1U, '\n');
+    updated.insert(insert, line + "\n");
+    const auto saved = atomic_file::save_text(path, updated);
+    if(!saved) return failure("io_error", saved.message);
+    index.document["folders"][fi]["notes"][ni]["content_fingerprint"] =
+        note_index::content_fingerprint(updated);
+    if(!save_index(project_, index.document, error)) return failure("io_error", error);
+    return success(Json{{"heading", heading}, {"line", line}, {"offset", insert}});
+  }
   if(command == "note.color.set")
   {
     for(const char *arg : {"r", "g", "b"})
@@ -367,7 +447,9 @@ Response Api::execute(const Json &request)
     const auto set_color = [&](const char *key, const char *arg) {
       if(args.contains(arg)) index.document["folders"][fi]["notes"][ni][key] = args[arg];
     };
-    set_color("color_r", "r"); set_color("color_g", "g"); set_color("color_b", "b");
+    set_color("color_r", "r");
+    set_color("color_g", "g");
+    set_color("color_b", "b");
     index.document["folders"][fi]["notes"][ni]["use_custom_color"] = true;
     if(!save_index(project_, index.document, error)) return failure("io_error", error);
     return success(Json{{"note", note_summary(project_, index.document["folders"][fi]["notes"][ni])}});

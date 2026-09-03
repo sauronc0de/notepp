@@ -61,8 +61,10 @@ void set_preview_document_path(std::string_view path);
 void request_preview_heading(std::string_view document_path,
                              std::string_view heading_path,
                              std::size_t heading_occurrence_index);
-// Scroll the matching preview document to a byte offset in its markdown source.
-void request_preview_source_offset(std::string_view document_path, std::size_t offset);
+// Reveal and visibly mark a source range in the matching preview document.
+// A zero length keeps the legacy scroll-only behavior.
+void request_preview_source_offset(std::string_view document_path, std::size_t offset,
+                                   std::size_t length = 0);
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);

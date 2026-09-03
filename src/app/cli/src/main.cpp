@@ -25,9 +25,11 @@ void usage(std::ostream &output)
          << "  notepp-cli --project ROOT [--json] note header list --note NOTE\n"
          << "  notepp-cli --project ROOT [--json] note header get --note NOTE --title TITLE\n"
          << "  notepp-cli --project ROOT [--json] note header create --note NOTE --title TITLE [--parent PARENT] [--level LEVEL]\n"
+         << "  notepp-cli --project ROOT [--json] note line create --note NOTE --heading HEADING --line LINE\n"
          << "  notepp-cli --project ROOT [--json] note color set --note NOTE --color '#RRGGBB'\n"
-         << "  notepp-cli --project ROOT [--json] variable get --note NOTE --name NAME\n"
-         << "  notepp-cli --project ROOT [--json] variable set --note NOTE --name NAME --value JSON\n"
+         << "  notepp-cli --project ROOT [--json] [note] variable get --note NOTE --name NAME\n"
+         << "  notepp-cli --project ROOT [--json] [note] variable set --note NOTE --name NAME --value JSON\n"
+         << "NOTE accepts a unique id or project-root-relative markdown path.\n"
          << "  notepp-cli --project ROOT [--json] execute JSON\n"
          << "  cat request.json | notepp-cli --project ROOT [--json] execute --stdin\n\n"
          << "Notepp must be running with the selected project open.\n"
@@ -52,7 +54,9 @@ notepp::project::ProjectInfo project_info(const std::filesystem::path &root)
       project.projectId = manifest.value("projectId", std::string{});
       project.schemaVersion = manifest.value("schemaVersion", 0);
     }
-    catch(const std::exception &) { /* GUI owns project initialization. */ }
+    catch(const std::exception &)
+    { /* GUI owns project initialization. */
+    }
   }
   project.workspace = notepp::project::get_appdata_dir() / "projects" / project.projectId;
   return project;
@@ -68,103 +72,257 @@ struct ParseResult
 ParseResult parse_friendly(const std::vector<std::string> &tokens)
 {
   ParseResult result;
-  if(tokens.size() < 2U) { result.error = 2; result.message = "missing command"; return result; }
+  if(tokens.size() < 2U)
+  {
+    result.error = 2;
+    result.message = "missing command";
+    return result;
+  }
   const std::string &group = tokens[0];
   std::size_t pos = 1;
   Json args = Json::object();
   std::string command;
   if(group == "app" && pos < tokens.size() && tokens[pos] == "capabilities")
   {
-    ++pos; command = "app.capabilities";
+    ++pos;
+    command = "app.capabilities";
   }
   else if(group == "note")
   {
-    if(pos >= tokens.size()) { result.error = 2; result.message = "missing note command"; return result; }
+    if(pos >= tokens.size())
+    {
+      result.error = 2;
+      result.message = "missing note command";
+      return result;
+    }
     const std::string action = tokens[pos++];
-    if(action == "list") command = "note.list";
-    else if(action == "get") command = "note.get";
-    else if(action == "create") command = "note.create";
+    if(action == "list")
+      command = "note.list";
+    else if(action == "get")
+      command = "note.get";
+    else if(action == "create")
+      command = "note.create";
     else if(action == "header")
     {
-      if(pos >= tokens.size()) { result.error = 2; result.message = "missing header command"; return result; }
+      if(pos >= tokens.size())
+      {
+        result.error = 2;
+        result.message = "missing header command";
+        return result;
+      }
       const std::string header_action = tokens[pos++];
-      if(header_action == "list") command = "note.header.list";
-      else if(header_action == "get") command = "note.header.get";
-      else if(header_action == "create") command = "note.header.create";
-      else { result.error = 2; result.message = "unknown header command"; return result; }
+      if(header_action == "list")
+        command = "note.header.list";
+      else if(header_action == "get")
+        command = "note.header.get";
+      else if(header_action == "create")
+        command = "note.header.create";
+      else
+      {
+        result.error = 2;
+        result.message = "unknown header command";
+        return result;
+      }
+    }
+    else if(action == "line")
+    {
+      if(pos >= tokens.size() || tokens[pos++] != "create")
+      {
+        result.error = 2;
+        result.message = "expected line create";
+        return result;
+      }
+      command = "note.line.create";
     }
     else if(action == "color")
     {
       if(pos >= tokens.size() || tokens[pos++] != "set")
-      { result.error = 2; result.message = "expected color set"; return result; }
+      {
+        result.error = 2;
+        result.message = "expected color set";
+        return result;
+      }
       command = "note.color.set";
     }
-    else { result.error = 2; result.message = "unknown note command"; return result; }
+    else if(action == "variable")
+    {
+      if(pos >= tokens.size() || (tokens[pos] != "get" && tokens[pos] != "set"))
+      {
+        result.error = 2;
+        result.message = "expected variable get or set";
+        return result;
+      }
+      command = tokens[pos++] == "set" ? "note.variable.set" : "note.variable.get";
+    }
+    else
+    {
+      result.error = 2;
+      result.message = "unknown note command";
+      return result;
+    }
 
     while(pos < tokens.size())
     {
       const std::string key = tokens[pos++];
       if(key == "--folder" || key == "--note" || key == "--name" || key == "--content" ||
-         key == "--parent" || key == "--level" || key == "--title" || key == "--value" || key == "--color")
+         key == "--parent" || key == "--level" || key == "--title" || key == "--value" ||
+         key == "--color" || key == "--heading" || key == "--line")
       {
         if(pos >= tokens.size() || tokens[pos].rfind("--", 0) == 0)
-        { result.error = 2; result.message = "missing value for " + key; return result; }
+        {
+          result.error = 2;
+          result.message = "missing value for " + key;
+          return result;
+        }
         const std::string value = tokens[pos++];
-        if(key == "--note") args["id"] = value;
-        else if(key == "--folder") args["folder"] = value;
-        else if(key == "--name" || key == "--title") args["title"] = value;
-        else if(key == "--content") args["content"] = value;
-        else if(key == "--parent") args["parent"] = value;
+        if(key == "--note")
+        {
+          const std::filesystem::path selector(value);
+          if(selector.has_extension() || value.find('/') != std::string::npos ||
+             value.find('\\') != std::string::npos)
+            args["path"] = selector.generic_string();
+          else
+            args["id"] = value;
+        }
+        else if(key == "--folder")
+          args["folder"] = value;
+        else if(key == "--name" || key == "--title")
+        {
+          if(command == "note.variable.get" || command == "note.variable.set")
+            args["name"] = value;
+          else
+            args["title"] = value;
+        }
+        else if(key == "--content")
+          args["content"] = value;
+        else if(key == "--parent")
+          args["parent"] = value;
+        else if(key == "--heading")
+          args["heading"] = value;
+        else if(key == "--line")
+          args["line"] = value;
         else if(key == "--level")
         {
-          try { args["level"] = std::stoi(value); }
-          catch(const std::exception &) { result.error = 2; result.message = "invalid level"; return result; }
+          try
+          {
+            args["level"] = std::stoi(value);
+          }
+          catch(const std::exception &)
+          {
+            result.error = 2;
+            result.message = "invalid level";
+            return result;
+          }
         }
         else if(key == "--value")
         {
-          try { args["value"] = Json::parse(value); }
-          catch(const std::exception &) { result.error = 4; result.message = "invalid JSON value"; return result; }
+          try
+          {
+            args["value"] = Json::parse(value);
+          }
+          catch(const std::exception &)
+          {
+            result.error = 4;
+            result.message = "invalid JSON value";
+            return result;
+          }
         }
         else
         {
           if(value.size() != 7U || value.front() != '#' ||
              value.substr(1).find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
-          { result.error = 2; result.message = "color must be #RRGGBB"; return result; }
+          {
+            result.error = 2;
+            result.message = "color must be #RRGGBB";
+            return result;
+          }
           try
           {
             const int color = std::stoi(value.substr(1), nullptr, 16);
-            args["r"] = (color >> 16) & 255; args["g"] = (color >> 8) & 255; args["b"] = color & 255;
+            args["r"] = (color >> 16) & 255;
+            args["g"] = (color >> 8) & 255;
+            args["b"] = color & 255;
           }
-          catch(const std::exception &) { result.error = 2; result.message = "invalid color"; return result; }
+          catch(const std::exception &)
+          {
+            result.error = 2;
+            result.message = "invalid color";
+            return result;
+          }
         }
       }
-      else { result.error = 2; result.message = "unknown option: " + key; return result; }
+      else
+      {
+        result.error = 2;
+        result.message = "unknown option: " + key;
+        return result;
+      }
     }
   }
   else if(group == "variable")
   {
     if(pos >= tokens.size() || (tokens[pos] != "get" && tokens[pos] != "set"))
-    { result.error = 2; result.message = "expected variable get or set"; return result; }
+    {
+      result.error = 2;
+      result.message = "expected variable get or set";
+      return result;
+    }
     const bool set = tokens[pos++] == "set";
     command = set ? "note.variable.set" : "note.variable.get";
     while(pos < tokens.size())
     {
       const std::string key = tokens[pos++];
       if(key != "--note" && key != "--name" && key != "--value")
-      { result.error = 2; result.message = "unknown option: " + key; return result; }
-      if(pos >= tokens.size()) { result.error = 2; result.message = "missing value for " + key; return result; }
+      {
+        result.error = 2;
+        result.message = "unknown option: " + key;
+        return result;
+      }
+      if(pos >= tokens.size())
+      {
+        result.error = 2;
+        result.message = "missing value for " + key;
+        return result;
+      }
       const std::string value = tokens[pos++];
-      if(key == "--note") args["id"] = value;
-      else if(key == "--name") args["name"] = value;
+      if(key == "--note")
+      {
+        const std::filesystem::path selector(value);
+        if(selector.has_extension() || value.find('/') != std::string::npos ||
+           value.find('\\') != std::string::npos)
+          args["path"] = selector.generic_string();
+        else
+          args["id"] = value;
+      }
+      else if(key == "--name")
+        args["name"] = value;
       else
       {
-        try { args["value"] = Json::parse(value); }
-        catch(const std::exception &) { result.error = 4; result.message = "invalid JSON value"; return result; }
+        try
+        {
+          args["value"] = Json::parse(value);
+        }
+        catch(const std::exception &)
+        {
+          result.error = 4;
+          result.message = "invalid JSON value";
+          return result;
+        }
       }
     }
   }
-  else { result.error = 2; result.message = "unknown command group"; return result; }
-  if(pos != tokens.size()) { result.error = 2; result.message = "unexpected argument: " + tokens[pos]; return result; }
+  else
+  {
+    result.error = 2;
+    result.message = "unknown command group";
+    return result;
+  }
+  if(pos != tokens.size())
+  {
+    result.error = 2;
+    result.message = "unexpected argument: " + tokens[pos];
+    return result;
+  }
   result.request = Json{{"id", "cli"}, {"command", command}, {"args", std::move(args)}};
   return result;
 }
@@ -262,8 +420,14 @@ ParseResult parse_request(const std::vector<std::string> &tokens)
   if(tokens[0] != "execute") return parse_friendly(tokens);
   if(tokens.size() != 2U) return {Json{}, 2, "execute expects JSON or --stdin"};
   std::string text;
-  if(tokens[1] == "--stdin") { std::ostringstream input; input << std::cin.rdbuf(); text = input.str(); }
-  else text = tokens[1];
+  if(tokens[1] == "--stdin")
+  {
+    std::ostringstream input;
+    input << std::cin.rdbuf();
+    text = input.str();
+  }
+  else
+    text = tokens[1];
   try
   {
     Json request = Json::parse(text);
@@ -272,7 +436,10 @@ ParseResult parse_request(const std::vector<std::string> &tokens)
     if(!request.contains("id")) request["id"] = "cli";
     return {std::move(request), 0, {}};
   }
-  catch(const std::exception &error) { return {Json{}, 4, error.what()}; }
+  catch(const std::exception &error)
+  {
+    return {Json{}, 4, error.what()};
+  }
 }
 } // namespace
 
@@ -293,8 +460,10 @@ int main(int argc, char **argv)
   bool json_mode = false;
   for(int i = 3; i < argc; ++i)
   {
-    if(std::string(argv[i]) == "--json") json_mode = true;
-    else tokens.emplace_back(argv[i]);
+    if(std::string(argv[i]) == "--json")
+      json_mode = true;
+    else
+      tokens.emplace_back(argv[i]);
   }
   const ParseResult parsed = parse_request(tokens);
   if(parsed.error != 0)
@@ -305,12 +474,19 @@ int main(int argc, char **argv)
   std::string error;
   const std::string response = notepp::command_ipc::Client::request(
       notepp::command_api::endpoint_for_project(project), parsed.request.dump(), &error);
-  if(response.empty()) { std::cerr << "Notepp is not running: " << error << '\n'; return 3; }
+  if(response.empty())
+  {
+    std::cerr << "Notepp is not running: " << error << '\n';
+    return 3;
+  }
   try
   {
     const auto envelope = Json::parse(response);
     if(!envelope.contains("success") && !envelope.contains("ok"))
-    { std::cerr << "protocol mismatch\n"; return 5; }
+    {
+      std::cerr << "protocol mismatch\n";
+      return 5;
+    }
     const bool success = envelope.value("success", envelope.value("ok", false));
     if(json_mode)
       std::cout << response << '\n';

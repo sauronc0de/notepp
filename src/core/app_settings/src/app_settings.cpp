@@ -161,6 +161,17 @@ DocumentResult readDocument(const std::filesystem::path &configFile,
     result.needsSave = true;
   }
 
+  if(result.document.contains("language") && result.document["language"].is_string())
+  {
+    const std::string language = result.document["language"].get<std::string>();
+    if(!language.empty()) result.settings.language = language;
+  }
+  else if(result.document.contains("language") && !result.document["language"].is_null())
+  {
+    result.document["language"] = nullptr;
+    result.needsSave = true;
+  }
+
   if(result.document.contains("lastGitSync") && result.document["lastGitSync"].is_object())
   {
     const Json &sync = result.document["lastGitSync"];
@@ -214,6 +225,7 @@ DocumentResult readDocument(const std::filesystem::path &configFile,
 
   result.document["schemaVersion"] = kSchemaVersion;
   result.document["gitSyncEnabled"] = result.settings.git_sync_enabled;
+  result.document["language"] = result.settings.language ? Json(*result.settings.language) : Json(nullptr);
   result.document["lastGitSync"] = {
       {"state", result.settings.last_git_sync.state},
       {"summary", result.settings.last_git_sync.summary},
@@ -297,6 +309,7 @@ LoadResult Store::load() noexcept
 }
 
 UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
+                           const std::optional<std::string> &language,
                            const std::optional<std::filesystem::path> &projectPath,
                            const std::optional<GitSyncRecord> &gitSyncRecord) noexcept
 {
@@ -306,6 +319,11 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
     if(!document.success) return {false, document.settings, document.message};
 
     if(setGitSync) document.settings.git_sync_enabled = git_sync_enabled;
+    if(language)
+    {
+      if(language->empty()) return {false, document.settings, "language must not be empty"};
+      document.settings.language = *language;
+    }
     if(gitSyncRecord) document.settings.last_git_sync = *gitSyncRecord;
     if(projectPath)
     {
@@ -320,6 +338,7 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
 
     document.document["schemaVersion"] = kSchemaVersion;
     document.document["gitSyncEnabled"] = document.settings.git_sync_enabled;
+    document.document["language"] = document.settings.language ? Json(*document.settings.language) : Json(nullptr);
     document.document["lastGitSync"] = {
         {"state", document.settings.last_git_sync.state},
         {"summary", document.settings.last_git_sync.summary},
@@ -351,17 +370,22 @@ UpdateResult Store::update(bool setGitSync, bool git_sync_enabled,
 
 UpdateResult Store::set_git_sync_enabled(bool enabled) noexcept
 {
-  return update(true, enabled, std::nullopt, std::nullopt);
+  return update(true, enabled, std::nullopt, std::nullopt, std::nullopt);
+}
+
+UpdateResult Store::set_language(std::string language) noexcept
+{
+  return update(false, false, std::move(language), std::nullopt, std::nullopt);
 }
 
 UpdateResult Store::record_project(const std::filesystem::path &path) noexcept
 {
-  return update(false, false, path, std::nullopt);
+  return update(false, false, std::nullopt, path, std::nullopt);
 }
 
 UpdateResult Store::record_git_sync_status(const GitSyncRecord &record) noexcept
 {
-  return update(false, false, std::nullopt, record);
+  return update(false, false, std::nullopt, std::nullopt, record);
 }
 
 PollResult Store::poll() noexcept

@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 
 namespace
 {
@@ -103,6 +104,50 @@ void test_stack_limit_keeps_latest_commands()
   expect_true(entries.size() >= 2 && entries[1].label == "two", "older retained command is second latest");
 }
 
+void test_navigation_history_back_forward_and_divergence()
+{
+  NoteHistory::NavigationHistory history(3);
+  history.visit({"one.md", false, 1U});
+  history.visit({"two.md", true, 2U});
+  history.visit({"three.md", false, 3U});
+  expect_true(history.can_back(), "navigation can go back");
+  const auto two = history.back();
+  expect_true(two && two->note_path == "two.md" && two->editing,
+              "navigation restores note and mode");
+  const auto one = history.back();
+  expect_true(one && one->source_offset == 1U, "navigation restores source offset");
+  expect_true(!history.can_back(), "navigation reaches oldest retained entry");
+  expect_true(history.forward()->note_path == "two.md", "navigation can go forward");
+  history.visit({"four.md", false, 4U});
+  expect_true(!history.can_forward(), "divergent visit truncates forward history");
+  history.visit({"five.md", false, 5U});
+  expect_true(history.back()->note_path == "four.md", "capacity keeps latest navigation visits");
+}
+
+void test_command_exceptions_do_not_escape_or_corrupt_stacks()
+{
+  NoteHistory::HistoryManager history;
+  history.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
+      "throwing", "test", []() { throw std::runtime_error("redo failed"); },
+      []() { throw std::runtime_error("undo failed"); }));
+
+  expect_true(!history.undo(), "throwing undo reports failure");
+  expect_true(history.can_undo(), "failed undo command stays on undo stack");
+  expect_true(!history.can_redo(), "failed undo does not enter redo stack");
+  expect_true(history.last_error() == "undo failed", "failed undo exposes the error");
+
+  NoteHistory::HistoryManager redo_history;
+  int value = 0;
+  redo_history.push_executed(std::make_unique<NoteHistory::LambdaCommand>(
+      "redo throwing", "test", []() { throw std::runtime_error("redo failed"); },
+      [&value]() { value = 0; }));
+  value = 1;
+  expect_true(redo_history.undo(), "setup undo succeeds");
+  expect_true(!redo_history.redo(), "throwing redo reports failure");
+  expect_true(redo_history.can_redo(), "failed redo command stays on redo stack");
+  expect_true(redo_history.last_error() == "redo failed", "failed redo exposes the error");
+}
+
 void test_clear_resets_stacks()
 {
   NoteHistory::HistoryManager history;
@@ -125,6 +170,8 @@ int main()
   test_undo_redo_round_trip();
   test_new_command_clears_redo_stack();
   test_stack_limit_keeps_latest_commands();
+  test_navigation_history_back_forward_and_divergence();
+  test_command_exceptions_do_not_escape_or_corrupt_stacks();
   test_clear_resets_stacks();
 
   if(failures != 0)

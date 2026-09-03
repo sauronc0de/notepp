@@ -64,6 +64,12 @@ public:
   /// Clear the selected session's text selection.
   void clearSelection();
 
+  /// Copy selected terminal text. Does nothing when there is no selection.
+  void copySelectionToClipboard();
+
+  /// Paste the platform clipboard into the selected PTY exactly once.
+  void pasteClipboard();
+
   /// Translate a focused-window key event for the selected session.
   void sendKey(int imguiKey, bool ctrl, bool shift, bool alt);
 

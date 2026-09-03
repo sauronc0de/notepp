@@ -20,12 +20,14 @@
 #include "note_index.hpp"
 #include "string_utils.hpp"
 #include "sync_coordinator.hpp"
+#include "terminal_shortcuts.hpp"
 #include "tiny_json.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <stdexcept>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -33,6 +35,7 @@
 #include <fstream>
 #include <iterator>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -159,6 +162,8 @@ static bool parse_hex_color(std::string_view text, int &r, int &g, int &b)
 static constexpr char kToolbarUiWidgetChooserPopup[] = "##tb_ui_widgets_popup";
 static constexpr char kEditorActionsUiWidgetChooserPopup[] =
     "Insert UI Block###editor_actions_ui_widget_chooser_popup";
+static constexpr char kEditorActionsMermaidChooserPopup[] =
+    "Insert Mermaid Demo###editor_actions_mermaid_chooser_popup";
 
 static bool cursor_is_inside_ui_block(const std::string &text, int cursor)
 {
@@ -427,6 +432,88 @@ __CURSOR__)MD",
     ImGui::EndPopup();
   }
   return chooser_open;
+}
+
+template <typename InsertSnippet>
+static bool render_mermaid_demo_chooser(const char *popup_id, bool close_requested,
+                                        InsertSnippet &&insert_snippet)
+{
+  struct Demo
+  {
+    const char *label;
+    const char *body;
+  };
+  static constexpr Demo kDemos[] = {
+      {"Flowchart", "flowchart TD\n  A[Start] --> B[Done]\n"},
+      {"Sequence", "sequenceDiagram\n  Alice->>Bob: Hello\n"},
+      {"Class", "classDiagram\n  class Note\n"},
+      {"State", "stateDiagram-v2\n  [*] --> Ready\n"},
+      {"Entity relationship", "erDiagram\n  NOTE ||--o{ TAG : has\n"},
+      {"Journey", "journey\n  title Release\n  section Build\n    Verify: 5: Developer\n"},
+      {"Gantt", "gantt\n  title Release\n  dateFormat YYYY-MM-DD\n  section Build\n  Verify :2026-01-01, 1d\n"},
+      {"Quadrant", "quadrantChart\n  x-axis Low --> High\n  y-axis Low --> High\n  Item: [0.6, 0.7]\n"},
+      {"Requirement", "requirementDiagram\n  requirement release {\n    id: 1\n    text: Verified\n    risk: low\n    verifymethod: test\n  }\n"},
+      {"Git graph", "gitGraph\n  commit id: \"release\"\n"},
+      {"Mindmap", "mindmap\n  root((Notepp))\n    Notes\n"},
+      {"Timeline", "timeline\n  title Release\n  2026 : Production\n"},
+      {"Sankey", "sankey-beta\n  Source,Target,1\n"},
+      {"XY chart", "xychart-beta\n  x-axis [1, 2]\n  line [1, 2]\n"},
+      {"Block", "block-beta\n  columns 1\n  A[Note]\n"},
+      {"Packet", "packet-beta\n  0-7: \"Header\"\n"},
+      {"Kanban", "kanban\n  todo[Todo]\n    task[Verify release]\n"},
+      {"Architecture", "architecture-beta\n  group app[Application]\n  service gui[GUI] in app\n"},
+      {"Radar", "radar-beta\n  title Quality\n  axis A,B,C\n  max 10\n  Release {\n    data [8, 9, 10]\n  }\n"},
+      {"Treemap", "treemap-beta\n  Release\n    Build: 10\n    Test: 20\n"},
+      {"Event modeling", "eventmodeling\n  title Release\n  command Build\n  event Built\n"},
+      {"Venn", "venn\n  title Coverage\n  set Unit\n  set GUI\n  Unit&GUI \"Integration\"\n"},
+      {"Ishikawa", "ishikawa\n  effect \"Defect\"\n  category Process\n    Missing check\n"},
+      {"Wardley", "wardley\n  title Product\n  component Notepp [0.7, 0.8]\n"},
+      {"Tree view", "treeview\n  Notepp\n    Notes\n    Assets\n"}};
+
+  const bool open = ImGui::BeginPopupModal(
+      popup_id, nullptr,
+      ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+  if(!open) return false;
+  if(close_requested)
+  {
+    ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return false;
+  }
+  static int selected = 0;
+  if(ImGui::IsWindowAppearing()) selected = 0;
+  if(ImGui::IsKeyPressed(ImGuiKey_UpArrow, false))
+    selected = std::max(0, selected - 1);
+  if(ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))
+    selected = std::min(static_cast<int>(std::size(kDemos)) - 1, selected + 1);
+  const bool activate = ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+  bool inserted = false;
+  const auto insert_demo = [&](const Demo &demo) {
+    if(inserted) return;
+    inserted = true;
+    insert_snippet(std::string("```mermaid\n") + demo.body + "```\n", false);
+    ImGui::CloseCurrentPopup();
+  };
+  ImGui::TextDisabled("Mermaid demos supported by the bundled renderer");
+  ImGui::Separator();
+  if(ImGui::BeginChild("##mermaid_demo_list", ImVec2(360.0f, 420.0f), true))
+  {
+    for(std::size_t index = 0; index < std::size(kDemos); ++index)
+    {
+      if(ImGui::Selectable(kDemos[index].label, selected == static_cast<int>(index)))
+      {
+        selected = static_cast<int>(index);
+        insert_demo(kDemos[index]);
+      }
+      if(selected == static_cast<int>(index)) ImGui::SetItemDefaultFocus();
+    }
+    if(activate && !inserted) insert_demo(kDemos[static_cast<std::size_t>(selected)]);
+  }
+  ImGui::EndChild();
+  if(ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+  return true;
 }
 
 static ImGuiWindow *input_text_multiline_child(ImGuiID input_id)
@@ -1359,8 +1446,9 @@ float dist2(ImVec2 a, ImVec2 b)
 
 SDL_Window *viewport_platform_window(const ImGuiViewport *viewport)
 {
-  if(viewport == nullptr || viewport->PlatformHandle == nullptr) return nullptr;
-  const Uint32 window_id = (Uint32)(intptr_t)viewport->PlatformHandle;
+  // imgui_impl_sdl2 stores the SDL window ID in PlatformHandle.
+  if(viewport == nullptr) return nullptr;
+  const auto window_id = static_cast<Uint32>(reinterpret_cast<std::uintptr_t>(viewport->PlatformHandle));
   if(window_id == 0) return nullptr;
   return SDL_GetWindowFromID(window_id);
 }
@@ -1411,15 +1499,6 @@ const ImGuiViewport *find_platform_viewport_by_id(const ImGuiPlatformIO &platfor
     current = find_platform_viewport_by_id(platform_io, current->ParentViewportId);
   }
   return false;
-}
-
-void set_detached_note_windows_enabled(bool enabled)
-{
-  ImGuiIO &io = ImGui::GetIO();
-  if(enabled)
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-  else
-    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
 }
 
 void set_dockers_enabled(bool enabled)
@@ -1759,9 +1838,7 @@ void App::load_workspace()
      has_invalid_type("detachedNoteWindows", [](const Json &value) {
        return value.is_boolean();
      }) ||
-     has_invalid_type("dockersEnabled", [](const Json &value) { return value.is_boolean(); }) ||
-     has_invalid_type("terminalHeight", [](const Json &value) { return value.is_number(); }) ||
-     has_invalid_type("folders", [](const Json &value) { return value.is_object(); }))
+     has_invalid_type("dockersEnabled", [](const Json &value) { return value.is_boolean(); }) || has_invalid_type("terminalHeight", [](const Json &value) { return value.is_number(); }) || has_invalid_type("folders", [](const Json &value) { return value.is_object(); }))
   {
     invalid_workspace();
     return;
@@ -1952,6 +2029,7 @@ App::App(AppConfig config)
   g_unresolved_persistence_errors.clear();
   g_last_persistence_error.clear();
   MarkdownWidgets::reset_persistence_state();
+  MarkdownWidgets::set_widget_project_root(config_.projectRoot);
   std::filesystem::create_directories(config_.dataPath);
   std::filesystem::create_directories(config_.configPath);
   configure_workspace_paths();
@@ -1959,6 +2037,37 @@ App::App(AppConfig config)
   rebind_command_ipc();
   migrate_legacy_workspace_files();
   MarkdownView::set_document_path(config_.dataPath);
+  MarkdownView::set_project_root(config_.projectRoot);
+  MarkdownView::set_internal_link_handler(
+      [this](const std::filesystem::path &path, std::string_view anchor) {
+        pending_internal_link_path_ = path;
+        pending_internal_link_anchor_.assign(anchor);
+      });
+  MarkdownView::set_internal_link_color_handler(
+      [this](const std::filesystem::path &path) -> std::optional<ImVec4> {
+        const std::filesystem::path target = path.lexically_normal();
+        for(const auto &folder : folders_)
+          for(const auto &note : folder.notes)
+          {
+            std::filesystem::path candidate(note.path);
+            if(candidate.is_relative()) candidate = config_.projectRoot / candidate;
+            if(candidate.lexically_normal() != target) continue;
+            ImVec4 color = folder_accent_color(note.use_custom_color, note.color_r,
+                                               note.color_g, note.color_b,
+                                               ImGui::GetStyle());
+            const float luminance = 0.2126F * color.x + 0.7152F * color.y +
+                                    0.0722F * color.z;
+            if(luminance < 0.45F)
+            {
+              const float amount = (0.45F - luminance) / 0.55F;
+              color.x += (1.0F - color.x) * amount;
+              color.y += (1.0F - color.y) * amount;
+              color.z += (1.0F - color.z) * amount;
+            }
+            return color;
+          }
+        return std::nullopt;
+      });
   MarkdownView::set_assets_path(config_.assetsPath);
   MarkdownWidgets::set_terminal_command_handler([this](std::string_view command) {
     terminal_visible_ = true;
@@ -1972,11 +2081,115 @@ App::App(AppConfig config)
     dirty_ = true;
   });
   MarkdownWidgets::set_command_action_handler([this](std::string_view command,
-                                                     std::string_view) {
+                                                     std::string_view card_reference) {
     std::vector<std::string> words;
     if(!split_command_words(command, words))
     {
       LOG_WARNING("Kanban command has an unterminated quote");
+      return true;
+    }
+    const bool note_variable_set = words.size() >= 3U && words[0] == "note" &&
+                                   words[1] == "variable" && words[2] == "set";
+    const bool legacy_variable_set = words.size() >= 2U && words[0] == "variable" &&
+                                     words[1] == "set";
+    if(note_variable_set || legacy_variable_set)
+    {
+      nlohmann::json args = nlohmann::json::object();
+      std::string variable;
+      std::string value;
+      const std::size_t first_argument = note_variable_set ? 3U : 2U;
+      for(std::size_t i = first_argument; i < words.size(); ++i)
+      {
+        if(words[i] == "--note" && i + 1U < words.size())
+        {
+          const std::string reference = words[++i];
+          if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
+             (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
+            args["path"] = reference;
+          else
+            args["id"] = reference;
+        }
+        else if(words[i] == "--name" && i + 1U < words.size())
+          variable = words[++i];
+        else if(words[i] == "--value" && i + 1U < words.size())
+          value = words[++i];
+        else if(variable.empty())
+          variable = words[i];
+        else if(value.empty())
+          value = words[i];
+        else
+        {
+          LOG_WARNING("note variable set has unexpected argument: ", words[i]);
+          return true;
+        }
+      }
+      if(variable.empty() || value.empty())
+      {
+        LOG_WARNING("note variable set requires a variable and value");
+        return true;
+      }
+      args["name"] = variable;
+      const auto parsed = nlohmann::json::parse(value, nullptr, false);
+      args["value"] = parsed.is_discarded() ? nlohmann::json(value) : parsed;
+      if(!args.contains("id") && !args.contains("path") && !card_reference.empty())
+      {
+        const std::string reference =
+            std::string(card_reference).substr(0U, std::string(card_reference).find('#'));
+        if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
+           (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
+          args["path"] = reference;
+        else
+          args["id"] = reference;
+      }
+      if(!args.contains("id") && !args.contains("path"))
+      {
+        const auto document = MarkdownWidgets::widget_document_path();
+        std::error_code ec;
+        const auto relative = std::filesystem::relative(document, config_.projectRoot, ec);
+        if(!ec && !relative.empty()) args["path"] = relative.generic_string();
+      }
+      if(args.contains("path"))
+      {
+        const std::filesystem::path path(args.at("path").get<std::string>());
+        if(path.is_absolute())
+        {
+          for(const auto &folder : folders_)
+            for(const auto &note : folder.notes)
+            {
+              const std::filesystem::path stored(note.path);
+              const auto absolute_stored =
+                  (stored.is_absolute() ? stored : config_.projectRoot / stored).lexically_normal();
+              if(absolute_stored == path.lexically_normal())
+              {
+                args.erase("path");
+                args["id"] = note.id;
+                break;
+              }
+            }
+        }
+        if(args.contains("path"))
+        {
+          std::error_code ec;
+          const auto relative = path.is_absolute() ? std::filesystem::relative(path, config_.projectRoot, ec)
+                                                   : path.lexically_normal();
+          const bool has_parent = std::any_of(relative.begin(), relative.end(),
+                                              [](const auto &part) { return part == ".."; });
+          if(ec || relative.empty() || relative == "." || has_parent)
+          {
+            LOG_WARNING("Note variable command has an unsafe note path");
+            return true;
+          }
+          args["path"] = relative.generic_string();
+        }
+      }
+      if(!args.contains("id") && !args.contains("path")) return true;
+      if(command_api_ == nullptr) return true;
+      const nlohmann::json request{{"command", "note.variable.set"}, {"args", args}};
+      const auto response = command_api_->execute(request);
+      if(response.ok)
+        post_command_mutation(request, response);
+      else
+        LOG_WARNING("Note variable command failed: ", response.body.dump());
       return true;
     }
     if(words.size() < 3U || words[0] != "note" || words[1] != "color" ||
@@ -2126,18 +2339,17 @@ void App::rebind_command_ipc()
   command_project.projectFile = config_.projectRoot / "notepp.project.json";
   const std::string command_endpoint = notepp::command_api::endpoint_for_project(command_project);
   command_api_ = std::make_unique<notepp::command_api::Api>(std::move(command_project));
-  command_api_->set_variable_adapter({
-      [](const std::filesystem::path &path, std::string_view markdown, std::string_view name) {
-        MarkdownWidgets::set_widget_document_path(path);
-        const auto result = MarkdownWidgets::command_get_variable(markdown, name);
-        return notepp::command_api::VariableResult{result.success, result.value, result.error};
-      },
-      [](const std::filesystem::path &path, std::string &markdown, std::string_view name,
-         const nlohmann::json &value) {
-        MarkdownWidgets::set_widget_document_path(path);
-        const auto result = MarkdownWidgets::command_set_variable(markdown, name, value);
-        return notepp::command_api::VariableResult{result.success, result.value, result.error};
-      }});
+  command_api_->set_variable_adapter({[](const std::filesystem::path &path, std::string_view markdown, std::string_view name) {
+                                        MarkdownWidgets::set_widget_document_path(path);
+                                        const auto result = MarkdownWidgets::command_get_variable(markdown, name);
+                                        return notepp::command_api::VariableResult{result.success, result.value, result.error};
+                                      },
+                                      [](const std::filesystem::path &path, std::string &markdown, std::string_view name,
+                                         const nlohmann::json &value) {
+                                        MarkdownWidgets::set_widget_document_path(path);
+                                        const auto result = MarkdownWidgets::command_set_variable(markdown, name, value);
+                                        return notepp::command_api::VariableResult{result.success, result.value, result.error};
+                                      }});
   std::string command_ipc_error;
   if(!command_ipc_server_.open(command_endpoint, &command_ipc_error))
     LOG_WARNING("Command IPC unavailable: ", command_ipc_error);
@@ -2198,11 +2410,23 @@ bool App::load_project_settings()
   project_settings_error_.clear();
   git_sync_enabled_ = loaded.settings.git_sync_enabled || migrate_git_sync;
   project_language_explicit_ = false;
-  if(!loaded.settings.language.empty())
+  if(app_settings && app_settings.settings.language)
   {
-    project_language_explicit_ = Lang::set_language(loaded.settings.language);
+    project_language_explicit_ = Lang::set_language(*app_settings.settings.language);
     if(!project_language_explicit_)
-      LOG_WARNING("Project language is unavailable: ", loaded.settings.language);
+      LOG_WARNING("Configured application language is unavailable: ",
+                  *app_settings.settings.language);
+  }
+  else if(!loaded.settings.language.empty() && Lang::set_language(loaded.settings.language))
+  {
+    const auto migrated = app_settings_store_.set_language(loaded.settings.language);
+    if(migrated)
+      project_language_explicit_ = true;
+    else
+    {
+      app_settings_error_ = migrated.message;
+      LOG_ERROR("Cannot migrate application language: ", migrated.message);
+    }
   }
   project_settings_dirty_ = migrate_git_sync;
   return true;
@@ -2248,13 +2472,6 @@ bool App::save_project_settings()
   if(!project_settings_dirty_) return true;
   if(atomic_file::shared_writes_suspended()) return false;
 
-  const auto saved_language = project_settings_store_.set_language(Lang::current_language_code());
-  if(!saved_language)
-  {
-    project_settings_error_ = saved_language.message;
-    LOG_ERROR("Cannot save project language: ", project_settings_error_);
-    return false;
-  }
   const auto saved_git_sync = project_settings_store_.set_git_sync_enabled(git_sync_enabled_);
   if(!saved_git_sync)
   {
@@ -2519,6 +2736,7 @@ void App::load_switched_project(const std::filesystem::path &new_root)
   config_.dataPath = project.notes;
   config_.configPath = project.config;
   config_.workspacePath = project.workspace;
+  MarkdownWidgets::set_widget_project_root(config_.projectRoot);
   configure_workspace_paths();
   rebind_command_ipc();
   migrate_legacy_workspace_files();
@@ -2592,57 +2810,57 @@ bool App::switch_project(const std::filesystem::path &new_root)
   {
     git_sync_future_ = std::async(std::launch::async,
                                   [this, old_root, new_root, old_project_git_sync_enabled] {
-      notepp::git_sync::OperationResult result;
-      try
-      {
-        notepp::git_sync::OperationResult pushed;
-        pushed.success = true;
-        pushed.status.state = notepp::git_sync::SyncState::unavailable;
-        pushed.status.summary = "Project Git Sync is disabled";
-        if(old_project_git_sync_enabled)
-          pushed = git_client_.commit_and_push(
-              old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
-        notepp::project_settings::Store new_project_settings(
-            new_root / "config" / "project_settings.json");
-        const auto new_settings = new_project_settings.load(false);
-        const bool pull_enabled =
-            !new_settings || !new_settings.existed || !new_settings.settings.has_git_sync_enabled ||
-            new_settings.settings.git_sync_enabled;
-        notepp::git_sync::OperationResult pulled;
-        if(pull_enabled)
-          pulled = git_client_.pull_on_open(new_root);
-        else
-        {
-          pulled.success = true;
-          pulled.status.state = notepp::git_sync::SyncState::unavailable;
-          pulled.status.summary = "Project Git Sync is disabled";
-        }
-        result = pulled;
-        if(!pushed.success && !pull_enabled)
-          result = pushed;
-        else if(!pushed.success && pulled.success)
-          result = pushed;
-        else if(!pushed.success && !pulled.success)
-        {
-          result = notepp::git_sync::exception_result(
-              "Project switch Git Sync",
-              "Old project push: " + pushed.status.summary + " - " + pushed.status.detail +
-                  "\nNew project pull: " + pulled.status.summary + " - " + pulled.status.detail);
-        }
-      }
-      catch(const std::exception &error)
-      {
-        result = notepp::git_sync::exception_result("Project switch Git Sync", error.what());
-      }
-      catch(...)
-      {
-        result = notepp::git_sync::exception_result("Project switch Git Sync");
-      }
-      SDL_Event event{};
-      event.type = kGitSyncCompletedEvent;
-      SDL_PushEvent(&event);
-      return GitAsyncResult{std::move(result), new_root};
-    });
+                                    notepp::git_sync::OperationResult result;
+                                    try
+                                    {
+                                      notepp::git_sync::OperationResult pushed;
+                                      pushed.success = true;
+                                      pushed.status.state = notepp::git_sync::SyncState::unavailable;
+                                      pushed.status.summary = "Project Git Sync is disabled";
+                                      if(old_project_git_sync_enabled)
+                                        pushed = git_client_.commit_and_push(
+                                            old_root, "Notepp sync " + notepp::app_settings::current_utc_timestamp());
+                                      notepp::project_settings::Store new_project_settings(
+                                          new_root / "config" / "project_settings.json");
+                                      const auto new_settings = new_project_settings.load(false);
+                                      const bool pull_enabled =
+                                          !new_settings || !new_settings.existed || !new_settings.settings.has_git_sync_enabled ||
+                                          new_settings.settings.git_sync_enabled;
+                                      notepp::git_sync::OperationResult pulled;
+                                      if(pull_enabled)
+                                        pulled = git_client_.pull_on_open(new_root);
+                                      else
+                                      {
+                                        pulled.success = true;
+                                        pulled.status.state = notepp::git_sync::SyncState::unavailable;
+                                        pulled.status.summary = "Project Git Sync is disabled";
+                                      }
+                                      result = pulled;
+                                      if(!pushed.success && !pull_enabled)
+                                        result = pushed;
+                                      else if(!pushed.success && pulled.success)
+                                        result = pushed;
+                                      else if(!pushed.success && !pulled.success)
+                                      {
+                                        result = notepp::git_sync::exception_result(
+                                            "Project switch Git Sync",
+                                            "Old project push: " + pushed.status.summary + " - " + pushed.status.detail +
+                                                "\nNew project pull: " + pulled.status.summary + " - " + pulled.status.detail);
+                                      }
+                                    }
+                                    catch(const std::exception &error)
+                                    {
+                                      result = notepp::git_sync::exception_result("Project switch Git Sync", error.what());
+                                    }
+                                    catch(...)
+                                    {
+                                      result = notepp::git_sync::exception_result("Project switch Git Sync");
+                                    }
+                                    SDL_Event event{};
+                                    event.type = kGitSyncCompletedEvent;
+                                    SDL_PushEvent(&event);
+                                    return GitAsyncResult{std::move(result), new_root};
+                                  });
   }
   catch(const std::exception &error)
   {
@@ -2941,12 +3159,16 @@ void App::load_state()
       layout_locked_ = decoded_index->layout_locked;
       detached_note_windows_enabled_ = decoded_index->detached_note_windows;
       dockers_enabled_ = decoded_index->dockers_enabled;
-      if(!project_language_explicit_ && !decoded_index->language.empty())
+      if(!project_language_explicit_ && !decoded_index->language.empty() &&
+         Lang::set_language(decoded_index->language))
       {
-        if(Lang::set_language(decoded_index->language))
-        {
+        const auto migrated = app_settings_store_.set_language(decoded_index->language);
+        if(migrated)
           project_language_explicit_ = true;
-          project_settings_dirty_ = true;
+        else
+        {
+          app_settings_error_ = migrated.message;
+          LOG_ERROR("Cannot migrate legacy application language: ", migrated.message);
         }
       }
 
@@ -3152,7 +3374,6 @@ void App::load_state()
   if(!workspace_saved) LOG_ERROR("Cannot save local workspace state");
   if(!profiles_saved) LOG_ERROR("Cannot save local layout profiles");
   if(uuid_migrated || paths_migrated || fingerprints_migrated) save_index();
-
 }
 
 bool App::save_state()
@@ -3250,7 +3471,8 @@ void App::apply_folder_settings(int folder_idx)
   drawings_visible_ = f.drawings_visible;
   grid_visible_ = f.grid_visible;
   set_dockers_enabled(dockers_enabled_);
-  set_detached_note_windows_enabled(detached_note_windows_enabled_);
+  detach_transition_target_ = detached_note_windows_enabled_;
+  detach_transition_pending_ = true;
   if(dockers_enabled_ && !was_docking_enabled)
     force_note_layout_restore_ = true;
   if(!drawings_visible_)
@@ -3329,7 +3551,7 @@ bool App::save_index()
   Json root = Json::object();
 
   root["schemaVersion"] = index_schema_version_;
-  root["language"] = Lang::current_language_code();
+  root.erase("language");
 
   Json persisted_folders = Json::array();
   for(std::size_t fi = 0; fi < folders_.size(); ++fi)
@@ -4671,11 +4893,19 @@ std::string App::capture_workspace_snapshot() const
 void App::apply_workspace_snapshot(std::string_view snapshot)
 {
   const Json root = Json::parse(snapshot.begin(), snapshot.end(), nullptr, false);
-  if(root.is_discarded()) return;
+  if(root.is_discarded() || !root.is_object() || !root.contains("folders") ||
+     !root["folders"].is_array())
+    throw std::invalid_argument("workspace undo snapshot is malformed");
 
   discard_pending_text_history();
   const bool previous_replay = history_replay_in_progress_;
   history_replay_in_progress_ = true;
+  struct ReplayGuard
+  {
+    bool &flag;
+    bool previous;
+    ~ReplayGuard() { flag = previous; }
+  } replay_guard{history_replay_in_progress_, previous_replay};
 
   std::unordered_set<std::string> current_paths;
   for(const FolderMeta &folder : folders_)
@@ -4798,12 +5028,11 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
 
   for(const auto &[path, content] : restored_contents)
   {
-    if(write_text_file(path, content))
-    {
-      std::error_code backup_error;
-      std::filesystem::remove(std::filesystem::path(path + ".bak"), backup_error);
-      if(!backup_error) g_project_files.forget(std::filesystem::path(path + ".bak"));
-    }
+    if(!write_text_file(path, content))
+      throw std::runtime_error("cannot restore workspace note: " + path);
+    std::error_code backup_error;
+    std::filesystem::remove(std::filesystem::path(path + ".bak"), backup_error);
+    if(!backup_error) g_project_files.forget(std::filesystem::path(path + ".bak"));
   }
   for(const std::string &path : current_paths)
   {
@@ -4898,8 +5127,6 @@ void App::apply_workspace_snapshot(std::string_view snapshot)
   layout_dirty_ = false;
   force_note_layout_restore_ = true;
   state_dirty_ = true;
-
-  history_replay_in_progress_ = previous_replay;
 }
 
 std::string App::capture_text_context_snapshot() const
@@ -4916,16 +5143,21 @@ std::string App::capture_text_context_snapshot() const
 void App::apply_text_history_state(std::string_view note_path, std::string_view text, std::string_view context_snapshot)
 {
   const Json context = Json::parse(context_snapshot.begin(), context_snapshot.end(), nullptr, false);
+  if(context.is_discarded() || !context.is_object())
+    throw std::invalid_argument("text undo context snapshot is malformed");
+  if(note_path.empty()) throw std::invalid_argument("text undo note path is empty");
 
   discard_pending_text_history();
+  if(!write_text_file(std::string(note_path), text))
+    throw std::runtime_error("cannot restore note text for undo");
   const bool previous_replay = history_replay_in_progress_;
   history_replay_in_progress_ = true;
-
-  if(!write_text_file(std::string(note_path), text))
+  struct ReplayGuard
   {
-    history_replay_in_progress_ = previous_replay;
-    return;
-  }
+    bool &flag;
+    bool previous;
+    ~ReplayGuard() { flag = previous; }
+  } replay_guard{history_replay_in_progress_, previous_replay};
 
   folder_overview_mode_ = context.value("folder_overview", folder_overview_mode_);
   editing_mode_ = context.value("editing_mode", editing_mode_);
@@ -4957,7 +5189,6 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
   }
 
   state_dirty_ = true;
-  history_replay_in_progress_ = previous_replay;
 }
 
 void App::record_workspace_history_action(std::string_view label, std::string before_snapshot)
@@ -4982,8 +5213,15 @@ void App::apply_preview_history_state(std::string_view note_path, std::string_vi
   discard_pending_text_history();
   const bool previous_replay = history_replay_in_progress_;
   history_replay_in_progress_ = true;
+  struct ReplayGuard
+  {
+    bool &flag;
+    bool previous;
+    ~ReplayGuard() { flag = previous; }
+  } replay_guard{history_replay_in_progress_, previous_replay};
 
-  write_text_file(std::string(note_path), text);
+  if(!write_text_file(std::string(note_path), text))
+    throw std::runtime_error("cannot restore preview note for undo");
   apply_preview_state_snapshot(preview_state_snapshot);
 
   if(!state_file_path_.empty() && state_file_path_ == note_path)
@@ -4991,8 +5229,6 @@ void App::apply_preview_history_state(std::string_view note_path, std::string_vi
     markdown_text_.assign(text.begin(), text.end());
     normalize_input_text_buffer(markdown_text_);
   }
-
-  history_replay_in_progress_ = previous_replay;
 }
 
 void App::record_preview_history_action(std::string_view label, std::string_view note_path, const std::string &before_text, const std::string &after_text, const std::string &before_preview_state, const std::string &after_preview_state)
@@ -5089,7 +5325,16 @@ bool App::apply_global_undo()
 {
   flush_pending_text_history();
   const std::string label(history_.next_undo_label());
-  if(!history_.undo()) return false;
+  if(!history_.undo())
+  {
+    if(!history_.last_error().empty())
+    {
+      LOG_ERROR("Undo failed: ", history_.last_error());
+      show_history_indicator("Undo failed", history_.last_error(),
+                             ImVec4(0.93f, 0.30f, 0.24f, 1.0f));
+    }
+    return false;
+  }
   show_history_indicator("Undo", label, ImVec4(0.93f, 0.58f, 0.24f, 1.0f));
   return true;
 }
@@ -5098,7 +5343,16 @@ bool App::apply_global_redo()
 {
   flush_pending_text_history();
   const std::string label(history_.next_redo_label());
-  if(!history_.redo()) return false;
+  if(!history_.redo())
+  {
+    if(!history_.last_error().empty())
+    {
+      LOG_ERROR("Redo failed: ", history_.last_error());
+      show_history_indicator("Redo failed", history_.last_error(),
+                             ImVec4(0.93f, 0.30f, 0.24f, 1.0f));
+    }
+    return false;
+  }
   show_history_indicator("Redo", label, ImVec4(0.22f, 0.74f, 0.58f, 1.0f));
   return true;
 }
@@ -5299,15 +5553,15 @@ bool App::frame_begin()
       }
       catch(const std::exception &error)
       {
-        nlohmann::json malformed{{"success", false}, {"ok", false},
-                                 {"error", {{"code", "invalid_request"},
-                                             {"message", error.what()}}}};
+        nlohmann::json malformed{{"success", false}, {"ok", false}, {"error", {{"code", "invalid_request"}, {"message", error.what()}}}};
         try
         {
           const auto parsed = nlohmann::json::parse(request);
           if(parsed.is_object() && parsed.contains("id")) malformed["id"] = parsed.at("id");
         }
-        catch(const std::exception &) { }
+        catch(const std::exception &)
+        {
+        }
         return malformed.dump();
       }
     });
@@ -5344,7 +5598,10 @@ bool App::frame_begin()
     if((_io.ConfigFlags & ImGuiConfigFlags_DockingEnable) == 0)
       set_dockers_enabled(true);
     if(bool(_io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != detached_note_windows_enabled_)
-      set_detached_note_windows_enabled(detached_note_windows_enabled_);
+    {
+      detach_transition_target_ = detached_note_windows_enabled_;
+      detach_transition_pending_ = true;
+    }
   }
   pinned_topmost_viewports_.clear();
 
@@ -5730,7 +5987,11 @@ bool App::frame_begin()
           (edit_key_sym == SDLK_RETURN || edit_key_sym == SDLK_KP_ENTER);
       if(edit_key_sym == SDLK_ESCAPE)
       {
-        if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
+        if(editor_action_mermaid_chooser_visible_)
+        {
+          request_close_editor_action_mermaid_chooser_ = true;
+        }
+        else if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
         {
           editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
           request_close_editor_action_ui_widget_chooser_ = false;
@@ -5807,8 +6068,12 @@ bool App::frame_begin()
     // the terminal receives this text; otherwise the active note InputText
     // handles it normally. SDL_TEXTINPUT preserves layout, Unicode, IME,
     // and paste data.
-    if(event.type == SDL_TEXTINPUT && terminal_visible_)
-      pending_terminal_text_.append(event.text.text);
+    if(event.type == SDL_TEXTINPUT && terminal_visible_ && terminal_has_keyboard_focus())
+    {
+      if(!suppress_terminal_text_input_)
+        pending_terminal_text_.append(event.text.text);
+      continue;
+    }
 
     ImGui_ImplSDL2_ProcessEvent(&event);
     const bool imgui_wants_keyboard = ImGui::GetIO().WantCaptureKeyboard || ImGui::GetIO().WantTextInput;
@@ -5828,42 +6093,112 @@ bool App::frame_begin()
     // not provide reliable shell key repeat.
     if(event.type == SDL_KEYDOWN && terminal_visible_ && terminal_has_keyboard_focus())
     {
-      const bool clipboard_shortcut =
-          (!alt_down && ctrl_down && shift_down && (key_sym == SDLK_c || key_sym == SDLK_v)) ||
-          (!alt_down && ctrl_down && !shift_down && key_sym == SDLK_INSERT) ||
-          (!alt_down && !ctrl_down && shift_down && key_sym == SDLK_INSERT);
-      if(!clipboard_shortcut)
+      notepp::terminal_detail::ClipboardKey clipboard_key =
+          notepp::terminal_detail::ClipboardKey::Other;
+      if(key_sym == SDLK_c)
+        clipboard_key = notepp::terminal_detail::ClipboardKey::C;
+      else if(key_sym == SDLK_v)
+        clipboard_key = notepp::terminal_detail::ClipboardKey::V;
+      else if(key_sym == SDLK_INSERT)
+        clipboard_key = notepp::terminal_detail::ClipboardKey::Insert;
+      const auto clipboard_action = notepp::terminal_detail::terminalClipboardAction(
+          clipboard_key, ctrl_down, shift_down, alt_down, (key_mod & KMOD_GUI) != 0);
+      if(clipboard_action == notepp::terminal_detail::ClipboardAction::Copy)
+      {
+        terminal_.copySelectionToClipboard();
+        suppress_terminal_text_input_ = true;
+      }
+      else if(clipboard_action == notepp::terminal_detail::ClipboardAction::Paste)
+      {
+        terminal_.pasteClipboard();
+        suppress_terminal_text_input_ = true;
+      }
+      else
       {
         ImGuiKey terminal_key = ImGuiKey_None;
         switch(key_sym)
         {
-        case SDLK_TAB: terminal_key = ImGuiKey_Tab; break;
-        case SDLK_LEFT: terminal_key = ImGuiKey_LeftArrow; break;
-        case SDLK_RIGHT: terminal_key = ImGuiKey_RightArrow; break;
-        case SDLK_UP: terminal_key = ImGuiKey_UpArrow; break;
-        case SDLK_DOWN: terminal_key = ImGuiKey_DownArrow; break;
-        case SDLK_PAGEUP: terminal_key = ImGuiKey_PageUp; break;
-        case SDLK_PAGEDOWN: terminal_key = ImGuiKey_PageDown; break;
-        case SDLK_HOME: terminal_key = ImGuiKey_Home; break;
-        case SDLK_END: terminal_key = ImGuiKey_End; break;
-        case SDLK_INSERT: terminal_key = ImGuiKey_Insert; break;
-        case SDLK_DELETE: terminal_key = ImGuiKey_Delete; break;
-        case SDLK_BACKSPACE: terminal_key = ImGuiKey_Backspace; break;
-        case SDLK_RETURN: terminal_key = ImGuiKey_Enter; break;
-        case SDLK_KP_ENTER: terminal_key = ImGuiKey_KeypadEnter; break;
-        case SDLK_ESCAPE: terminal_key = ImGuiKey_Escape; break;
-        case SDLK_F1: terminal_key = ImGuiKey_F1; break;
-        case SDLK_F2: terminal_key = ImGuiKey_F2; break;
-        case SDLK_F3: terminal_key = ImGuiKey_F3; break;
-        case SDLK_F4: terminal_key = ImGuiKey_F4; break;
-        case SDLK_F5: terminal_key = ImGuiKey_F5; break;
-        case SDLK_F6: terminal_key = ImGuiKey_F6; break;
-        case SDLK_F7: terminal_key = ImGuiKey_F7; break;
-        case SDLK_F8: terminal_key = ImGuiKey_F8; break;
-        case SDLK_F9: terminal_key = ImGuiKey_F9; break;
-        case SDLK_F10: terminal_key = ImGuiKey_F10; break;
-        case SDLK_F11: terminal_key = ImGuiKey_F11; break;
-        case SDLK_F12: terminal_key = ImGuiKey_F12; break;
+        case SDLK_TAB:
+          terminal_key = ImGuiKey_Tab;
+          break;
+        case SDLK_LEFT:
+          terminal_key = ImGuiKey_LeftArrow;
+          break;
+        case SDLK_RIGHT:
+          terminal_key = ImGuiKey_RightArrow;
+          break;
+        case SDLK_UP:
+          terminal_key = ImGuiKey_UpArrow;
+          break;
+        case SDLK_DOWN:
+          terminal_key = ImGuiKey_DownArrow;
+          break;
+        case SDLK_PAGEUP:
+          terminal_key = ImGuiKey_PageUp;
+          break;
+        case SDLK_PAGEDOWN:
+          terminal_key = ImGuiKey_PageDown;
+          break;
+        case SDLK_HOME:
+          terminal_key = ImGuiKey_Home;
+          break;
+        case SDLK_END:
+          terminal_key = ImGuiKey_End;
+          break;
+        case SDLK_INSERT:
+          terminal_key = ImGuiKey_Insert;
+          break;
+        case SDLK_DELETE:
+          terminal_key = ImGuiKey_Delete;
+          break;
+        case SDLK_BACKSPACE:
+          terminal_key = ImGuiKey_Backspace;
+          break;
+        case SDLK_RETURN:
+          terminal_key = ImGuiKey_Enter;
+          break;
+        case SDLK_KP_ENTER:
+          terminal_key = ImGuiKey_KeypadEnter;
+          break;
+        case SDLK_ESCAPE:
+          terminal_key = ImGuiKey_Escape;
+          break;
+        case SDLK_F1:
+          terminal_key = ImGuiKey_F1;
+          break;
+        case SDLK_F2:
+          terminal_key = ImGuiKey_F2;
+          break;
+        case SDLK_F3:
+          terminal_key = ImGuiKey_F3;
+          break;
+        case SDLK_F4:
+          terminal_key = ImGuiKey_F4;
+          break;
+        case SDLK_F5:
+          terminal_key = ImGuiKey_F5;
+          break;
+        case SDLK_F6:
+          terminal_key = ImGuiKey_F6;
+          break;
+        case SDLK_F7:
+          terminal_key = ImGuiKey_F7;
+          break;
+        case SDLK_F8:
+          terminal_key = ImGuiKey_F8;
+          break;
+        case SDLK_F9:
+          terminal_key = ImGuiKey_F9;
+          break;
+        case SDLK_F10:
+          terminal_key = ImGuiKey_F10;
+          break;
+        case SDLK_F11:
+          terminal_key = ImGuiKey_F11;
+          break;
+        case SDLK_F12:
+          terminal_key = ImGuiKey_F12;
+          break;
         default:
           if(key_sym >= SDLK_a && key_sym <= SDLK_z)
             terminal_key = static_cast<ImGuiKey>(ImGuiKey_A + (key_sym - SDLK_a));
@@ -5881,21 +6216,49 @@ bool App::frame_begin()
           {
             switch(key_sym)
             {
-            case SDLK_TAB: terminal_.write(shift_down ? "\x1b[Z" : "\t"); break;
-            case SDLK_LEFT: terminal_.write("\x1b[D"); break;
-            case SDLK_RIGHT: terminal_.write("\x1b[C"); break;
-            case SDLK_UP: terminal_.write("\x1b[A"); break;
-            case SDLK_DOWN: terminal_.write("\x1b[B"); break;
-            case SDLK_PAGEUP: terminal_.write("\x1b[5~"); break;
-            case SDLK_PAGEDOWN: terminal_.write("\x1b[6~"); break;
-            case SDLK_HOME: terminal_.write("\x1b[H"); break;
-            case SDLK_END: terminal_.write("\x1b[F"); break;
-            case SDLK_DELETE: terminal_.write("\x1b[3~"); break;
-            case SDLK_BACKSPACE: terminal_.write("\x7f"); break;
+            case SDLK_TAB:
+              terminal_.write(shift_down ? "\x1b[Z" : "\t");
+              break;
+            case SDLK_LEFT:
+              terminal_.write("\x1b[D");
+              break;
+            case SDLK_RIGHT:
+              terminal_.write("\x1b[C");
+              break;
+            case SDLK_UP:
+              terminal_.write("\x1b[A");
+              break;
+            case SDLK_DOWN:
+              terminal_.write("\x1b[B");
+              break;
+            case SDLK_PAGEUP:
+              terminal_.write("\x1b[5~");
+              break;
+            case SDLK_PAGEDOWN:
+              terminal_.write("\x1b[6~");
+              break;
+            case SDLK_HOME:
+              terminal_.write("\x1b[H");
+              break;
+            case SDLK_END:
+              terminal_.write("\x1b[F");
+              break;
+            case SDLK_DELETE:
+              terminal_.write("\x1b[3~");
+              break;
+            case SDLK_BACKSPACE:
+              terminal_.write("\x7f");
+              break;
             case SDLK_RETURN:
-            case SDLK_KP_ENTER: terminal_.write("\r"); break;
-            case SDLK_ESCAPE: terminal_.write("\x1b"); break;
-            default: terminal_.sendKey(terminal_key, false, shift_down, false); break;
+            case SDLK_KP_ENTER:
+              terminal_.write("\r");
+              break;
+            case SDLK_ESCAPE:
+              terminal_.write("\x1b");
+              break;
+            default:
+              terminal_.sendKey(terminal_key, false, shift_down, false);
+              break;
             }
           }
           else
@@ -5904,6 +6267,18 @@ bool App::frame_begin()
           }
         }
       }
+      continue;
+    }
+
+    if(event.type == SDL_KEYDOWN && event.key.repeat == 0 && alt_down && !ctrl_down &&
+       !shift_down && (key_sym == SDLK_LEFT || key_sym == SDLK_RIGHT) &&
+       !(terminal_visible_ && terminal_has_keyboard_focus()) &&
+       !command_finder_window_visible_ && !editor_actions_window_visible_ &&
+       !search_window_visible_ && !note_switcher_window_visible_ &&
+       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
+    {
+      request_navigation_back_ = key_sym == SDLK_LEFT;
+      request_navigation_forward_ = key_sym == SDLK_RIGHT;
       continue;
     }
 
@@ -6042,6 +6417,7 @@ bool App::frame_begin()
     }
   }
 
+  suppress_terminal_text_input_ = false;
   if(close_requested_) advance_close();
 
   // Borderless window drag (update position while mouse held)
@@ -6230,13 +6606,16 @@ void App::frame_ui()
     const ImVec2 git_switch_max = ImGui::GetItemRectMax();
     const float git_switch_radius = git_switch_size.y * 0.5f;
     const ImU32 git_switch_track = ImGui::GetColorU32(
-        git_sync_enabled_ ? ImGuiCol_Button : ImGuiCol_TextDisabled);
-    const ImU32 git_switch_knob = ImGui::GetColorU32(ImGuiCol_SliderGrab);
+        git_sync_enabled_ ? ImVec4(0.20f, 0.72f, 0.38f, 1.0f)
+                          : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    const ImU32 git_switch_knob = ImGui::GetColorU32(
+        git_sync_enabled_ ? ImVec4(0.96f, 0.98f, 1.0f, 1.0f)
+                          : ImGui::GetStyleColorVec4(ImGuiCol_SliderGrab));
     ImDrawList *git_switch_draw_list = ImGui::GetWindowDrawList();
     git_switch_draw_list->AddRectFilled(
         git_switch_min, git_switch_max, git_switch_track, git_switch_radius);
     const float git_switch_knob_x = git_sync_enabled_ ? git_switch_max.x - git_switch_radius
-                                                       : git_switch_min.x + git_switch_radius;
+                                                      : git_switch_min.x + git_switch_radius;
     git_switch_draw_list->AddCircleFilled(
         ImVec2(git_switch_knob_x, git_switch_min.y + git_switch_radius),
         git_switch_radius - 2.0f, git_switch_knob);
@@ -6474,6 +6853,17 @@ void App::frame_ui()
     note_switcher_window_visible_ = false;
     request_close_note_switcher_ = false;
     note_header_create_selecting_ = false;
+    note_reference_selecting_ = false;
+    note_reference_insertion_pending_ = false;
+    note_reference_selection_start_ = -1;
+    note_reference_selection_end_ = -1;
+    note_reference_target_.clear();
+    note_reference_label_.clear();
+    note_reference_label_visible_ = false;
+    note_reference_label_focus_ = false;
+    note_reference_label_buffer_[0] = '\0';
+    pending_internal_link_path_.clear();
+    pending_internal_link_anchor_.clear();
     note_header_create_name_visible_ = false;
     request_note_header_create_confirm_ = false;
     request_close_note_header_create_ = false;
@@ -6558,6 +6948,23 @@ void App::frame_ui()
     for(char c : text) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     return out;
   };
+  const auto encode_link_path = [](std::string_view path) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(path.size());
+    for(const unsigned char c : path)
+    {
+      if(std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.')
+        encoded.push_back(static_cast<char>(c));
+      else
+      {
+        encoded.push_back('%');
+        encoded.push_back(kHex[c >> 4U]);
+        encoded.push_back(kHex[c & 0x0FU]);
+      }
+    }
+    return encoded;
+  };
   auto make_search_preview = [](std::string_view text, size_t match_pos, size_t match_len) {
     match_pos = std::min(match_pos, text.size());
     const size_t previous_line_break = match_pos == 0 ? std::string_view::npos : text.find_last_of("\r\n", match_pos - 1);
@@ -6612,6 +7019,86 @@ void App::frame_ui()
     }
     return std::string("Search");
   };
+  const auto normalized_note_path = [&](std::string_view path) {
+    std::filesystem::path result(path);
+    if(result.is_relative()) result = config_.projectRoot / result;
+    return result.lexically_normal();
+  };
+  const auto current_navigation_location = [&]() -> std::optional<NoteHistory::NavigationLocation> {
+    if(!has_active_note() || state_file_path_.empty()) return std::nullopt;
+    NoteHistory::NavigationLocation location;
+    location.note_path = normalized_note_path(state_file_path_).generic_string();
+    location.editing = editing_mode_;
+    location.cursor = navigation_editor_cursor_;
+    if(editing_mode_ && navigation_editor_cursor_ >= 0)
+      location.source_offset = static_cast<std::size_t>(navigation_editor_cursor_);
+    else if(preview_edit_cursor_pos_ >= 0)
+      location.source_offset = static_cast<std::size_t>(preview_edit_cursor_pos_);
+    else if(search_jump_note_path_ == state_file_path_ && search_jump_pos_ >= 0)
+      location.source_offset = static_cast<std::size_t>(search_jump_pos_);
+    return location;
+  };
+  if(const auto current = current_navigation_location())
+  {
+    if(!observed_navigation_location_ || *observed_navigation_location_ != *current)
+    {
+      bool meaningful = !observed_navigation_location_ ||
+                        observed_navigation_location_->note_path != current->note_path ||
+                        observed_navigation_location_->editing != current->editing;
+      if(observed_navigation_location_ && !meaningful)
+      {
+        const std::size_t previous = observed_navigation_location_->source_offset;
+        const std::size_t next = current->source_offset;
+        meaningful = previous > next ? previous - next > 1U : next - previous > 1U;
+      }
+      if(!navigation_replay_in_progress_ && meaningful) navigation_history_.visit(*current);
+      observed_navigation_location_ = *current;
+    }
+  }
+  navigation_replay_in_progress_ = false;
+
+  const auto apply_navigation_location = [&](const NoteHistory::NavigationLocation &location) {
+    const std::filesystem::path wanted = normalized_note_path(location.note_path);
+    for(int folder_index = 0; folder_index < static_cast<int>(folders_.size()); ++folder_index)
+    {
+      const auto &notes = folders_[static_cast<std::size_t>(folder_index)].notes;
+      for(int note_index = 0; note_index < static_cast<int>(notes.size()); ++note_index)
+      {
+        if(normalized_note_path(notes[static_cast<std::size_t>(note_index)].path) != wanted) continue;
+        navigation_replay_in_progress_ = true;
+        set_active_note(folder_index, note_index);
+        selected_note_indices.clear();
+        selected_note_indices.insert(note_index);
+        selected_stroke_indices.clear();
+        folder_overview_mode_ = false;
+        editing_mode_ = location.editing;
+        preview_edit_cursor_note_path_ = state_file_path_;
+        preview_edit_cursor_pos_ = static_cast<int>(std::min<std::size_t>(
+            location.source_offset, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        navigation_editor_cursor_ = location.cursor >= 0 ? location.cursor
+                                                         : preview_edit_cursor_pos_;
+        if(!editing_mode_)
+          request_preview_source_offset(state_file_path_, location.source_offset);
+        observed_navigation_location_ = location;
+        return true;
+      }
+    }
+    LOG_WARNING("Navigation history target no longer exists: ", location.note_path);
+    return false;
+  };
+  if(request_navigation_back_)
+  {
+    request_navigation_back_ = false;
+    while(const auto target = navigation_history_.back())
+      if(apply_navigation_location(*target)) break;
+  }
+  if(request_navigation_forward_)
+  {
+    request_navigation_forward_ = false;
+    while(const auto target = navigation_history_.forward())
+      if(apply_navigation_location(*target)) break;
+  }
+
   auto navigate_to_search_result = [&](const SearchResult &result, bool prefer_edit) {
     if(result.folder_idx < 0 || result.folder_idx >= (int)folders_.size()) return;
     const FolderMeta &target_folder = folders_[(size_t)result.folder_idx];
@@ -6644,7 +7131,8 @@ void App::frame_ui()
     search_jump_len_ = result.length;
     search_jump_force_edit_ = prefer_edit && result.content_match && result.offset >= 0;
     if(!prefer_edit && result.content_match && result.offset >= 0)
-      request_preview_source_offset(result.note_path, static_cast<std::size_t>(result.offset));
+      request_preview_source_offset(result.note_path, static_cast<std::size_t>(result.offset),
+                                    static_cast<std::size_t>(std::max(0, result.length)));
     search_request_window_focus_ = prefer_edit;
   };
   auto highlight_current_editor_match = [&](const SearchResult &result) {
@@ -6818,7 +7306,10 @@ void App::frame_ui()
     if(request_close_search_)
     {
       if(search_dialog.scope == SearchScope::CurrentEditorNote)
+      {
         search_request_window_focus_ = true;
+        if(!editing_mode_) request_preview_source_offset({}, 0);
+      }
       search_dialog.visible = false;
       request_close_search_ = false;
       search_selected_idx_ = -1;
@@ -6878,7 +7369,15 @@ void App::frame_ui()
         search_selected_idx_ = 0;
         search_selection_moved = true;
         if(editor_search)
-          highlight_current_editor_match(search_dialog.results.front());
+        {
+          const SearchResult &first_result = search_dialog.results.front();
+          if(editing_mode_)
+            highlight_current_editor_match(first_result);
+          else if(first_result.offset >= 0)
+            request_preview_source_offset(first_result.note_path,
+                                          static_cast<std::size_t>(first_result.offset),
+                                          static_cast<std::size_t>(std::max(0, first_result.length)));
+        }
       }
       search_dialog.last_query = current_query;
       search_dialog.last_scope = search_dialog.scope;
@@ -6904,7 +7403,14 @@ void App::frame_ui()
       {
         const SearchResult &selected_result = search_dialog.results[static_cast<std::size_t>(search_selected_idx_)];
         if(editor_search)
-          highlight_current_editor_match(selected_result);
+        {
+          if(editing_mode_)
+            highlight_current_editor_match(selected_result);
+          else if(selected_result.offset >= 0)
+            request_preview_source_offset(selected_result.note_path,
+                                          static_cast<std::size_t>(selected_result.offset),
+                                          static_cast<std::size_t>(std::max(0, selected_result.length)));
+        }
       }
     }
     search_navigation_delta_ = 0;
@@ -6918,7 +7424,14 @@ void App::frame_ui()
         if(editor_search)
         {
           search_selected_idx_ = (search_selected_idx_ + 1) % static_cast<int>(search_dialog.results.size());
-          highlight_current_editor_match(search_dialog.results[static_cast<std::size_t>(search_selected_idx_)]);
+          const SearchResult &selected_result =
+              search_dialog.results[static_cast<std::size_t>(search_selected_idx_)];
+          if(editing_mode_)
+            highlight_current_editor_match(selected_result);
+          else if(selected_result.offset >= 0)
+            request_preview_source_offset(selected_result.note_path,
+                                          static_cast<std::size_t>(selected_result.offset),
+                                          static_cast<std::size_t>(std::max(0, selected_result.length)));
         }
         else
         {
@@ -7003,6 +7516,7 @@ void App::frame_ui()
     search_window_visible_ = search_dialog.visible;
     if(!search_dialog.visible)
     {
+      if(editor_search && !editing_mode_) request_preview_source_offset({}, 0);
       search_selected_idx_ = -1;
       search_navigation_delta_ = 0;
       request_search_activate_ = false;
@@ -7078,6 +7592,66 @@ void App::frame_ui()
     request_cancel_draw_tools_ = true;
     sidebar_last_selected_was_folder = false;
   };
+  if(!pending_internal_link_path_.empty())
+  {
+    const std::filesystem::path requested = pending_internal_link_path_.lexically_normal();
+    int target_folder = -1;
+    int target_note = -1;
+    for(int folder_index = 0; folder_index < static_cast<int>(folders_.size()) && target_note < 0;
+        ++folder_index)
+    {
+      const FolderMeta &folder = folders_[static_cast<std::size_t>(folder_index)];
+      for(int note_index = 0; note_index < static_cast<int>(folder.notes.size()); ++note_index)
+      {
+        std::filesystem::path candidate(folder.notes[static_cast<std::size_t>(note_index)].path);
+        if(candidate.is_relative()) candidate = config_.projectRoot / candidate;
+        if(candidate.lexically_normal() == requested)
+        {
+          target_folder = folder_index;
+          target_note = note_index;
+          break;
+        }
+      }
+    }
+    if(target_note >= 0)
+    {
+      set_active_note(target_folder, target_note);
+      selected_note_indices.clear();
+      selected_note_indices.insert(target_note);
+      editing_mode_ = false;
+      if(!pending_internal_link_anchor_.empty())
+      {
+        const std::string &content = markdown_text_;
+        std::unordered_map<std::string, std::size_t> anchor_counts;
+        std::size_t line_start = 0;
+        while(line_start < content.size())
+        {
+          const std::size_t line_end = content.find('\n', line_start);
+          const std::size_t end = line_end == std::string::npos ? content.size() : line_end;
+          int level = 0;
+          std::string_view title;
+          if(parse_heading_line(std::string_view(content).substr(line_start, end - line_start), level, title))
+          {
+            static_cast<void>(level);
+            const std::string base = MarkdownView::heading_anchor(title);
+            const std::string anchor = MarkdownView::heading_anchor(title, anchor_counts[base]++);
+            if(anchor == pending_internal_link_anchor_)
+            {
+              request_preview_source_offset(state_file_path_, line_start);
+              break;
+            }
+          }
+          if(line_end == std::string::npos) break;
+          line_start = line_end + 1U;
+        }
+      }
+    }
+    else
+      LOG_WARNING("Internal reference target is no longer in the current project: ",
+                  pending_internal_link_path_.generic_string());
+    pending_internal_link_path_.clear();
+    pending_internal_link_anchor_.clear();
+  }
   auto refresh_note_switcher_results = [&]() {
     const int previous_selected_idx = note_switcher_selected_idx_;
     std::string selected_note_id;
@@ -7354,6 +7928,55 @@ void App::frame_ui()
       }
     }
   };
+  const auto begin_note_reference = [&](const NoteSwitcherResult &result) {
+    std::filesystem::path path(result.note_path);
+    if(path.is_relative()) path = config_.projectRoot / path;
+    std::error_code ec;
+    const auto relative = std::filesystem::relative(path, config_.projectRoot, ec);
+    if(ec || relative.empty() || std::any_of(relative.begin(), relative.end(), [](const auto &part) { return part == ".."; }))
+    {
+      LOG_WARNING("Create Reference target is outside the project root");
+      note_reference_selecting_ = false;
+      return;
+    }
+    note_reference_target_ = encode_link_path(relative.generic_string());
+    if(note_reference_label_.empty())
+      note_reference_label_ = result.heading_title.empty() ? result.note_title : result.heading_title;
+    if(!result.heading_title.empty())
+    {
+      const std::string content = read_text_file(path.string());
+      std::unordered_map<std::string, std::size_t> anchor_counts;
+      std::size_t heading_index = 0;
+      std::size_t line_start = 0;
+      while(line_start < content.size())
+      {
+        const std::size_t line_end = content.find('\n', line_start);
+        const std::size_t end = line_end == std::string::npos ? content.size() : line_end;
+        int level = 0;
+        std::string_view title;
+        if(parse_heading_line(std::string_view(content).substr(line_start, end - line_start), level, title))
+        {
+          static_cast<void>(level);
+          const std::string base = MarkdownView::heading_anchor(title);
+          const std::size_t duplicate_index = anchor_counts[base]++;
+          if(heading_index == result.heading_occurrence_index)
+          {
+            const std::string anchor = MarkdownView::heading_anchor(title, duplicate_index);
+            if(!anchor.empty()) note_reference_target_ += "#" + anchor;
+            break;
+          }
+          ++heading_index;
+        }
+        if(line_end == std::string::npos) break;
+        line_start = line_end + 1U;
+      }
+    }
+    std::snprintf(note_reference_label_buffer_, sizeof(note_reference_label_buffer_), "%s",
+                  note_reference_label_.c_str());
+    note_reference_label_visible_ = true;
+    note_reference_label_focus_ = true;
+    note_reference_selecting_ = false;
+  };
   const auto begin_note_header_create = [&](const NoteSwitcherResult &result) {
     note_switcher.query[0] = '\0';
     note_switcher.last_query.clear();
@@ -7432,9 +8055,11 @@ void App::frame_ui()
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond,
                             ImVec2(0.5f, 0.5f));
     if(just_opened) ImGui::SetNextWindowFocus();
-    const char *note_switcher_title = (note_header_create_selecting_ || note_color_set_selecting_)
-                                           ? "Command Finder"
-                                           : "Quick Note Switcher";
+    const char *note_switcher_title = note_reference_selecting_
+                                          ? "Create Reference"
+                                          : ((note_header_create_selecting_ || note_color_set_selecting_)
+                                                 ? "Command Finder"
+                                                 : "Quick Note Switcher");
     if(!ImGui::Begin(note_switcher_title, &note_switcher.visible,
                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
                          ImGuiWindowFlags_NoSavedSettings))
@@ -7487,7 +8112,9 @@ void App::frame_ui()
       {
         const NoteSwitcherResult &result =
             note_switcher.results[static_cast<std::size_t>(note_switcher_selected_idx_)];
-        if(note_header_create_selecting_)
+        if(note_reference_selecting_)
+          begin_note_reference(result);
+        else if(note_header_create_selecting_)
           begin_note_header_create(result);
         else if(note_color_set_selecting_)
           begin_note_color_set(result);
@@ -7520,7 +8147,9 @@ void App::frame_ui()
           if(ImGui::Selectable(label.c_str(), selected))
           {
             note_switcher_selected_idx_ = static_cast<int>(i);
-            if(note_header_create_selecting_)
+            if(note_reference_selecting_)
+              begin_note_reference(result);
+            else if(note_header_create_selecting_)
               begin_note_header_create(result);
             else if(note_color_set_selecting_)
               begin_note_color_set(result);
@@ -7542,12 +8171,63 @@ void App::frame_ui()
     ImGui::End();
     if(!note_switcher.visible && note_header_create_selecting_)
       note_header_create_selecting_ = false;
+    if(!note_switcher.visible && note_reference_selecting_)
+      note_reference_selecting_ = false;
     if(!note_switcher.visible && note_color_set_selecting_)
     {
       note_color_set_selecting_ = false;
       note_color_set_note_reference_.clear();
     }
     note_switcher_window_visible_ = note_switcher.visible;
+  };
+  auto render_note_reference_label = [&]() {
+    if(!note_reference_label_visible_) return;
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5F, 0.5F));
+    ImGui::SetNextWindowSize(ImVec2(500.0F, 170.0F), ImGuiCond_Appearing);
+    bool open = true;
+    if(ImGui::Begin("Create Reference", &open,
+                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
+                        ImGuiWindowFlags_NoSavedSettings))
+    {
+      ImGui::TextDisabled("Target: %s", note_reference_target_.c_str());
+      if(note_reference_label_focus_)
+      {
+        ImGui::SetKeyboardFocusHere();
+        note_reference_label_focus_ = false;
+      }
+      ImGui::SetNextItemWidth(-1.0F);
+      const bool enter = ImGui::InputText(
+          "Link text", note_reference_label_buffer_, sizeof(note_reference_label_buffer_),
+          ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_EnterReturnsTrue);
+      const bool valid = !StringUtils::trim(note_reference_label_buffer_).empty();
+      if(!valid) ImGui::TextDisabled("Link text is required.");
+      if(!valid) ImGui::BeginDisabled();
+      const bool create = ImGui::Button("Create") || enter;
+      if(!valid) ImGui::EndDisabled();
+      ImGui::SameLine();
+      const bool cancel = ImGui::Button("Cancel") ||
+                          ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+      if(create && valid)
+      {
+        note_reference_label_ = std::string(StringUtils::trim(note_reference_label_buffer_));
+        note_reference_insertion_pending_ = true;
+        note_reference_label_visible_ = false;
+      }
+      else if(cancel)
+      {
+        note_reference_label_visible_ = false;
+        note_reference_target_.clear();
+        note_reference_label_.clear();
+      }
+    }
+    ImGui::End();
+    if(!open)
+    {
+      note_reference_label_visible_ = false;
+      note_reference_target_.clear();
+      note_reference_label_.clear();
+    }
   };
   auto render_terminal = [&]() {
     const bool terminal_opened_this_frame = request_open_terminal_ && !terminal_visible_;
@@ -7595,6 +8275,8 @@ void App::frame_ui()
       char folder[256] = "General";
       char title[256] = {};
       char parent[256] = {};
+      char heading[256] = {};
+      char line[2048] = {};
       char content[4096] = {};
       char variable_name[256] = {};
       char variable_value[2048] = {};
@@ -7611,29 +8293,35 @@ void App::frame_ui()
         note_reference[0] = '\0';
         title[0] = '\0';
         parent[0] = '\0';
+        heading[0] = '\0';
+        line[0] = '\0';
         content[0] = '\0';
         variable_name[0] = '\0';
         variable_value[0] = '\0';
         std::strncpy(raw_json, "{}", sizeof(raw_json));
         raw_json[sizeof(raw_json) - 1U] = '\0';
         level = 1;
-        color[0] = 0.35f; color[1] = 0.65f; color[2] = 1.0f;
+        color[0] = 0.35f;
+        color[1] = 0.65f;
+        color[2] = 1.0f;
         raw_json_enabled = false;
       }
     };
     static ApiParameterForm api_form;
     static const auto is_mutating_command = [](std::string_view command) {
       return command == "note.create" || command == "note.header.create" ||
-             command == "note.color.set" || command == "note.variable.set";
+             command == "note.line.create" || command == "note.color.set" ||
+             command == "note.variable.set";
     };
     static const auto has_parameter_form = [](std::string_view command) {
       return command == "note.get" || command == "note.create" ||
              command == "note.header.list" || command == "note.header.get" ||
-             command == "note.header.create" || command == "note.color.set" ||
-             command == "note.variable.get" || command == "note.variable.set";
+             command == "note.header.create" || command == "note.line.create" ||
+             command == "note.color.set" || command == "note.variable.get" ||
+             command == "note.variable.set";
     };
     const auto write_terminal_response = [&](const nlohmann::json &request,
-                                              const notepp::command_api::Response &response) {
+                                             const notepp::command_api::Response &response) {
       terminal_visible_ = true;
       request_open_terminal_ = false;
       terminal_.setDefaultWorkingDirectory(config_.dataPath);
@@ -7642,14 +8330,15 @@ void App::frame_ui()
         std::string quoted = "'";
         for(const char c : text)
         {
-          if(c == '\'') quoted += "'\\''";
-          else quoted.push_back(c);
+          if(c == '\'')
+            quoted += "'\\''";
+          else
+            quoted.push_back(c);
         }
         quoted.push_back('\'');
         return quoted;
       };
-      terminal_.write("printf '%s\\n' " + quote_for_shell(
-                          "$ notepp-cli execute " + request.dump()) + "\n");
+      terminal_.write("printf '%s\\n' " + quote_for_shell("$ notepp-cli execute " + request.dump()) + "\n");
       terminal_.write("printf '%s\\n' " + quote_for_shell(response.serialize()) + "\n");
     };
     const auto note_reference_args = [this](const char *reference) {
@@ -7868,6 +8557,7 @@ void App::frame_ui()
       {
         ImGui::TextUnformatted(api_form.command.c_str());
         nlohmann::json args = nlohmann::json::object();
+        bool parameter_enter = false;
         const bool known_form = has_parameter_form(api_form.command);
         if(known_form && api_form.command != "note.create" && api_form.command != "app.capabilities" &&
            api_form.command != "note.list")
@@ -7890,6 +8580,13 @@ void App::frame_ui()
         }
         else if(api_form.command == "note.header.get")
           ImGui::InputText("Header title", api_form.title, sizeof(api_form.title));
+        else if(api_form.command == "note.line.create")
+        {
+          ImGui::InputText("Heading", api_form.heading, sizeof(api_form.heading));
+          parameter_enter = ImGui::InputText("Line", api_form.line, sizeof(api_form.line),
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+          ImGui::TextDisabled("The line is appended before the next peer heading.");
+        }
         else if(api_form.command == "note.color.set")
         {
           ImGui::TextDisabled("Choose a note color");
@@ -7903,7 +8600,9 @@ void App::frame_ui()
             if(i != 0U) ImGui::SameLine();
             if(ImGui::ColorButton(("##note_color_" + std::to_string(i)).c_str(), choices[i]))
             {
-              api_form.color[0] = choices[i].x; api_form.color[1] = choices[i].y; api_form.color[2] = choices[i].z;
+              api_form.color[0] = choices[i].x;
+              api_form.color[1] = choices[i].y;
+              api_form.color[2] = choices[i].z;
             }
           }
         }
@@ -7924,7 +8623,7 @@ void App::frame_ui()
         }
         if(!command_finder_feedback_.empty())
           ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
-        if(ImGui::Button("Run"))
+        if(ImGui::Button("Run") || parameter_enter)
         {
           bool valid = true;
           if(!api_form.raw_json_enabled)
@@ -7938,6 +8637,7 @@ void App::frame_ui()
                                          api_form.command == "note.header.list" ||
                                          api_form.command == "note.header.get" ||
                                          api_form.command == "note.header.create" ||
+                                         api_form.command == "note.line.create" ||
                                          api_form.command == "note.color.set" ||
                                          api_form.command == "note.variable.get" ||
                                          api_form.command == "note.variable.set";
@@ -7949,6 +8649,11 @@ void App::frame_ui()
             }
             else if(api_form.command == "note.header.create" || api_form.command == "note.header.get")
               valid = require(api_form.title, "title") && valid;
+            else if(api_form.command == "note.line.create")
+            {
+              valid = require(api_form.heading, "heading") && valid;
+              valid = require(api_form.line, "line") && valid;
+            }
             if(api_form.command == "note.variable.get" || api_form.command == "note.variable.set")
               valid = require(api_form.variable_name, "variable name") && valid;
           }
@@ -7967,11 +8672,20 @@ void App::frame_ui()
             else if(valid && api_form.command == "note.header.create")
             {
               args = note_reference_args(api_form.note_reference);
-              args["title"] = api_form.title; args["parent"] = api_form.parent; args["level"] = api_form.level;
+              args["title"] = api_form.title;
+              args["parent"] = api_form.parent;
+              args["level"] = api_form.level;
             }
             else if(valid && api_form.command == "note.header.get")
             {
-              args = note_reference_args(api_form.note_reference); args["title"] = api_form.title;
+              args = note_reference_args(api_form.note_reference);
+              args["title"] = api_form.title;
+            }
+            else if(valid && api_form.command == "note.line.create")
+            {
+              args = note_reference_args(api_form.note_reference);
+              args["heading"] = api_form.heading;
+              args["line"] = api_form.line;
             }
             else if(valid && api_form.command == "note.color.set")
             {
@@ -7982,7 +8696,8 @@ void App::frame_ui()
             }
             else if(valid && (api_form.command == "note.variable.get" || api_form.command == "note.variable.set"))
             {
-              args = note_reference_args(api_form.note_reference); args["name"] = api_form.variable_name;
+              args = note_reference_args(api_form.note_reference);
+              args["name"] = api_form.variable_name;
               if(api_form.command == "note.variable.set")
               {
                 const auto value = nlohmann::json::parse(api_form.variable_value, nullptr, false);
@@ -8008,8 +8723,10 @@ void App::frame_ui()
             if(is_mutating_command(api_form.command))
             {
               command_finder_feedback_ = response.body.dump();
-              if(response.ok) post_command_mutation(request, response);
-              else LOG_WARNING("Command failed: ", response.body.dump());
+              if(response.ok)
+                post_command_mutation(request, response);
+              else
+                LOG_WARNING("Command failed: ", response.body.dump());
             }
             else
             {
@@ -8096,11 +8813,12 @@ void App::frame_ui()
         if(request_activate_command_finder_ && note_switcher_selected_idx_ >= 0 &&
            note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
         {
-          const NoteSwitcherResult &result = note_switcher.results[
-              static_cast<std::size_t>(note_switcher_selected_idx_)];
+          const NoteSwitcherResult &result = note_switcher.results[static_cast<std::size_t>(note_switcher_selected_idx_)];
           request_activate_command_finder_ = false;
-          if(note_header_create_selecting_) begin_note_header_create(result);
-          else begin_note_color_set(result);
+          if(note_header_create_selecting_)
+            begin_note_header_create(result);
+          else
+            begin_note_color_set(result);
         }
 
         if(command_finder_navigation_delta_ != 0 && !note_switcher.results.empty())
@@ -8134,7 +8852,7 @@ void App::frame_ui()
         }
         ImGui::SetNextItemWidth(-1.0f);
         if(ImGui::InputTextWithHint("##guided_command_filter", "Search notes or headers...",
-                                   note_switcher.query, sizeof(note_switcher.query)))
+                                    note_switcher.query, sizeof(note_switcher.query)))
         {
           note_switcher_selected_idx_ = 0;
           note_switcher_navigation_delta_ = 0;
@@ -8282,7 +9000,8 @@ void App::frame_ui()
             post_command_mutation(request, response);
             close_guided_command();
           }
-          else LOG_WARNING("Command failed: ", response.body.dump());
+          else
+            LOG_WARNING("Command failed: ", response.body.dump());
         }
       }
       if(request_note_color_set_confirm_)
@@ -8304,7 +9023,8 @@ void App::frame_ui()
             post_command_mutation(request, response);
             close_guided_command();
           }
-          else LOG_WARNING("Command failed: ", response.body.dump());
+          else
+            LOG_WARNING("Command failed: ", response.body.dump());
         }
       }
       command_finder_window_visible_ = command_finder.visible;
@@ -8331,7 +9051,7 @@ void App::frame_ui()
     // of truth; the registry supplies the descriptors when available.
     static constexpr const char *api_command_names[] = {
         "app.capabilities", "note.list", "note.get", "note.create",
-        "note.header.list", "note.header.get", "note.header.create",
+        "note.header.list", "note.header.get", "note.header.create", "note.line.create",
         "note.color.set", "note.variable.get", "note.variable.set"};
     for(const char *name : api_command_names)
       commands.push_back({CommandFinderCommand::api_command, name, name});
@@ -8535,6 +9255,8 @@ void App::frame_ui()
         {EditorAction::strikethrough, "Strikethrough", true},
         {EditorAction::quote, "Insert quote", true},
         {EditorAction::color, "Text color", true},
+        {EditorAction::create_reference, "Create reference", false},
+        {EditorAction::mermaid_demo, "Insert Mermaid demo", false},
         {EditorAction::ui_block, "Insert UI block", false}};
     static char query[128] = {};
     static int selected = 0;
@@ -9704,7 +10426,9 @@ void App::frame_ui()
       {
         NoteMeta &n = f.notes[(size_t)ni];
         const bool note_selected =
-            (fi == active_folder_idx_) && (selected_note_indices.count(ni) != 0);
+            fi == active_folder_idx_ &&
+            (selected_note_indices.count(ni) != 0 ||
+             (!folder_overview_mode_ && ni == active_note_idx_));
         const std::string note_item_label =
             n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
         const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
@@ -9757,6 +10481,16 @@ void App::frame_ui()
             apply_folder_settings(fi);
           load_note_content_for_active();
           save_index();
+        }
+        if(note_selected)
+        {
+          ImDrawList *const draw_list = ImGui::GetWindowDrawList();
+          const ImVec2 row_min = ImGui::GetItemRectMin();
+          const ImVec2 row_max = ImGui::GetItemRectMax();
+          draw_list->AddRectFilled(
+              ImVec2(row_min.x, row_min.y + 2.0f),
+              ImVec2(row_min.x + 2.0f, row_max.y - 2.0f),
+              ImGui::GetColorU32(note_text_col), 1.5f);
         }
         ImGui::PopStyleColor();
         folder_note_row_rects[(size_t)fi].push_back(SidebarRect{ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), true});
@@ -9829,8 +10563,8 @@ void App::frame_ui()
           std::error_code link_ec;
           std::filesystem::path link_path = std::filesystem::relative(n.path, config_.dataPath, link_ec);
           const std::string link_reference = (!link_ec && !link_path.empty())
-                                                  ? link_path.generic_string()
-                                                  : std::filesystem::path(n.path).filename().generic_string();
+                                                 ? link_path.generic_string()
+                                                 : std::filesystem::path(n.path).filename().generic_string();
           std::snprintf(payload.reference, sizeof(payload.reference), "%s", link_reference.c_str());
           ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &payload, sizeof(payload));
           if(selected_note_indices.count(ni) != 0 && fi == active_folder_idx_ && selected_note_indices.size() > 1)
@@ -10187,12 +10921,12 @@ void App::frame_ui()
                                  ? Lang::t(sync_state_name.c_str())
                                  : Lang::t("Git status unknown");
     const ImVec4 sync_color = !git_sync_enabled_
-                                   ? ImVec4(0.72f, 0.72f, 0.74f, 1.0f)
-                               : git_sync_in_progress_
-                                   ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
-                               : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
-                                   ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
-                                   : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
+                                  ? ImVec4(0.72f, 0.72f, 0.74f, 1.0f)
+                              : git_sync_in_progress_
+                                  ? ImVec4(0.95f, 0.72f, 0.24f, 1.0f)
+                              : git_status_available_ && git_status_.state == notepp::git_sync::SyncState::clean
+                                  ? ImVec4(0.30f, 0.78f, 0.42f, 1.0f)
+                                  : ImVec4(0.72f, 0.72f, 0.74f, 1.0f);
     const ImVec2 sync_size = ImGui::CalcTextSize(sync_label);
     root_dl->AddText(
         ImVec2(header_max.x - ImGui::GetStyle().ItemSpacing.x - sync_size.x,
@@ -10268,7 +11002,10 @@ void App::frame_ui()
         for(int ni = 0; ni < (int)rf.notes.size(); ++ni)
         {
           NoteMeta &n = rf.notes[(size_t)ni];
-          const bool note_sel = (rfi == active_folder_idx_) && selected_note_indices.count(ni);
+          const bool note_sel =
+              rfi == active_folder_idx_ &&
+              (selected_note_indices.count(ni) != 0 ||
+               (!folder_overview_mode_ && ni == active_note_idx_));
           const std::string label = n.title + "###RootNote_" + std::to_string(rfi) + "_" + std::to_string(ni);
           const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
           ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
@@ -10294,6 +11031,16 @@ void App::frame_ui()
               apply_folder_settings(rfi);
             load_note_content_for_active();
             save_index();
+          }
+          if(note_sel)
+          {
+            ImDrawList *const draw_list = ImGui::GetWindowDrawList();
+            const ImVec2 row_min = ImGui::GetItemRectMin();
+            const ImVec2 row_max = ImGui::GetItemRectMax();
+            draw_list->AddRectFilled(
+                ImVec2(row_min.x, row_min.y + 2.0f),
+                ImVec2(row_min.x + 2.0f, row_max.y - 2.0f),
+                ImGui::GetColorU32(note_text_col), 1.5f);
           }
           ImGui::PopStyleColor();
           folder_note_row_rects[(size_t)rfi].push_back(
@@ -10353,8 +11100,8 @@ void App::frame_ui()
             std::error_code link_ec;
             std::filesystem::path link_path = std::filesystem::relative(n.path, config_.dataPath, link_ec);
             const std::string link_reference = (!link_ec && !link_path.empty())
-                                                    ? link_path.generic_string()
-                                                    : std::filesystem::path(n.path).filename().generic_string();
+                                                   ? link_path.generic_string()
+                                                   : std::filesystem::path(n.path).filename().generic_string();
             std::snprintf(note_payload.reference, sizeof(note_payload.reference), "%s", link_reference.c_str());
             ImGui::SetDragDropPayload("NOTEPP_NOTE_MOVE", &note_payload, sizeof(note_payload));
             if(selected_note_indices.count(ni) != 0 && rfi == active_folder_idx_ && selected_note_indices.size() > 1)
@@ -11172,6 +11919,22 @@ void App::frame_ui()
               push_undo_snapshot();
               apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt_folder.color));
               break;
+            case EditorAction::create_reference:
+              note_reference_selection_start_ = has_anchor_selection ? anchor_sel_start : fmt_folder.cursor_pos;
+              note_reference_selection_end_ = has_anchor_selection ? anchor_sel_end : fmt_folder.cursor_pos;
+              note_reference_target_.clear();
+              note_reference_label_ = has_anchor_selection
+                                          ? markdown_text_.substr(
+                                                static_cast<std::size_t>(anchor_sel_start),
+                                                static_cast<std::size_t>(anchor_sel_end - anchor_sel_start))
+                                          : std::string{};
+              note_reference_insertion_pending_ = false;
+              note_reference_selecting_ = true;
+              request_open_note_switcher_ = true;
+              break;
+            case EditorAction::mermaid_demo:
+              editor_action_mermaid_chooser_requested_ = true;
+              break;
             case EditorAction::ui_block:
               editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open_requested;
               break;
@@ -11345,6 +12108,18 @@ void App::frame_ui()
                 show_history_indicator("Opened", ".globals.md", ImVec4(0.26f, 0.59f, 0.98f, 1.0f));
               });
             });
+        if(editor_action_mermaid_chooser_requested_)
+        {
+          ImGui::SetNextWindowFocus();
+          ImGui::OpenPopup(kEditorActionsMermaidChooserPopup);
+          editor_action_mermaid_chooser_requested_ = false;
+        }
+        editor_action_mermaid_chooser_visible_ = render_mermaid_demo_chooser(
+            kEditorActionsMermaidChooserPopup,
+            request_close_editor_action_mermaid_chooser_, insert_topbar_snippet);
+        if(request_close_editor_action_mermaid_chooser_ || !editor_action_mermaid_chooser_visible_)
+          request_close_editor_action_mermaid_chooser_ = false;
+
         if(request_close_editor_action_ui_widget_chooser_)
         {
           editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
@@ -11609,7 +12384,8 @@ void App::frame_ui()
         {
           push_sidebar_snapshot();
           detached_note_windows_enabled_ = !detached_note_windows_enabled_;
-          set_detached_note_windows_enabled(detached_note_windows_enabled_);
+          detach_transition_target_ = detached_note_windows_enabled_;
+          detach_transition_pending_ = true;
           save_index();
         }
 
@@ -11712,6 +12488,26 @@ void App::frame_ui()
                                        ImGui::GetStyle().FramePadding.x * 2.0f;
         const float profile_group_w = profile_combo_w + profile_controls_gap + profile_button_w;
         const float profile_x = lang_x - gap - profile_group_w;
+
+        const float project_left = left_toolbar_right + gap;
+        const float project_right = (profile_x >= project_left + gap) ? profile_x - gap : lang_x - gap;
+        if(project_right - project_left >= 48.0f)
+        {
+          std::string project_name = config_.projectRoot.filename().string();
+          if(project_name.empty()) project_name = config_.projectRoot.string();
+          const float available_width = project_right - project_left;
+          while(project_name.size() > 3U && ImGui::CalcTextSize(project_name.c_str()).x > available_width)
+          {
+            project_name.resize(project_name.size() - 1U);
+            if(project_name.size() >= 3U) project_name.replace(project_name.size() - 3U, 3U, "...");
+          }
+          const ImVec2 project_size = ImGui::CalcTextSize(project_name.c_str());
+          const float project_x = project_left + std::max(0.0f, (available_width - project_size.x) * 0.5f);
+          ImGui::SetCursorPos(ImVec2(project_x, (bar_h - project_size.y) * 0.5f));
+          ImGui::TextDisabled("%s", project_name.c_str());
+          if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("%s", config_.projectRoot.string().c_str());
+        }
 
         // Keep the essential right-side controls visible when the toolbar is too narrow.
         if(profile_x >= left_toolbar_right + gap)
@@ -11911,10 +12707,21 @@ void App::frame_ui()
             {
               if(lang.code != Lang::current_language_code())
               {
+                const std::string previous_language = Lang::current_language_code();
                 if(Lang::set_language(lang.code))
                 {
-                  project_language_explicit_ = true;
-                  project_settings_dirty_ = true;
+                  const auto saved = app_settings_store_.set_language(lang.code);
+                  if(saved)
+                  {
+                    project_language_explicit_ = true;
+                    app_settings_error_.clear();
+                  }
+                  else
+                  {
+                    (void)Lang::set_language(previous_language);
+                    app_settings_error_ = saved.message;
+                    LOG_ERROR("Cannot save application language: ", saved.message);
+                  }
                 }
               }
             }
@@ -12808,6 +13615,25 @@ void App::frame_ui()
           refocus_folder_editor = false;
         }
 
+        if(note_reference_insertion_pending_ && !note_reference_target_.empty())
+        {
+          int start = std::clamp(note_reference_selection_start_, 0, static_cast<int>(markdown_text_.size()));
+          int end = std::clamp(note_reference_selection_end_, 0, static_cast<int>(markdown_text_.size()));
+          if(start > end) std::swap(start, end);
+          const std::string link = "[" + note_reference_label_ + "](" + note_reference_target_ + ")";
+          push_undo_snapshot();
+          markdown_text_.replace(static_cast<size_t>(start), static_cast<size_t>(end - start), link);
+          const int cursor = start + static_cast<int>(link.size());
+          fmt_folder.cursor_pos = fmt_folder.sel_start = fmt_folder.sel_end = cursor;
+          fmt_folder.selection_anchor = cursor;
+          fmt_folder.pending_select_range = true;
+          fmt_folder.pending_sel_start = fmt_folder.pending_sel_end = cursor;
+          note_reference_insertion_pending_ = false;
+          note_reference_target_.clear();
+          note_reference_label_.clear();
+          refocus_folder_editor = true;
+          state_dirty_ = true;
+        }
         const std::string before_edit = markdown_text_;
         changed = ImGui::InputTextMultiline(
             "##md_folder",
@@ -12827,6 +13653,7 @@ void App::frame_ui()
               return md_editor_cb(data);
             },
             &ud_folder);
+        navigation_editor_cursor_ = fmt_folder.cursor_pos;
         if(search_editor_scroll_pos_ >= 0 && search_editor_scroll_note_path_ == state_file_path_ &&
            scroll_input_text_multiline_to_offset(
                ImGui::GetID("##md_folder"), markdown_text_, search_editor_scroll_pos_))
@@ -13377,6 +14204,7 @@ void App::frame_ui()
     }
     render_search_dialog();
     render_note_switcher();
+    render_note_reference_label();
     render_debug_history_window();
     render_terminal();
     render_command_finder();
@@ -13414,6 +14242,7 @@ void App::frame_ui()
     }
     render_search_dialog();
     render_note_switcher();
+    render_note_reference_label();
     render_debug_history_window();
     render_terminal();
     render_command_finder();
@@ -13491,6 +14320,18 @@ void App::frame_ui()
       (layout_locked_ ? ImGuiWindowFlags_NoMove : 0) |
           (!dockers_enabled_ ? ImGuiWindowFlags_NoDocking : 0));
   if(search_request_window_focus_) search_request_window_focus_ = false;
+  const float note_title_bar_height = ImGui::GetFontSize() + ImGui::GetStyle().FramePadding.y * 2.0f;
+  const ImVec2 note_window_pos = ImGui::GetWindowPos();
+  const ImVec2 note_window_size = ImGui::GetWindowSize();
+  ImGui::GetWindowDrawList()->AddCircleFilled(
+      ImVec2(note_window_pos.x + note_window_size.x - 10.0f,
+             note_window_pos.y + note_title_bar_height * 0.5f),
+      4.0f,
+      ImGui::GetColorU32(folder_accent_color(active_note.use_custom_color,
+                                             active_note.color_r,
+                                             active_note.color_g,
+                                             active_note.color_b,
+                                             ImGui::GetStyle())));
   const ImGuiID active_current_dock_id = ImGui::GetWindowDockID();
   if(can_restore_active_dock && active_note.dock_id != active_current_dock_id)
   {
@@ -13742,6 +14583,25 @@ void App::frame_ui()
       refocus_editor = false;
     }
 
+    if(note_reference_insertion_pending_ && !note_reference_target_.empty())
+    {
+      int start = std::clamp(note_reference_selection_start_, 0, static_cast<int>(markdown_text_.size()));
+      int end = std::clamp(note_reference_selection_end_, 0, static_cast<int>(markdown_text_.size()));
+      if(start > end) std::swap(start, end);
+      const std::string link = "[" + note_reference_label_ + "](" + note_reference_target_ + ")";
+      push_undo_snapshot();
+      markdown_text_.replace(static_cast<size_t>(start), static_cast<size_t>(end - start), link);
+      const int cursor = start + static_cast<int>(link.size());
+      fmt.cursor_pos = fmt.sel_start = fmt.sel_end = cursor;
+      fmt.selection_anchor = cursor;
+      fmt.pending_select_range = true;
+      fmt.pending_sel_start = fmt.pending_sel_end = cursor;
+      note_reference_insertion_pending_ = false;
+      note_reference_target_.clear();
+      note_reference_label_.clear();
+      refocus_editor = true;
+      state_dirty_ = true;
+    }
     const std::string before_edit = markdown_text_;
     const bool text_changed = ImGui::InputTextMultiline(
         "##md",
@@ -13761,6 +14621,7 @@ void App::frame_ui()
           return md_editor_cb(data);
         },
         &ud);
+    navigation_editor_cursor_ = fmt.cursor_pos;
     if(search_editor_scroll_pos_ >= 0 && search_editor_scroll_note_path_ == state_file_path_ &&
        scroll_input_text_multiline_to_offset(
            ImGui::GetID("##md"), markdown_text_, search_editor_scroll_pos_))
@@ -13964,6 +14825,22 @@ void App::frame_ui()
           push_undo_snapshot();
           apply_color_wrap_string(markdown_text_, anchor_sel_start, anchor_sel_end, rgba_to_hex(fmt.color));
           break;
+        case EditorAction::create_reference:
+          note_reference_selection_start_ = has_anchor_selection ? anchor_sel_start : fmt.cursor_pos;
+          note_reference_selection_end_ = has_anchor_selection ? anchor_sel_end : fmt.cursor_pos;
+          note_reference_target_.clear();
+          note_reference_label_ = has_anchor_selection
+                                      ? markdown_text_.substr(
+                                            static_cast<std::size_t>(anchor_sel_start),
+                                            static_cast<std::size_t>(anchor_sel_end - anchor_sel_start))
+                                      : std::string{};
+          note_reference_insertion_pending_ = false;
+          note_reference_selecting_ = true;
+          request_open_note_switcher_ = true;
+          break;
+        case EditorAction::mermaid_demo:
+          editor_action_mermaid_chooser_requested_ = true;
+          break;
         case EditorAction::ui_block:
           editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::open_requested;
           break;
@@ -13989,6 +14866,18 @@ void App::frame_ui()
       }
       request_editor_action_ = EditorAction::none;
     }
+
+    if(editor_action_mermaid_chooser_requested_)
+    {
+      ImGui::SetNextWindowFocus();
+      ImGui::OpenPopup(kEditorActionsMermaidChooserPopup);
+      editor_action_mermaid_chooser_requested_ = false;
+    }
+    editor_action_mermaid_chooser_visible_ = render_mermaid_demo_chooser(
+        kEditorActionsMermaidChooserPopup,
+        request_close_editor_action_mermaid_chooser_, insert_note_snippet);
+    if(request_close_editor_action_mermaid_chooser_ || !editor_action_mermaid_chooser_visible_)
+      request_close_editor_action_mermaid_chooser_ = false;
 
     if(editor_action_ui_widget_chooser_state_ == UiWidgetChooserState::open_requested)
     {
@@ -14208,10 +15097,10 @@ void App::frame_ui()
   }
   render_search_dialog();
   render_note_switcher();
+  render_note_reference_label();
   render_debug_history_window();
   render_terminal();
   render_command_finder();
   render_editor_actions();
   if(git_disabled_for_frame) ImGui::EndDisabled();
-
 }

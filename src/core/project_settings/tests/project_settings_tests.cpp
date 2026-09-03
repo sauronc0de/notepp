@@ -33,7 +33,11 @@ public:
     fs::remove_all(path_);
     fs::create_directories(path_);
   }
-  ~TempDir() { std::error_code error; fs::remove_all(path_, error); }
+  ~TempDir()
+  {
+    std::error_code error;
+    fs::remove_all(path_, error);
+  }
   const fs::path &path() const { return path_; }
 
 private:

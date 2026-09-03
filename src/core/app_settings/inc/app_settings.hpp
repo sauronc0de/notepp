@@ -23,6 +23,7 @@ struct Settings
 {
   int schema_version = 2;
   bool git_sync_enabled = false;
+  std::optional<std::string> language;
   std::optional<std::filesystem::path> last_project_path;
   std::vector<std::filesystem::path> recent_projects;
   GitSyncRecord last_git_sync;
@@ -64,6 +65,7 @@ public:
 
   LoadResult load() noexcept;
   UpdateResult set_git_sync_enabled(bool enabled) noexcept;
+  UpdateResult set_language(std::string language) noexcept;
   UpdateResult record_project(const std::filesystem::path &path) noexcept;
   UpdateResult record_git_sync_status(const GitSyncRecord &record) noexcept;
   PollResult poll() noexcept;
@@ -72,6 +74,7 @@ public:
 
 private:
   UpdateResult update(bool setGitSync, bool git_sync_enabled,
+                      const std::optional<std::string> &language,
                       const std::optional<std::filesystem::path> &projectPath,
                       const std::optional<GitSyncRecord> &gitSyncRecord) noexcept;
 

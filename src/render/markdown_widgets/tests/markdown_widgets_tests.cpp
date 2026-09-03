@@ -1,6 +1,9 @@
 #include "button_action.hpp"
+#include "markdown_widgets.hpp"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string_view>
 
@@ -39,6 +42,29 @@ void test_non_command_action()
   expect(assignment.status == CommandActionStatus::NotCommand, "assignment remains a non-command action");
 }
 
+void test_cross_note_variable_lookup()
+{
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "notepp-widget-variable-test" / "notepp";
+  fs::remove_all(root.parent_path());
+  fs::create_directories(root / "notes" / "inbox");
+  const fs::path target = root / "notes" / "inbox" / "template.md";
+  {
+    std::ofstream output(target);
+    output << "```ui\nstatus(\"done\")\n```\n";
+  }
+  MarkdownWidgets::set_widget_project_root(root);
+  MarkdownWidgets::set_widget_document_path(root / "notes" / "current.md");
+  const std::string rendered = MarkdownWidgets::resolve_ui_mermaid_template(
+      {}, "${get_variables(projects/notepp/inbox/template.md).status}");
+  expect(rendered == "done", "get_variables reads a safe explicit note path");
+  const std::string escaped = MarkdownWidgets::resolve_ui_mermaid_template(
+      {}, "${get_variables(../outside.md).status}");
+  expect(escaped.find("get_variables") != std::string::npos,
+         "get_variables rejects paths outside the project");
+  fs::remove_all(root.parent_path());
+}
+
 void test_invalid_command_actions()
 {
   using MarkdownWidgets::detail::CommandActionStatus;
@@ -63,6 +89,7 @@ int main()
 {
   test_valid_command_actions();
   test_non_command_action();
+  test_cross_note_variable_lookup();
   test_invalid_command_actions();
   if(failures != 0)
   {

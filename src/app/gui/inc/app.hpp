@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -263,6 +264,8 @@ private:
     strikethrough,
     quote,
     color,
+    create_reference,
+    mermaid_demo,
     ui_block
   };
 
@@ -277,6 +280,17 @@ private:
   bool request_open_project_search_ = false;
   bool request_open_note_switcher_ = false;
   bool note_header_create_selecting_ = false;
+  bool note_reference_selecting_ = false;
+  bool note_reference_insertion_pending_ = false;
+  int note_reference_selection_start_ = -1;
+  int note_reference_selection_end_ = -1;
+  std::string note_reference_target_;
+  std::string note_reference_label_;
+  bool note_reference_label_visible_ = false;
+  bool note_reference_label_focus_ = false;
+  char note_reference_label_buffer_[512] = {};
+  std::filesystem::path pending_internal_link_path_;
+  std::string pending_internal_link_anchor_;
   bool note_header_create_name_visible_ = false;
   bool request_note_header_create_confirm_ = false;
   bool request_close_note_header_create_ = false;
@@ -311,6 +325,9 @@ private:
   bool editor_action_selection_available_ = false;
   UiWidgetChooserState editor_action_ui_widget_chooser_state_ = UiWidgetChooserState::closed;
   bool request_close_editor_action_ui_widget_chooser_ = false;
+  bool editor_action_mermaid_chooser_requested_ = false;
+  bool editor_action_mermaid_chooser_visible_ = false;
+  bool request_close_editor_action_mermaid_chooser_ = false;
   std::string preview_edit_cursor_note_path_;
   int preview_edit_cursor_pos_ = -1;
   bool request_new_note_ = false;
@@ -320,6 +337,8 @@ private:
   bool request_focus_active_note_ = false;
   bool request_focus_editor_ = false;
   bool request_focus_sidebar_ = false;
+  bool request_navigation_back_ = false;
+  bool request_navigation_forward_ = false;
 #if USE_PORTABLE_PATHS
   bool request_open_project_ = false;
 #endif
@@ -337,6 +356,8 @@ private:
   bool search_request_window_focus_ = false;
   bool layout_locked_ = false;
   bool detached_note_windows_enabled_ = false;
+  bool detach_transition_pending_ = false;
+  bool detach_transition_target_ = false;
   bool dockers_enabled_ = false;
   bool drawings_visible_ = true;
   bool grid_visible_ = false;
@@ -384,6 +405,7 @@ private:
   std::vector<std::string> pending_fs_delete_paths_;
   Terminal terminal_;
   std::string pending_terminal_text_;
+  bool suppress_terminal_text_input_ = false;
   bool terminal_visible_ = false;
   bool terminal_new_tab_on_open_ = false;
   float terminal_height_ = 360.0F;
@@ -396,6 +418,10 @@ private:
   int index_schema_version_ = 3;
   bool index_paths_portable_ = true;
   NoteHistory::HistoryManager history_;
+  NoteHistory::NavigationHistory navigation_history_;
+  std::optional<NoteHistory::NavigationLocation> observed_navigation_location_;
+  bool navigation_replay_in_progress_ = false;
+  int navigation_editor_cursor_ = -1;
   std::unordered_set<unsigned int> pinned_topmost_viewports_;
 
   struct PendingTextHistory

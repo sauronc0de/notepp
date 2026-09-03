@@ -190,6 +190,40 @@ void testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten()
          "out-of-range unsigned schema document is not rewritten");
 }
 
+void testLanguageRoundTripAndPreservesConcurrentFields()
+{
+  TempDir temp;
+  const fs::path config = temp.path() / "config.json";
+  settings::Store first(config);
+  settings::Store second(config);
+  expect(first.load().success && second.load().success, "language stores load");
+  expect(first.record_project(temp.path() / "project").success, "project is recorded before language");
+  expect(second.set_language("es").success, "language is persisted immediately");
+
+  const auto loaded = settings::Store(config).load();
+  expect(loaded.success, "language settings reload");
+  expect(loaded.settings.language == std::optional<std::string>("es"), "language round trips");
+  expect(loaded.settings.last_project_path == (temp.path() / "project"),
+         "language update preserves concurrent project setting");
+  expect(!second.set_language("").success, "empty language is rejected");
+}
+
+void testLanguageFailurePreservesMalformedDocument()
+{
+  TempDir temp;
+  const fs::path config = temp.path() / "config.json";
+  const std::string malformed = "{bad";
+  {
+    std::ofstream output(config);
+    output << malformed;
+  }
+  settings::Store store(config);
+  expect(!store.set_language("en").success, "language persistence reports malformed settings");
+  const auto loaded = atomic_file::read_text(config);
+  expect(loaded && loaded.snapshot.content == malformed,
+         "failed language persistence is non-destructive");
+}
+
 void testGitSyncStatusRoundTrip()
 {
   TempDir temp;
@@ -239,6 +273,8 @@ int main()
   testMalformedSettingsAreNotOverwritten();
   testNewerSchemaIsNotDowngraded();
   testOutOfRangeUnsignedSchemaIsNotNarrowedOrRewritten();
+  testLanguageRoundTripAndPreservesConcurrentFields();
+  testLanguageFailurePreservesMalformedDocument();
   testGitSyncStatusRoundTrip();
   testPollReportsExternalChangesWithoutChangingProject();
   if(failures != 0)

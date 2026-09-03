@@ -2,6 +2,8 @@
 #include <string>
 #include <string_view>
 #include <filesystem>
+#include <functional>
+#include <optional>
 
 #include <imgui.h>
 
@@ -38,7 +40,15 @@ struct MarkdownView
 
   static void set_fonts(ImFont *regular, ImFont *italic, ImFont *bold);
   static void set_render_width(float width);
+  using InternalLinkHandler = std::function<void(const std::filesystem::path &, std::string_view)>;
+  using InternalLinkColorHandler =
+      std::function<std::optional<ImVec4>(const std::filesystem::path &)>;
+
   static void set_document_path(std::filesystem::path path);
+  static void set_project_root(std::filesystem::path path);
+  static void set_internal_link_handler(InternalLinkHandler handler);
+  static void set_internal_link_color_handler(InternalLinkColorHandler handler);
+  static std::string heading_anchor(std::string_view title, std::size_t duplicate_index = 0);
   static void set_hover_preview_enabled(bool enabled);
   static bool take_hover_preview(MarkdownHoverPreviewData &out);
   static bool request_link_hover_preview(std::string_view href);

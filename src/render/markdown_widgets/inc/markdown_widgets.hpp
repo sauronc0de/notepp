@@ -35,6 +35,8 @@ VariableResult command_set_variable(std::string &markdown, std::string_view name
                                     const nlohmann::json &value);
 
 void set_widget_document_path(std::filesystem::path path);
+void set_widget_project_root(std::filesystem::path path);
+std::filesystem::path widget_document_path();
 void notify_document_moved(const std::filesystem::path &from,
                            const std::filesystem::path &to);
 void notify_document_saved(const std::filesystem::path &path);

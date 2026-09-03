@@ -28,7 +28,7 @@ int main()
   notepp::command_api::Api api(project);
   const auto capabilities = api.execute({{"command", "app.capabilities"}});
   assert(capabilities.ok);
-  assert(capabilities.body.at("commands").size() == 10U);
+  assert(capabilities.body.at("commands").size() == 11U);
   const auto envelope = nlohmann::json::parse(capabilities.serialize());
   assert(envelope.at("success").get<bool>() && envelope.contains("result"));
   assert(api.execute({{"command", "note.list"}}).ok);
@@ -50,8 +50,31 @@ int main()
                                     {"args", {{"id", "one"}, {"title", "Child"}, {"parent", "Root"}}}});
   assert(created.ok);
   const auto bad_header = api.execute({{"command", "note.header.create"},
-                                        {"args", {{"id", "one"}, {"title", "bad\nheader"}}}});
+                                       {"args", {{"id", "one"}, {"title", "bad\nheader"}}}});
   assert(!bad_header.ok);
+  const auto created_line = api.execute({{"command", "note.line.create"},
+                                         {"args", {{"path", "notes/one.md"}, {"heading", "Root"}, {"line", "appended"}}}});
+  assert(created_line.ok);
+  {
+    std::ifstream note(root / "notes" / "one.md");
+    const std::string content((std::istreambuf_iterator<char>(note)),
+                              std::istreambuf_iterator<char>());
+    assert(content.find("## Child\n\nappended\n") != std::string::npos);
+  }
+  const auto missing_heading = api.execute({{"command", "note.line.create"},
+                                            {"args", {{"id", "one"}, {"heading", "Missing"}, {"line", "no"}}}});
+  assert(!missing_heading.ok && missing_heading.body.at("error").at("code") == "not_found");
+  {
+    std::ofstream note(root / "notes" / "one.md", std::ios::app);
+    note << "# Root\n";
+  }
+  const auto ambiguous_heading = api.execute({{"command", "note.line.create"},
+                                              {"args", {{"id", "one"}, {"heading", "Root"}, {"line", "no"}}}});
+  assert(!ambiguous_heading.ok &&
+         ambiguous_heading.body.at("error").at("code") == "ambiguous_heading");
+  const auto conflicting_selector = api.execute({{"command", "note.get"},
+                                                 {"args", {{"id", "one"}, {"path", "notes/one.md"}}}});
+  assert(!conflicting_selector.ok);
   const auto variables = api.execute({{"command", "note.variable.get"}, {"args", {{"id", "one"}}}});
   assert(!variables.ok && variables.body.at("error").at("code") == "adapter_unavailable");
   std::filesystem::remove_all(root);
