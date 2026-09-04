@@ -42,6 +42,20 @@ void test_non_command_action()
   expect(assignment.status == CommandActionStatus::NotCommand, "assignment remains a non-command action");
 }
 
+void test_command_set_variable_string()
+{
+  MarkdownWidgets::reset_persistence_state();
+  MarkdownWidgets::set_widget_document_path({});
+  std::string markdown = R"~~~(```ui
+status("todo")
+```
+)~~~";
+  const auto changed = MarkdownWidgets::command_set_variable(markdown, "status", "done");
+  expect(changed.success, "command variable set updates a declared local variable");
+  expect(markdown.find(R"(status("done"))") != std::string::npos,
+         "command variable set preserves string values without command quotes");
+}
+
 void test_cross_note_variable_lookup()
 {
   namespace fs = std::filesystem;
@@ -273,6 +287,7 @@ int main()
 {
   test_valid_command_actions();
   test_non_command_action();
+  test_command_set_variable_string();
   test_cross_note_variable_lookup();
   test_variable_inspection_and_exact_editing();
   test_global_variable_inspection_and_editing();

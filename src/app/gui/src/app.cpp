@@ -2101,9 +2101,28 @@ App::App(AppConfig config)
       const std::size_t first_argument = note_variable_set ? 3U : 2U;
       for(std::size_t i = first_argument; i < words.size(); ++i)
       {
-        if(words[i] == "--note" && i + 1U < words.size())
+        if(words[i] == "--note")
         {
-          const std::string reference = words[++i];
+          if(i + 1U >= words.size() || words[i + 1U].rfind("--", 0) == 0)
+          {
+            LOG_WARNING("note variable command has an empty note reference; using the card note");
+            continue;
+          }
+          // `$note` is substituted before tokenization, so an unquoted note
+          // path may occupy several words. Consume it up to the next option,
+          // matching the note color command parser below.
+          const std::size_t value_end = [&]() {
+            std::size_t end = i + 2U;
+            while(end < words.size() && words[end].rfind("--", 0) != 0) ++end;
+            return end;
+          }();
+          std::string reference = words[i + 1U];
+          for(std::size_t part = i + 2U; part < value_end; ++part)
+          {
+            reference.push_back(' ');
+            reference += words[part];
+          }
+          i = value_end - 1U;
           if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
              (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
             args["path"] = reference;
@@ -2136,11 +2155,14 @@ App::App(AppConfig config)
       {
         const std::string reference =
             std::string(card_reference).substr(0U, std::string(card_reference).find('#'));
-        if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
-           (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
-          args["path"] = reference;
-        else
-          args["id"] = reference;
+        if(!reference.empty())
+        {
+          if(reference.find('/') != std::string::npos || reference.find('\\') != std::string::npos ||
+             (reference.size() > 3U && reference.substr(reference.size() - 3U) == ".md"))
+            args["path"] = reference;
+          else
+            args["id"] = reference;
+        }
       }
       if(!args.contains("id") && !args.contains("path"))
       {
