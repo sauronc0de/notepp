@@ -1631,7 +1631,7 @@ kanban_on_enter(
 ```
 ````
 
-`kanban_on_enter("diagram-id", "column-id", command("..."))` runs whenever a card is dropped into the matching column, including reordering within that column. Multiple matching handlers run in source order. Friendly in-process commands currently include `note color set --note $note --color #RRGGBB`; `$note` and `$path` in the command are replaced with the dragged card's notes-root-relative link (without its `#fragment`) before the loaded note is resolved by ID. Other commands, including shell commands such as `echo`, are sent to Notepp's embedded terminal after the current Kanban interaction completes.
+`kanban_on_enter("diagram-id", "column-id", command("..."))` runs whenever a card is dropped into the matching column, including reordering within that column. Multiple matching handlers run in source order. Friendly in-process commands currently include `note color set --note $note --color #RRGGBB` and `note variable set --note $note --name status --value done`; `$note` and `$path` in the command are replaced with the dragged card's notes-root-relative link (without its `#fragment`) before the loaded note is resolved by ID. The variable command also accepts positional `note variable set status done` syntax. When no note is supplied, it targets the dragged card reference, or the current note for an unlinked card. Other commands, including shell commands such as `echo`, are sent to Notepp's embedded terminal after the current Kanban interaction completes.
 
 ---
 
