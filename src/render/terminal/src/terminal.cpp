@@ -638,6 +638,8 @@ struct Terminal::Impl
   bool first_frame = true;
   bool focused = false;
   float window_height = 360.0F;
+  float window_left = 0.0F;
+  float window_width = -1.0F;
 };
 
 const VTermScreenCallbacks Terminal::Impl::Session::kScreenCallbacks = {
@@ -812,6 +814,12 @@ float Terminal::windowHeight() const noexcept
   return impl_->window_height;
 }
 
+void Terminal::setWindowHorizontalBounds(const float left, const float width) noexcept
+{
+  impl_->window_left = left;
+  impl_->window_width = width;
+}
+
 void Terminal::render(bool *open, std::string_view pendingText, bool acceptKeyboardInput)
 {
   impl_->focused = false;
@@ -823,12 +831,17 @@ void Terminal::render(bool *open, std::string_view pendingText, bool acceptKeybo
   const float minHeight = 180.0F;
   const float maxHeight = std::max(minHeight, viewport->WorkSize.y - 80.0F);
   impl_->window_height = std::clamp(impl_->window_height, minHeight, maxHeight);
+  const float workRight = viewport->WorkPos.x + viewport->WorkSize.x;
+  const float windowLeft = std::clamp(impl_->window_left, viewport->WorkPos.x, workRight);
+  const float defaultWidth = workRight - windowLeft;
+  const float windowWidth = std::clamp(
+      impl_->window_width < 0.0F ? defaultWidth : impl_->window_width, 1.0F, defaultWidth);
   ImGui::SetNextWindowPos(
-      ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + viewport->WorkSize.y - impl_->window_height),
+      ImVec2(windowLeft, viewport->WorkPos.y + viewport->WorkSize.y - impl_->window_height),
       ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(viewport->WorkSize.x, impl_->window_height), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(windowWidth, impl_->window_height), ImGuiCond_Always);
   ImGui::SetNextWindowSizeConstraints(
-      ImVec2(viewport->WorkSize.x, minHeight), ImVec2(viewport->WorkSize.x, maxHeight));
+      ImVec2(windowWidth, minHeight), ImVec2(windowWidth, maxHeight));
   ImGui::SetNextWindowBgAlpha(1.0F);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.065F, 0.080F, 0.105F, 1.0F));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);

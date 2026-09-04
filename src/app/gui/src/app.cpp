@@ -9351,6 +9351,7 @@ void App::frame_ui()
     terminal_.setFont(font_terminal_);
     terminal_.setDefaultWorkingDirectory(config_.dataPath);
     terminal_.setWindowHeight(terminal_height_);
+    terminal_.setWindowHorizontalBounds(vp->WorkPos.x + explorer_w, vp->WorkSize.x - explorer_w);
     if(terminal_opened_this_frame && terminal_.sessionCount() == 0)
       terminal_.start(config_.dataPath, 24, 80);
     if(terminal_new_tab_on_open_ && terminal_visible_)

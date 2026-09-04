@@ -77,6 +77,10 @@ public:
   void setWindowHeight(float height) noexcept;
   float windowHeight() const noexcept;
 
+  /// Set the terminal window's absolute horizontal position and width in pixels.
+  /// The bounds are clamped to the main viewport work area while rendering.
+  void setWindowHorizontalBounds(float left, float width) noexcept;
+
   /// Render the terminal window and its session tabs.
   /// @p pendingText is composed SDL text for this frame and is written before
   /// Enter/navigation events when the selected terminal has focus.
