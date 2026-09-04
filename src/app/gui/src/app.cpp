@@ -8274,6 +8274,8 @@ void App::frame_ui()
     search_editor_match_note_path_.clear();
     search_editor_match_offset_ = -1;
     search_editor_match_length_ = 0;
+    if(search_dialog.scope == SearchScope::CurrentEditorNote && !editing_mode_)
+      request_preview_source_offset({}, 0);
     if(query_trim.empty()) return;
 
     const std::string query_lower = to_lower_ascii(query_trim);
@@ -8437,6 +8439,7 @@ void App::frame_ui()
       search_window_visible_ = search_dialog.visible;
       if(!search_dialog.visible)
       {
+        if(editor_search && !editing_mode_) request_preview_source_offset({}, 0);
         search_selected_idx_ = -1;
         search_navigation_delta_ = 0;
         request_search_activate_ = false;
@@ -8583,6 +8586,7 @@ void App::frame_ui()
       if(!search_dialog.visible)
       {
         search_request_window_focus_ = true;
+        if(!editing_mode_) request_preview_source_offset({}, 0);
         search_selected_idx_ = -1;
         search_navigation_delta_ = 0;
         request_search_activate_ = false;
@@ -15097,6 +15101,11 @@ void App::frame_ui()
         table_ctx_right_click_consumed = preview_result.consumed_right_click;
         table_ctx_double_click_consumed = preview_result.consumed_double_click;
         ImGui::PopTextWrapPos();
+        if(preview_result.markdown_changed)
+        {
+          request_preview_source_offset({}, 0);
+          search_dialog.last_query.clear();
+        }
         if(preview_changed)
         {
           const std::string preview_state_after = capture_preview_state_snapshot();
@@ -15875,6 +15884,11 @@ void App::frame_ui()
     const bool table_double_click_consumed = preview_result.consumed_double_click;
     ImGui::PopTextWrapPos();
 
+    if(preview_result.markdown_changed)
+    {
+      request_preview_source_offset({}, 0);
+      search_dialog.last_query.clear();
+    }
     if(preview_changed)
     {
       const std::string preview_state_after = capture_preview_state_snapshot();

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string_view>
 
 namespace fs = std::filesystem;
@@ -50,6 +51,71 @@ Json captured_preview()
 {
   const Json snapshot = Json::parse(MarkdownSupport::capture_preview_state_snapshot());
   return snapshot.at("preview");
+}
+
+void test_source_range_clamping_and_intersection()
+{
+  const MarkdownSupport::SourceRange ordinary =
+      MarkdownSupport::clamp_source_range(12U, 3U, 4U);
+  expect(ordinary.begin == 3U && ordinary.end == 7U,
+         "source range preserves an in-bounds half-open range");
+
+  const MarkdownSupport::SourceRange clamped_length = MarkdownSupport::clamp_source_range(
+      12U, 10U, std::numeric_limits<std::size_t>::max());
+  expect(clamped_length.begin == 10U && clamped_length.end == 12U,
+         "source range clamps length without overflowing offset plus length");
+
+  const MarkdownSupport::SourceRange clamped_offset = MarkdownSupport::clamp_source_range(
+      12U, std::numeric_limits<std::size_t>::max(), 5U);
+  expect(clamped_offset.begin == 12U && clamped_offset.end == 12U,
+         "source range clamps an offset beyond the document to an empty EOF range");
+
+  expect(MarkdownSupport::source_ranges_intersect({2U, 5U}, {4U, 8U}),
+         "overlapping half-open ranges intersect");
+  expect(!MarkdownSupport::source_ranges_intersect({2U, 5U}, {5U, 8U}),
+         "adjacent half-open ranges do not intersect");
+  expect(!MarkdownSupport::source_ranges_intersect({4U, 4U}, {2U, 8U}),
+         "empty source ranges do not intersect");
+}
+
+void test_plain_markdown_classification()
+{
+  expect(MarkdownSupport::is_plain_markdown_text("A plain sentence with punctuation.\n"),
+         "ordinary prose is eligible for exact preview highlighting");
+  expect(!MarkdownSupport::is_plain_markdown_text("Use **bold** text\n"),
+         "emphasis is not classified as plain Markdown");
+  expect(!MarkdownSupport::is_plain_markdown_text("Open [Notepp](notepp.md)\n"),
+         "links are not classified as plain Markdown");
+  expect(!MarkdownSupport::is_plain_markdown_text("![Preview](image.png)\n"),
+         "images are not classified as plain Markdown");
+  expect(!MarkdownSupport::is_plain_markdown_text("Use `inline code` here\n"),
+         "inline code is not classified as plain Markdown");
+  expect(!MarkdownSupport::is_plain_markdown_text("# Heading\n"),
+         "block syntax is not classified as plain Markdown");
+}
+
+void test_markdown_fence_block_range()
+{
+  const std::string fenced = "before\n```cpp\nint value = 1;\n```\nafter\n";
+  const std::size_t opening = fenced.find("```cpp");
+  const std::optional<std::size_t> end =
+      MarkdownSupport::markdown_fence_block_end(fenced, opening);
+  expect(end && *end == fenced.find("after"),
+         "backtick fence range includes the complete closing line");
+
+  const std::string tilde_fenced = "~~~text\nbody\n~~~~\n";
+  const std::optional<std::size_t> tilde_end =
+      MarkdownSupport::markdown_fence_block_end(tilde_fenced, 0U);
+  expect(tilde_end && *tilde_end == tilde_fenced.size(),
+         "tilde fence accepts a longer closing fence");
+
+  const std::string unterminated = "```text\nbody\n";
+  const std::optional<std::size_t> unterminated_end =
+      MarkdownSupport::markdown_fence_block_end(unterminated, 0U);
+  expect(unterminated_end && *unterminated_end == unterminated.size(),
+         "unterminated fence extends to the document end");
+  expect(!MarkdownSupport::markdown_fence_block_end("plain text\n", 0U),
+         "ordinary text is not classified as a fence");
 }
 
 void test_preview_key_collision_preserves_both_values()
@@ -160,6 +226,9 @@ void test_quarantined_preview_key_is_retried()
 
 int main()
 {
+  test_source_range_clamping_and_intersection();
+  test_plain_markdown_classification();
+  test_markdown_fence_block_range();
   test_preview_key_collision_preserves_both_values();
   test_preview_state_stale_save_preserves_both_versions();
   test_failed_preview_load_does_not_apply_placeholder_mutation();

@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,6 +28,25 @@ struct PreviewHeaderStateSummary
   bool any_expanded = false;
   bool any_collapsed = false;
 };
+
+// Byte range in Markdown source. The end offset is always exclusive.
+struct SourceRange
+{
+  std::size_t begin = 0;
+  std::size_t end = 0;
+
+  [[nodiscard]] bool empty() const noexcept { return begin >= end; }
+};
+
+[[nodiscard]] SourceRange clamp_source_range(std::size_t document_size,
+                                             std::size_t offset,
+                                             std::size_t length) noexcept;
+[[nodiscard]] bool source_ranges_intersect(SourceRange lhs, SourceRange rhs) noexcept;
+[[nodiscard]] bool is_plain_markdown_text(std::string_view text) noexcept;
+// Returns the exclusive end of a backtick/tilde fenced block beginning at
+// line_start. Unterminated fences extend to the end of the document.
+[[nodiscard]] std::optional<std::size_t> markdown_fence_block_end(
+    std::string_view markdown, std::size_t line_start) noexcept;
 
 // Re-export editor types/functions from the markdown_editor library for
 // backward compatibility with existing call sites.

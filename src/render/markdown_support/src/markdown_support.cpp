@@ -29,6 +29,131 @@ namespace MarkdownSupport
 PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown);
 void set_preview_document_path(std::string_view path);
 
+SourceRange clamp_source_range(std::size_t document_size,
+                               std::size_t offset,
+                               std::size_t length) noexcept
+{
+  const std::size_t begin = std::min(offset, document_size);
+  const std::size_t available = document_size - begin;
+  return SourceRange{begin, begin + std::min(length, available)};
+}
+
+bool source_ranges_intersect(SourceRange lhs, SourceRange rhs) noexcept
+{
+  return !lhs.empty() && !rhs.empty() && lhs.begin < rhs.end && rhs.begin < lhs.end;
+}
+
+bool is_plain_markdown_text(std::string_view text) noexcept
+{
+  if(text.empty()) return false;
+
+  bool has_visible_text = false;
+  for(std::size_t line_start = 0; line_start <= text.size();)
+  {
+    const std::size_t newline = text.find('\n', line_start);
+    const std::size_t line_end = newline == std::string_view::npos ? text.size() : newline;
+    std::string_view line = text.substr(line_start, line_end - line_start);
+    if(!line.empty() && line.back() == '\r') line.remove_suffix(1);
+
+    if(!line.empty())
+    {
+      has_visible_text = true;
+      if(line.find_first_of("\\`*_[]<>~&|") != std::string_view::npos) return false;
+
+      std::size_t first = 0;
+      while(first < line.size() && line[first] == ' ') ++first;
+      if(first >= 4U || (first < line.size() && line[first] == '\t')) return false;
+      const std::string_view trimmed = line.substr(first);
+      if(!trimmed.empty())
+      {
+        if(trimmed.front() == '#' || trimmed.front() == '>') return false;
+        if(trimmed.size() >= 2U &&
+           (trimmed.front() == '-' || trimmed.front() == '+') &&
+           (trimmed[1] == ' ' || trimmed[1] == '\t'))
+          return false;
+
+        std::size_t digit = 0;
+        while(digit < trimmed.size() && std::isdigit(static_cast<unsigned char>(trimmed[digit])))
+          ++digit;
+        if(digit != 0U && digit + 1U < trimmed.size() &&
+           (trimmed[digit] == '.' || trimmed[digit] == ')') &&
+           (trimmed[digit + 1U] == ' ' || trimmed[digit + 1U] == '\t'))
+          return false;
+
+        if(trimmed.find_first_not_of("-=") == std::string_view::npos) return false;
+      }
+    }
+
+    if(newline == std::string_view::npos) break;
+    line_start = newline + 1U;
+  }
+  return has_visible_text;
+}
+
+std::optional<std::size_t> markdown_fence_block_end(
+    std::string_view markdown, std::size_t line_start) noexcept
+{
+  if(line_start >= markdown.size()) return std::nullopt;
+
+  const auto line_end_from = [&](std::size_t start) {
+    const std::size_t newline = markdown.find('\n', start);
+    return newline == std::string_view::npos ? markdown.size() : newline;
+  };
+  const auto fence_prefix = [](std::string_view line,
+                               char expected_marker,
+                               std::size_t minimum_count,
+                               bool opening) -> std::optional<std::size_t> {
+    if(!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    std::size_t pos = 0;
+    while(pos < line.size() && line[pos] == ' ' && pos < 4U) ++pos;
+    if(pos >= 4U || pos >= line.size()) return std::nullopt;
+
+    const char marker = line[pos];
+    if((marker != '`' && marker != '~') ||
+       (expected_marker != '\0' && marker != expected_marker))
+      return std::nullopt;
+    const std::size_t marker_start = pos;
+    while(pos < line.size() && line[pos] == marker) ++pos;
+    const std::size_t marker_count = pos - marker_start;
+    if(marker_count < minimum_count) return std::nullopt;
+    if(opening)
+    {
+      if(marker == '`' && line.substr(pos).find('`') != std::string_view::npos)
+        return std::nullopt;
+    }
+    else if(line.substr(pos).find_first_not_of(" \t") != std::string_view::npos)
+    {
+      return std::nullopt;
+    }
+    return marker_count;
+  };
+
+  const std::size_t opening_end = line_end_from(line_start);
+  const std::string_view opening_line =
+      markdown.substr(line_start, opening_end - line_start);
+  std::size_t indent = 0;
+  while(indent < opening_line.size() && opening_line[indent] == ' ' && indent < 4U)
+    ++indent;
+  if(indent >= opening_line.size()) return std::nullopt;
+  const char marker = opening_line[indent];
+  const std::optional<std::size_t> opening_count =
+      fence_prefix(opening_line, '\0', 3U, true);
+  if(!opening_count) return std::nullopt;
+  if(opening_end == markdown.size()) return markdown.size();
+
+  std::size_t scan = opening_end + 1U;
+  while(scan < markdown.size())
+  {
+    const std::size_t closing_end = line_end_from(scan);
+    const std::string_view candidate = markdown.substr(scan, closing_end - scan);
+    if(fence_prefix(candidate, marker, *opening_count, false))
+      return closing_end == markdown.size() ? closing_end : closing_end + 1U;
+    if(closing_end == markdown.size()) break;
+    scan = closing_end + 1U;
+  }
+  return markdown.size();
+}
+
 namespace
 {
 static ImVec2 nonzero_invisible_button_size(float w, float h)
@@ -2225,6 +2350,13 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       return std::optional<PreviewSourceOffsetRequest>{};
     return g_preview_source_offset_request;
   }();
+  const std::optional<SourceRange> source_match = [&]() -> std::optional<SourceRange> {
+    if(!source_offset_request || source_offset_request->length == 0U) return std::nullopt;
+    const SourceRange range = clamp_source_range(
+        markdown.size(), source_offset_request->offset, source_offset_request->length);
+    if(range.empty()) return std::nullopt;
+    return range;
+  }();
 
   // Keep the ancestor headings of an arbitrary source match open so its actual
   // rendered line can become a scroll anchor, rather than approximating it by
@@ -2302,28 +2434,44 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     return path;
   };
 
+  auto draw_match_outline = [](ImVec2 min, ImVec2 max) {
+    constexpr ImU32 color = IM_COL32(255, 216, 77, 255);
+    const float content_right =
+        ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+    max.x = std::max(max.x, content_right);
+    max.y = std::max(max.y, min.y + ImGui::GetFrameHeight());
+    ImGui::GetWindowDrawList()->AddRect(min, max, color, 3.0f, 0, 2.0f);
+  };
+  auto source_match_intersects = [&](std::size_t start, std::size_t end) {
+    if(!source_match || start >= end) return false;
+    return source_ranges_intersect(
+        *source_match, clamp_source_range(markdown.size(), start, end - start));
+  };
   auto flush_chunk = [&]() {
     if(normal_chunk.empty()) return;
 
-    // Preserve raw-source search semantics. Plain rendered text gets an exact
-    // active-glyph highlight. Matches containing Markdown syntax stay scroll-
-    // only rather than risking a malformed render tree.
-    if(source_offset_request && source_offset_request->length != 0U &&
-       source_offset_request->offset >= normal_chunk_source_start)
+    const SourceRange chunk_range =
+        clamp_source_range(markdown.size(), normal_chunk_source_start, normal_chunk.size());
+    const bool selected_match =
+        source_match && source_ranges_intersect(*source_match, chunk_range);
+    bool exact_glyph_highlight = false;
+    if(selected_match && source_match->begin >= chunk_range.begin &&
+       source_match->end <= chunk_range.end)
     {
-      const std::size_t local = source_offset_request->offset - normal_chunk_source_start;
-      if(local <= normal_chunk.size() &&
-         source_offset_request->length <= normal_chunk.size() - local)
+      const std::size_t local = source_match->begin - chunk_range.begin;
+      const std::size_t length = source_match->end - source_match->begin;
+      if(is_plain_markdown_text(normal_chunk))
       {
-        const std::string_view match(normal_chunk.data() + local, source_offset_request->length);
-        if(match.find_first_of("[]`*_<>") == std::string_view::npos)
-        {
-          normal_chunk.insert(local + source_offset_request->length, "[/color]");
-          normal_chunk.insert(local, "[color=#FFD84D]");
-        }
+        normal_chunk.insert(local + length, "[/color]");
+        normal_chunk.insert(local, "[color=#FFD84D]");
+        exact_glyph_highlight = true;
       }
     }
+
+    const ImVec2 render_start = ImGui::GetCursorScreenPos();
     MarkdownView::render(normal_chunk);
+    if(selected_match && !exact_glyph_highlight)
+      draw_match_outline(render_start, ImGui::GetCursorScreenPos());
     normal_chunk.clear();
   };
 
@@ -2335,8 +2483,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     return true;
   };
   auto source_offset_in_range = [&](std::size_t start, std::size_t end) {
-    return source_offset_request &&
-           source_offset_request->offset >= start && source_offset_request->offset <= end;
+    if(!source_offset_request || start >= end) return false;
+    if(source_match) return source_match_intersects(start, end);
+    const std::size_t offset = std::min(source_offset_request->offset, markdown.size());
+    return offset >= start && offset < end;
   };
   auto consume_source_offset_reveal = [&]() {
     if(source_offset_request && source_offset_request->reveal_pending)
@@ -2422,6 +2572,8 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
           heading_flags,
           "%s",
           std::string(heading_title).c_str());
+      if(source_match_intersects(line_start, line_end))
+        draw_match_outline(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
       if(is_requested_heading)
       {
         ImGui::SetScrollHereY(0.5f);
@@ -2469,10 +2621,13 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       if(closed)
       {
         flush_chunk();
+        const ImVec2 render_start = ImGui::GetCursorScreenPos();
         const MarkdownWidgets::RenderResult ui_result = MarkdownWidgets::try_render_ui_block(markdown, line_start, line_end, block_end);
         result.markdown_changed = result.markdown_changed || ui_result.markdown_changed;
         result.preview_state_changed = result.preview_state_changed || ui_result.preview_state_changed;
         result.consumed_right_click = result.consumed_right_click || ui_result.consumed_right_click;
+        if(source_match_intersects(line_start, block_end))
+          draw_match_outline(render_start, ImGui::GetCursorScreenPos());
         if(source_offset_in_range(line_start, block_end)) consume_source_offset_reveal();
         pos = block_end;
         continue;
@@ -2508,9 +2663,11 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       if(closed)
       {
         flush_chunk();
+        const ImVec2 render_start = ImGui::GetCursorScreenPos();
         const std::string resolved = MarkdownWidgets::resolve_ui_mermaid_template(markdown, body);
         std::string mermaid_type;
-        if(detect_mermaid_type(resolved, mermaid_type))
+        const bool rendered_diagram = detect_mermaid_type(resolved, mermaid_type);
+        if(rendered_diagram)
           render_mermaid_block(mermaid_type, resolved, static_cast<int>(line_start));
         else
         {
@@ -2520,6 +2677,8 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(source_offset_in_range(line_start, block_end))
         {
           flush_chunk();
+          if(rendered_diagram && source_match_intersects(line_start, block_end))
+            draw_match_outline(render_start, ImGui::GetCursorScreenPos());
           consume_source_offset_reveal();
         }
         pos = block_end;
@@ -2556,9 +2715,12 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       if(closed)
       {
         std::string mermaid_type;
-        if(detect_mermaid_type(body, mermaid_type))
+        const bool rendered_diagram = detect_mermaid_type(body, mermaid_type);
+        ImVec2 render_start{};
+        if(rendered_diagram)
         {
           flush_chunk();
+          render_start = ImGui::GetCursorScreenPos();
           render_mermaid_block(mermaid_type, body, static_cast<int>(line_start));
         }
         else
@@ -2569,11 +2731,25 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(source_offset_in_range(line_start, block_end))
         {
           flush_chunk();
+          if(rendered_diagram && source_match_intersects(line_start, block_end))
+            draw_match_outline(render_start, ImGui::GetCursorScreenPos());
           consume_source_offset_reveal();
         }
         pos = block_end;
         continue;
       }
+    }
+
+    if(const std::optional<std::size_t> fenced_end =
+           markdown_fence_block_end(markdown, line_start))
+    {
+      flush_chunk();
+      normal_chunk_source_start = line_start;
+      normal_chunk.append(markdown.data() + line_start, *fenced_end - line_start);
+      flush_chunk();
+      if(source_offset_in_range(line_start, *fenced_end)) consume_source_offset_reveal();
+      pos = *fenced_end;
+      continue;
     }
 
     {
@@ -2609,7 +2785,10 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
         if(detect_mermaid_type(body, mermaid_type))
         {
           flush_chunk();
+          const ImVec2 render_start = ImGui::GetCursorScreenPos();
           render_mermaid_block(mermaid_type, body, static_cast<int>(line_start));
+          if(source_match_intersects(line_start, block_end))
+            draw_match_outline(render_start, ImGui::GetCursorScreenPos());
           if(source_offset_in_range(line_start, block_end)) consume_source_offset_reveal();
           pos = block_end;
           continue;
@@ -2622,12 +2801,15 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     {
       flush_chunk();
 
+      const ImVec2 render_start = ImGui::GetCursorScreenPos();
       const int table_id = static_cast<int>(parsed_table.block_start);
       TableRenderOutcome table_out = render_interactive_table(parsed_table, table_id, current_document_key());
 
       result.preview_state_changed = result.preview_state_changed || table_out.preview_state_changed;
       result.consumed_right_click = result.consumed_right_click || table_out.consumed_right_click;
       result.consumed_double_click = result.consumed_double_click || table_out.consumed_double_click;
+      if(source_match_intersects(parsed_table.block_start, parsed_table.block_end))
+        draw_match_outline(render_start, ImGui::GetCursorScreenPos());
       if(source_offset_in_range(parsed_table.block_start, parsed_table.block_end))
         consume_source_offset_reveal();
 
@@ -2649,6 +2831,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
     {
       flush_chunk();
 
+      const ImVec2 render_start = ImGui::GetCursorScreenPos();
       bool checked = (line[check_col] == 'x' || line[check_col] == 'X');
       const ImVec2 item_sp = ImGui::GetStyle().ItemSpacing;
       const ImVec2 frame_pad = ImGui::GetStyle().FramePadding;
@@ -2676,6 +2859,8 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
       ImGui::PopID();
       ImGui::PopStyleVar(2);
       ImGui::NewLine();
+      if(source_match_intersects(line_start, line_end))
+        draw_match_outline(render_start, ImGui::GetCursorScreenPos());
       if(source_offset_in_range(line_start, line_end)) consume_source_offset_reveal();
     }
     else if(source_offset_in_range(line_start, line_end))
