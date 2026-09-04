@@ -6843,18 +6843,40 @@ void App::render_variable_inspector()
   }
 
   const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  constexpr float explorer_width = 280.0f;
+  constexpr float preferred_panel_width = 410.0f;
+  constexpr float panel_top_offset = 32.0f;
+  const float available_width = std::max(200.0f, viewport->WorkSize.x - explorer_width);
+  const float panel_width = std::min(preferred_panel_width, available_width);
+  const float panel_height = std::max(200.0f, viewport->WorkSize.y - panel_top_offset);
   ImGui::SetNextWindowViewport(viewport->ID);
-  ImGui::SetNextWindowSize(ImVec2(410.0f, std::max(320.0f, viewport->WorkSize.y * 0.72f)),
-                           ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(panel_width, panel_height), ImGuiCond_Always);
   ImGui::SetNextWindowPos(
-      ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - 420.0f,
-             viewport->WorkPos.y + 36.0f),
-      ImGuiCond_FirstUseEver);
+      ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - panel_width,
+             viewport->WorkPos.y + panel_top_offset),
+      ImGuiCond_Always);
 
+  const ImVec4 base_bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+  const auto clamp01 = [](const float value) { return std::clamp(value, 0.0f, 1.0f); };
+  const ImVec4 panel_bg(
+      clamp01(base_bg.x + 0.03f),
+      clamp01(base_bg.y + 0.03f),
+      clamp01(base_bg.z + 0.03f),
+      base_bg.w);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, panel_bg);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   if(!ImGui::Begin("Variable Inspector", &variable_inspector_visible_,
-                   ImGuiWindowFlags_NoCollapse))
+                   ImGuiWindowFlags_NoMove |
+                       ImGuiWindowFlags_NoResize |
+                       ImGuiWindowFlags_NoCollapse |
+                       ImGuiWindowFlags_NoDocking |
+                       ImGuiWindowFlags_NoSavedSettings |
+                       ImGuiWindowFlags_NoTitleBar))
   {
     ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
     if(!variable_inspector_visible_)
     {
       inspector = {};
@@ -6862,6 +6884,9 @@ void App::render_variable_inspector()
     }
     return;
   }
+
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("Variables");
 
   const char *note_preview = has_active_note() ? note_title_.c_str() : "No active note";
   if(ImGui::BeginCombo("Note", note_preview))
@@ -6927,6 +6952,8 @@ void App::render_variable_inspector()
     ImGui::Separator();
     ImGui::TextWrapped("Select a readable note to inspect its UI variables.");
     ImGui::End();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
     if(!variable_inspector_visible_)
     {
       inspector = {};
@@ -7260,6 +7287,8 @@ void App::render_variable_inspector()
   }
 
   ImGui::End();
+  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor();
   if(!variable_inspector_visible_)
   {
     inspector = {};
