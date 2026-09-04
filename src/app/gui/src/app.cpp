@@ -7767,6 +7767,9 @@ void App::frame_ui()
   static int pending_focus_note_idx = -1;
   static int last_sidebar_anchor_folder_idx = -1;
   static int last_sidebar_anchor_note_idx = -1;
+  static int selection_state_folder_idx = -1;
+  static std::size_t selection_state_note_count = 0;
+  static std::vector<std::string> selection_state_note_paths;
   static int pending_move_source_folder_idx = -1;
   static int pending_move_target_folder_idx = -1;
   static std::vector<int> pending_move_note_indices;
@@ -7901,6 +7904,9 @@ void App::frame_ui()
     pending_focus_note_idx = -1;
     last_sidebar_anchor_folder_idx = -1;
     last_sidebar_anchor_note_idx = -1;
+    selection_state_folder_idx = -1;
+    selection_state_note_count = 0;
+    selection_state_note_paths.clear();
     pending_move_source_folder_idx = -1;
     pending_move_target_folder_idx = -1;
     pending_move_note_indices.clear();
@@ -11402,6 +11408,76 @@ void App::frame_ui()
   folder_overview_mode_ = true;
   ensure_default_index();
   normalize_active_indices();
+  if(active_folder_idx_ < 0 || active_folder_idx_ >= static_cast<int>(folders_.size()))
+  {
+    selected_note_indices.clear();
+    selected_stroke_indices.clear();
+    last_sidebar_anchor_folder_idx = -1;
+    last_sidebar_anchor_note_idx = -1;
+    selection_state_folder_idx = -1;
+    selection_state_note_count = 0;
+    selection_state_note_paths.clear();
+  }
+  else
+  {
+    const auto &active_notes = folders_[static_cast<std::size_t>(active_folder_idx_)].notes;
+    const std::size_t note_count = active_notes.size();
+    const bool folder_changed = selection_state_folder_idx != active_folder_idx_;
+    bool note_structure_changed = selection_state_note_count != note_count ||
+                                  selection_state_note_paths.size() != note_count;
+    if(!folder_changed && !note_structure_changed)
+    {
+      for(std::size_t i = 0; i < note_count; ++i)
+      {
+        if(selection_state_note_paths[i] != active_notes[i].path)
+        {
+          note_structure_changed = true;
+          break;
+        }
+      }
+    }
+    if(folder_changed)
+    {
+      // A note click updates the anchor immediately; all other active-folder
+      // changes must not carry indices from the previous folder.
+      if(last_sidebar_anchor_folder_idx != active_folder_idx_)
+      {
+        selected_note_indices.clear();
+        selected_stroke_indices.clear();
+        last_sidebar_anchor_note_idx = -1;
+        last_sidebar_anchor_folder_idx = active_folder_idx_;
+      }
+      selection_state_folder_idx = active_folder_idx_;
+      selection_state_note_count = note_count;
+    }
+    else if(note_structure_changed)
+    {
+      selected_note_indices.clear();
+      selected_stroke_indices.clear();
+      last_sidebar_anchor_note_idx = -1;
+      selection_state_note_count = note_count;
+    }
+    if(folder_changed || note_structure_changed)
+    {
+      selection_state_note_paths.clear();
+      selection_state_note_paths.reserve(note_count);
+      for(const NoteMeta &note : active_notes) selection_state_note_paths.push_back(note.path);
+    }
+    if(last_sidebar_anchor_folder_idx != active_folder_idx_ ||
+       last_sidebar_anchor_note_idx < -1 ||
+       last_sidebar_anchor_note_idx >= static_cast<int>(note_count))
+    {
+      last_sidebar_anchor_folder_idx = active_folder_idx_;
+      last_sidebar_anchor_note_idx = -1;
+    }
+    for(auto it = selected_note_indices.begin(); it != selected_note_indices.end();)
+    {
+      if(*it < 0 || *it >= static_cast<int>(note_count))
+        it = selected_note_indices.erase(it);
+      else
+        ++it;
+    }
+  }
   const ImGuiStyle &sidebar_style = ImGui::GetStyle();
   const ImVec4 sidebar_select_gray(0.35f, 0.37f, 0.40f, 1.0f);
   const ImVec4 sidebar_hover_fill = with_alpha(sidebar_select_gray, 0.20f);
@@ -11526,8 +11602,11 @@ void App::frame_ui()
       const int prev_folder = active_folder_idx_;
       state_dirty_ = true;
       active_folder_idx_ = fi;
+      active_note_idx_ = -1;
       selected_note_indices.clear();
       selected_stroke_indices.clear();
+      last_sidebar_anchor_folder_idx = -1;
+      last_sidebar_anchor_note_idx = -1;
       folder_overview_mode_ = true;
       editing_mode_ = false;
       request_exit_edit_mode_ = false;
@@ -11577,8 +11656,7 @@ void App::frame_ui()
         NoteMeta &n = f.notes[(size_t)ni];
         const bool note_selected =
             fi == active_folder_idx_ &&
-            (selected_note_indices.count(ni) != 0 ||
-             (!folder_overview_mode_ && ni == active_note_idx_));
+            (selected_note_indices.count(ni) != 0 || ni == active_note_idx_);
         const std::string note_item_label =
             n.title + "###ExplorerNote_" + std::to_string(fi) + "_" + std::to_string(ni);
         const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
@@ -11591,11 +11669,19 @@ void App::frame_ui()
           const bool ctrl = ImGui::GetIO().KeyCtrl;
           const bool shift = ImGui::GetIO().KeyShift;
           const int prev_folder = active_folder_idx_;
+          const bool selection_folder_changed = prev_folder != fi;
+          const bool has_same_folder_anchor =
+              last_sidebar_anchor_folder_idx == fi && last_sidebar_anchor_note_idx >= 0;
           state_dirty_ = true;
           active_folder_idx_ = fi;
           active_note_idx_ = ni;
           n.hidden = false;
-          if(shift && last_sidebar_anchor_folder_idx == fi && last_sidebar_anchor_note_idx >= 0)
+          if(selection_folder_changed)
+          {
+            selected_note_indices.clear();
+            selected_stroke_indices.clear();
+          }
+          if(shift && !selection_folder_changed && has_same_folder_anchor)
           {
             int a = std::min(last_sidebar_anchor_note_idx, ni);
             int b = std::max(last_sidebar_anchor_note_idx, ni);
@@ -11620,8 +11706,11 @@ void App::frame_ui()
             selected_stroke_indices.clear();
           }
           pending_focus_note_idx = ni;
-          last_sidebar_anchor_folder_idx = fi;
-          last_sidebar_anchor_note_idx = ni;
+          if(!shift || selection_folder_changed || !has_same_folder_anchor)
+          {
+            last_sidebar_anchor_folder_idx = fi;
+            last_sidebar_anchor_note_idx = ni;
+          }
           force_open_folder_idx = fi;
           editing_mode_ = false;
           request_exit_edit_mode_ = false;
@@ -12157,8 +12246,7 @@ void App::frame_ui()
           NoteMeta &n = rf.notes[(size_t)ni];
           const bool note_sel =
               rfi == active_folder_idx_ &&
-              (selected_note_indices.count(ni) != 0 ||
-               (!folder_overview_mode_ && ni == active_note_idx_));
+              (selected_note_indices.count(ni) != 0 || ni == active_note_idx_);
           const std::string label = n.title + "###RootNote_" + std::to_string(rfi) + "_" + std::to_string(ni);
           const ImVec4 note_flash_col = flash_current_color(flash_key_note(n.path), now_time);
           ImVec4 note_text_col = folder_accent_color(n.use_custom_color, n.color_r, n.color_g, n.color_b, sidebar_style);
@@ -12167,18 +12255,55 @@ void App::frame_ui()
           ImGui::PushStyleColor(ImGuiCol_Text, note_text_col);
           if(ImGui::Selectable(label.c_str(), note_sel))
           {
+            const bool ctrl = ImGui::GetIO().KeyCtrl;
+            const bool shift = ImGui::GetIO().KeyShift;
             const int prev_folder = active_folder_idx_;
+            const bool selection_folder_changed = prev_folder != rfi;
+            const bool has_same_folder_anchor =
+                last_sidebar_anchor_folder_idx == rfi && last_sidebar_anchor_note_idx >= 0;
             state_dirty_ = true;
             active_folder_idx_ = rfi;
             active_note_idx_ = ni;
             n.hidden = false;
-            selected_note_indices.clear();
-            selected_note_indices.insert(ni);
-            selected_stroke_indices.clear();
+            if(selection_folder_changed)
+            {
+              selected_note_indices.clear();
+              selected_stroke_indices.clear();
+            }
+            if(shift && !selection_folder_changed && has_same_folder_anchor)
+            {
+              const int a = std::min(last_sidebar_anchor_note_idx, ni);
+              const int b = std::max(last_sidebar_anchor_note_idx, ni);
+              if(!ctrl)
+              {
+                selected_note_indices.clear();
+                selected_stroke_indices.clear();
+              }
+              for(int i = a; i <= b; ++i) selected_note_indices.insert(i);
+            }
+            else if(ctrl)
+            {
+              if(selected_note_indices.count(ni) != 0)
+                selected_note_indices.erase(ni);
+              else
+                selected_note_indices.insert(ni);
+            }
+            else
+            {
+              selected_note_indices.clear();
+              selected_note_indices.insert(ni);
+              selected_stroke_indices.clear();
+            }
             pending_focus_note_idx = ni;
+            if(!shift || selection_folder_changed || !has_same_folder_anchor)
+            {
+              last_sidebar_anchor_folder_idx = rfi;
+              last_sidebar_anchor_note_idx = ni;
+            }
             force_open_folder_idx = rfi;
             editing_mode_ = false;
             request_exit_edit_mode_ = false;
+            request_cancel_draw_tools_ = true;
             sidebar_last_selected_was_folder = false;
             if(rfi != prev_folder)
               apply_folder_settings(rfi);
