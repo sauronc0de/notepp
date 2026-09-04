@@ -5778,11 +5778,10 @@ bool App::frame_begin()
   };
   const auto terminal_has_keyboard_focus = [&]() {
     if(terminal_mouse_focus_override_valid) return terminal_mouse_focus_override;
-    // The terminal is a separately rendered input surface. When it is
-    // visible, its focus flag may still reflect the previous frame (notably
-    // immediately after opening it from Command Finder); treat it as the
-    // keyboard owner until an explicit click selects another window.
-    return terminal_.hasFocus() || terminal_visible_;
+    // Visibility alone must not claim keyboard input: notes remain interactive
+    // while the terminal is open, and the terminal becomes the owner only when
+    // ImGui reports that its window has focus.
+    return terminal_visible_ && terminal_.hasFocus();
   };
   const auto is_terminal_toggle_key = [](SDL_Keycode key) {
     return key == SDLK_BACKQUOTE || key == static_cast<SDL_Keycode>(0xF1) ||
@@ -5840,7 +5839,7 @@ bool App::frame_begin()
         }
         continue;
       }
-      if(terminal_visible_ && terminal_ctrl && !terminal_alt && event.key.keysym.sym == SDLK_TAB)
+      if(terminal_has_keyboard_focus() && terminal_ctrl && !terminal_alt && event.key.keysym.sym == SDLK_TAB)
       {
         (void)terminal_.selectAdjacentSession(terminal_shift);
         continue;
@@ -5850,7 +5849,7 @@ bool App::frame_begin()
     // Handle the core shell controls before any application/dialog shortcut
     // branch can consume the SDL key event. Printable text uses SDL_TEXTINPUT,
     // but arrows, Tab, and Ctrl+R must reach the PTY from SDL_KEYDOWN.
-    if(event.type == SDL_KEYDOWN && terminal_visible_)
+    if(event.type == SDL_KEYDOWN && terminal_has_keyboard_focus())
     {
       const Uint16 terminal_mod = event.key.keysym.mod;
       const bool terminal_ctrl = (terminal_mod & KMOD_CTRL) != 0;
