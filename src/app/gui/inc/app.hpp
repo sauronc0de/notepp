@@ -317,6 +317,16 @@ private:
   std::string note_header_create_parent_;
   std::string note_header_create_parent_path_;
   std::size_t note_header_create_parent_occurrence_ = 0;
+  bool note_line_create_selecting_ = false;
+  bool note_line_create_visible_ = false;
+  bool request_note_line_create_confirm_ = false;
+  bool request_close_note_line_create_ = false;
+  bool note_line_create_focus_input_ = false;
+  char note_line_create_line_[2048] = {};
+  std::string note_line_create_note_reference_;
+  std::string note_line_create_heading_;
+  std::string note_line_create_heading_path_;
+  std::size_t note_line_create_heading_occurrence_ = 0;
   bool note_color_set_selecting_ = false;
   bool note_color_set_visible_ = false;
   bool request_note_color_set_confirm_ = false;

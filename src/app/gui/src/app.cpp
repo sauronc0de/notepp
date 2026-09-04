@@ -2371,7 +2371,8 @@ void App::post_command_mutation(const nlohmann::json &request,
   (void)response;
   const std::string command = request.value("command", request.value("method", std::string{}));
   const bool mutates = command == "note.create" || command == "note.header.create" ||
-                       command == "note.color.set" || command == "note.variable.set";
+                       command == "note.line.create" || command == "note.color.set" ||
+                       command == "note.variable.set";
   if(!mutates) return;
 
   // The command API writes through atomic_file while the editor may hold an
@@ -7977,6 +7978,16 @@ void App::frame_ui()
     note_header_create_parent_.clear();
     note_header_create_parent_path_.clear();
     note_header_create_parent_occurrence_ = 0;
+    note_line_create_selecting_ = false;
+    note_line_create_visible_ = false;
+    request_note_line_create_confirm_ = false;
+    request_close_note_line_create_ = false;
+    note_line_create_focus_input_ = false;
+    note_line_create_line_[0] = '\0';
+    note_line_create_note_reference_.clear();
+    note_line_create_heading_.clear();
+    note_line_create_heading_path_.clear();
+    note_line_create_heading_occurrence_ = 0;
     note_color_set_selecting_ = false;
     note_color_set_visible_ = false;
     request_note_color_set_confirm_ = false;
@@ -9121,6 +9132,22 @@ void App::frame_ui()
     command_finder_navigation_delta_ = 0;
     command_finder_feedback_.clear();
   };
+  const auto begin_note_line_create = [&](const NoteSwitcherResult &result) {
+    note_switcher.query[0] = '\0';
+    note_switcher.last_query.clear();
+    command_finder.query[0] = '\0';
+    command_finder_feedback_.clear();
+    note_line_create_note_reference_ = result.note_id.empty() ? result.note_path : result.note_id;
+    note_line_create_heading_ = result.heading_title;
+    note_line_create_heading_path_ = result.heading_path;
+    note_line_create_heading_occurrence_ = result.heading_occurrence_index;
+    note_line_create_line_[0] = '\0';
+    note_line_create_focus_input_ = true;
+    note_line_create_selecting_ = false;
+    note_line_create_visible_ = true;
+    command_finder_navigation_delta_ = 0;
+    command_finder_feedback_.clear();
+  };
   const auto begin_note_color_set = [&](const NoteSwitcherResult &result) {
     note_switcher.query[0] = '\0';
     note_switcher.last_query.clear();
@@ -9246,6 +9273,8 @@ void App::frame_ui()
           begin_note_reference(result);
         else if(note_header_create_selecting_)
           begin_note_header_create(result);
+        else if(note_line_create_selecting_)
+          begin_note_line_create(result);
         else if(note_color_set_selecting_)
           begin_note_color_set(result);
         else
@@ -9289,6 +9318,8 @@ void App::frame_ui()
               begin_note_reference(result);
             else if(note_header_create_selecting_)
               begin_note_header_create(result);
+            else if(note_line_create_selecting_)
+              begin_note_line_create(result);
             else if(note_color_set_selecting_)
               begin_note_color_set(result);
             else
@@ -9789,10 +9820,7 @@ void App::frame_ui()
             else if(api_form.command == "note.header.create" || api_form.command == "note.header.get")
               valid = require(api_form.title, "title") && valid;
             else if(api_form.command == "note.line.create")
-            {
-              valid = require(api_form.heading, "heading") && valid;
               valid = require(api_form.line, "line") && valid;
-            }
             if(api_form.command == "note.variable.get" || api_form.command == "note.variable.set")
               valid = require(api_form.variable_name, "variable name") && valid;
           }
@@ -9902,6 +9930,16 @@ void App::frame_ui()
       request_close_note_header_create_ = false;
       note_header_create_focus_input_ = false;
       note_header_create_title_[0] = '\0';
+      note_line_create_selecting_ = false;
+      note_line_create_visible_ = false;
+      request_note_line_create_confirm_ = false;
+      request_close_note_line_create_ = false;
+      note_line_create_focus_input_ = false;
+      note_line_create_line_[0] = '\0';
+      note_line_create_note_reference_.clear();
+      note_line_create_heading_.clear();
+      note_line_create_heading_path_.clear();
+      note_line_create_heading_occurrence_ = 0;
       note_color_set_selecting_ = false;
       note_color_set_visible_ = false;
       request_note_color_set_confirm_ = false;
@@ -9922,8 +9960,10 @@ void App::frame_ui()
     // its widgets are rendered here so selecting a note never opens a second
     // window or changes the ImGui window identity.
     const bool guided_command = note_header_create_selecting_ ||
+                                note_line_create_selecting_ ||
                                 note_color_set_selecting_ ||
                                 note_header_create_name_visible_ ||
+                                note_line_create_visible_ ||
                                 note_color_set_visible_;
     if(guided_command)
     {
@@ -9937,6 +9977,15 @@ void App::frame_ui()
         note_header_create_parent_path_.clear();
         note_header_create_parent_occurrence_ = 0;
         request_note_header_create_confirm_ = false;
+        note_line_create_selecting_ = false;
+        note_line_create_visible_ = false;
+        note_line_create_focus_input_ = false;
+        note_line_create_line_[0] = '\0';
+        note_line_create_note_reference_.clear();
+        note_line_create_heading_.clear();
+        note_line_create_heading_path_.clear();
+        note_line_create_heading_occurrence_ = 0;
+        request_note_line_create_confirm_ = false;
         note_color_set_selecting_ = false;
         note_color_set_visible_ = false;
         note_color_set_focus_input_ = false;
@@ -9947,7 +9996,7 @@ void App::frame_ui()
         command_finder.visible = false;
         command_finder_feedback_.clear();
       };
-      if(note_header_create_selecting_ || note_color_set_selecting_)
+      if(note_header_create_selecting_ || note_line_create_selecting_ || note_color_set_selecting_)
       {
         if(request_activate_command_finder_ && note_switcher_selected_idx_ >= 0 &&
            note_switcher_selected_idx_ < static_cast<int>(note_switcher.results.size()))
@@ -9956,6 +10005,8 @@ void App::frame_ui()
           request_activate_command_finder_ = false;
           if(note_header_create_selecting_)
             begin_note_header_create(result);
+          else if(note_line_create_selecting_)
+            begin_note_line_create(result);
           else
             begin_note_color_set(result);
         }
@@ -9982,7 +10033,7 @@ void App::frame_ui()
         return;
       }
 
-      if(note_header_create_selecting_ || note_color_set_selecting_)
+      if(note_header_create_selecting_ || note_line_create_selecting_ || note_color_set_selecting_)
       {
         if(command_finder.focus_input)
         {
@@ -10027,6 +10078,34 @@ void App::frame_ui()
             if(ImGui::IsItemHovered()) ImGui::SetTooltip("%s", result.note_path.c_str());
           }
           ImGui::EndChild();
+        }
+      }
+      else if(note_line_create_visible_)
+      {
+        ImGui::TextUnformatted("Add line");
+        if(!note_line_create_heading_.empty())
+          ImGui::TextDisabled("Under: %s", note_line_create_heading_path_.c_str());
+        else
+          ImGui::TextDisabled("At the end of the selected note");
+        if(note_line_create_focus_input_)
+        {
+          ImGui::SetKeyboardFocusHere();
+          note_line_create_focus_input_ = false;
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool enter = ImGui::InputText("Line", note_line_create_line_,
+                                            sizeof(note_line_create_line_),
+                                            ImGuiInputTextFlags_AutoSelectAll |
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        if(!command_finder_feedback_.empty())
+          ImGui::TextWrapped("Feedback: %s", command_finder_feedback_.c_str());
+        if(ImGui::Button("Add") || enter) request_note_line_create_confirm_ = true;
+        ImGui::SameLine();
+        if(ImGui::Button("Cancel")) request_close_command_finder_ = true;
+        if(request_activate_command_finder_)
+        {
+          request_activate_command_finder_ = false;
+          request_note_line_create_confirm_ = true;
         }
       }
       else if(note_header_create_name_visible_)
@@ -10132,6 +10211,34 @@ void App::frame_ui()
           args["parent"] = note_header_create_parent_;
           args["level"] = 1;
           const nlohmann::json request{{"command", "note.header.create"}, {"args", args}};
+          const auto response = command_api_->execute(request);
+          command_finder_feedback_ = response.body.dump();
+          if(response.ok)
+          {
+            post_command_mutation(request, response);
+            close_guided_command();
+          }
+          else
+            LOG_WARNING("Command failed: ", response.body.dump());
+        }
+      }
+      if(request_note_line_create_confirm_)
+      {
+        request_note_line_create_confirm_ = false;
+        if(note_line_create_line_[0] == '\0')
+          command_finder_feedback_ = "Invalid parameters: line is required";
+        else if(command_api_ == nullptr)
+          command_finder_feedback_ = "Command API is unavailable";
+        else
+        {
+          nlohmann::json args = note_reference_args(note_line_create_note_reference_.c_str());
+          if(!note_line_create_heading_.empty())
+          {
+            args["heading"] = note_line_create_heading_;
+            args["heading_occurrence"] = note_line_create_heading_occurrence_;
+          }
+          args["line"] = note_line_create_line_;
+          const nlohmann::json request{{"command", "note.line.create"}, {"args", args}};
           const auto response = command_api_->execute(request);
           command_finder_feedback_ = response.body.dump();
           if(response.ok)
@@ -10324,6 +10431,25 @@ void App::frame_ui()
             command_finder_navigation_delta_ = 0;
             command_finder_feedback_.clear();
           }
+          else if(api_name == "note.line.create")
+          {
+            command_finder.query[0] = '\0';
+            api_form.command.clear();
+            note_line_create_selecting_ = true;
+            note_line_create_visible_ = false;
+            note_line_create_focus_input_ = false;
+            note_switcher.visible = false;
+            note_switcher.focus_input = false;
+            note_switcher.just_opened = true;
+            note_switcher.query[0] = '\0';
+            note_switcher.last_query.clear();
+            note_switcher.results.clear();
+            note_switcher_selected_idx_ = -1;
+            note_switcher_navigation_delta_ = 0;
+            command_finder.focus_input = true;
+            command_finder_navigation_delta_ = 0;
+            command_finder_feedback_.clear();
+          }
           else if(api_name == "note.color.set")
           {
             command_finder.query[0] = '\0';
@@ -10360,8 +10486,10 @@ void App::frame_ui()
         break;
       }
       const bool guided_command = note_header_create_selecting_ ||
+                                  note_line_create_selecting_ ||
                                   note_color_set_selecting_ ||
                                   note_header_create_name_visible_ ||
+                                  note_line_create_visible_ ||
                                   note_color_set_visible_;
       if(!guided_command) command_finder.visible = false;
       request_activate_command_finder_ = false;

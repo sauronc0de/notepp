@@ -39,15 +39,19 @@ widget commands; it is not relative to the current note.
 - `note.variable.get`, `note.variable.set`
 
 `note.line.create` appends one non-empty source line to the end of a selected
-heading section, before the next heading of the same or higher level:
+heading section, before the next heading of the same or higher level. If no
+heading is supplied, it appends to the end of the selected note:
 
 ```json
 {"command":"note.line.create","args":{"path":"notes/inbox/template.md","heading":"Tasks","line":"- [ ] Review"}}
+{"command":"note.line.create","args":{"path":"notes/inbox/template.md","line":"- [ ] Review"}}
 ```
 
 A missing heading returns `not_found`. Duplicate exact heading titles return
-`ambiguous_heading` and leave the file unchanged. `note.header.get` and parent
-selection for `note.header.create` follow the same no-ambiguity convention.
+`ambiguous_heading` unless `heading_occurrence` identifies the zero-based
+`heading_occurrence` returned by `note.header.list`; in that case the selected
+occurrence is used. `note.header.get` and parent selection for
+`note.header.create` follow the same no-ambiguity convention.
 
 Variable commands use the GUI's render-owned persistence adapter and preserve
 local-first, global-fallback lookup. A headless API without that adapter returns

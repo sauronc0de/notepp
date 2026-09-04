@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -25,7 +26,7 @@ void usage(std::ostream &output)
          << "  notepp-cli --project ROOT [--json] note header list --note NOTE\n"
          << "  notepp-cli --project ROOT [--json] note header get --note NOTE --title TITLE\n"
          << "  notepp-cli --project ROOT [--json] note header create --note NOTE --title TITLE [--parent PARENT] [--level LEVEL]\n"
-         << "  notepp-cli --project ROOT [--json] note line create --note NOTE --heading HEADING --line LINE\n"
+         << "  notepp-cli --project ROOT [--json] note line create --note NOTE [--heading HEADING] [--heading-occurrence N] --line LINE\n"
          << "  notepp-cli --project ROOT [--json] note color set --note NOTE --color '#RRGGBB'\n"
          << "  notepp-cli --project ROOT [--json] [note] variable get --note NOTE --name NAME\n"
          << "  notepp-cli --project ROOT [--json] [note] variable set --note NOTE --name NAME --value JSON\n"
@@ -166,7 +167,7 @@ ParseResult parse_friendly(const std::vector<std::string> &tokens)
       const std::string key = tokens[pos++];
       if(key == "--folder" || key == "--note" || key == "--name" || key == "--content" ||
          key == "--parent" || key == "--level" || key == "--title" || key == "--value" ||
-         key == "--color" || key == "--heading" || key == "--line")
+         key == "--color" || key == "--heading" || key == "--heading-occurrence" || key == "--line")
       {
         if(pos >= tokens.size() || tokens[pos].rfind("--", 0) == 0)
         {
@@ -201,6 +202,23 @@ ParseResult parse_friendly(const std::vector<std::string> &tokens)
           args["heading"] = value;
         else if(key == "--line")
           args["line"] = value;
+        else if(key == "--heading-occurrence")
+        {
+          try
+          {
+            std::size_t consumed = 0;
+            const int occurrence = std::stoi(value, &consumed);
+            if(consumed != value.size() || occurrence < 0)
+              throw std::invalid_argument("invalid occurrence");
+            args["heading_occurrence"] = occurrence;
+          }
+          catch(const std::exception &)
+          {
+            result.error = 2;
+            result.message = "invalid heading occurrence";
+            return result;
+          }
+        }
         else if(key == "--level")
         {
           try

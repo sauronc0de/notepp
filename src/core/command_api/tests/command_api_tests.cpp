@@ -37,6 +37,7 @@ int main()
   assert(!traversal.ok && traversal.body.at("error").at("code") == "not_found");
   const auto headers = api.execute({{"command", "note.header.list"}, {"args", {{"id", "one"}}}});
   assert(headers.ok && headers.body.at("headers").size() == 1U);
+  assert(headers.body.at("headers").at(0).at("heading_occurrence") == 0U);
   const auto created_note = api.execute({{"command", "note.create"},
                                          {"args", {{"folder", "General"}, {"title", "Created"}, {"content", "content"}}}});
   assert(created_note.ok);
@@ -72,6 +73,19 @@ int main()
                                               {"args", {{"id", "one"}, {"heading", "Root"}, {"line", "no"}}}});
   assert(!ambiguous_heading.ok &&
          ambiguous_heading.body.at("error").at("code") == "ambiguous_heading");
+  const auto selected_duplicate = api.execute({{"command", "note.line.create"},
+                                                {"args", {{"id", "one"}, {"heading", "Root"},
+                                                          {"heading_occurrence", std::size_t{2}}, {"line", "selected"}}}});
+  assert(selected_duplicate.ok);
+  const auto appended_to_note = api.execute({{"command", "note.line.create"},
+                                              {"args", {{"id", "one"}, {"line", "at end"}}}});
+  assert(appended_to_note.ok);
+  {
+    std::ifstream note(root / "notes" / "one.md");
+    const std::string content((std::istreambuf_iterator<char>(note)),
+                              std::istreambuf_iterator<char>());
+    assert(content.ends_with("# Root\nselected\nat end\n"));
+  }
   const auto conflicting_selector = api.execute({{"command", "note.get"},
                                                  {"args", {{"id", "one"}, {"path", "notes/one.md"}}}});
   assert(!conflicting_selector.ok);

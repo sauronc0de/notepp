@@ -354,7 +354,13 @@ Response Api::execute(const Json &request)
   if(command == "note.header.list")
   {
     Json result = Json::array();
-    for(const auto &h : hs) result.push_back(header_json(std::get<0>(h), std::get<1>(h), std::get<2>(h)));
+    for(std::size_t occurrence = 0; occurrence < hs.size(); ++occurrence)
+    {
+      Json header = header_json(std::get<0>(hs[occurrence]), std::get<1>(hs[occurrence]),
+                                std::get<2>(hs[occurrence]));
+      header["heading_occurrence"] = occurrence;
+      result.push_back(std::move(header));
+    }
     return success(Json{{"headers", std::move(result)}, {"note", note_summary(project_, note)}});
   }
   if(command == "note.header.get")
@@ -408,27 +414,54 @@ Response Api::execute(const Json &request)
   {
     const std::string heading = args.value("heading", args.value("header", std::string{}));
     const std::string line = args.value("line", args.value("text", std::string{}));
-    if(heading.empty() || heading.find_first_of("\r\n") != std::string::npos)
+    if(!heading.empty() && heading.find_first_of("\r\n") != std::string::npos)
       return failure("invalid_args", "heading must be a single non-empty line");
     if(line.empty() || line.find_first_of("\r\n") != std::string::npos)
       return failure("invalid_args", "line must be a single non-empty line");
-    const auto match_count = std::count_if(hs.begin(), hs.end(), [&](const auto &h) {
-      return std::get<2>(h) == heading;
-    });
-    if(match_count == 0) return failure("not_found", "heading was not found");
-    if(match_count > 1)
-      return failure("ambiguous_heading", "heading title is duplicated; line was not added");
-    const auto found = std::find_if(hs.begin(), hs.end(), [&](const auto &h) {
-      return std::get<2>(h) == heading;
-    });
+
     std::size_t insert = text.size();
-    for(const auto &candidate : hs)
-      if(std::get<0>(candidate) > std::get<0>(*found) &&
-         std::get<1>(candidate) <= std::get<1>(*found))
+    if(!heading.empty())
+    {
+      std::size_t heading_occurrence = 0;
+      if(args.contains("heading_occurrence"))
       {
-        insert = std::get<0>(candidate);
-        break;
+        const Json &occurrence = args["heading_occurrence"];
+        if(occurrence.is_number_integer())
+        {
+          const long long value = occurrence.get<long long>();
+          if(value < 0) return failure("invalid_args", "heading occurrence must be a non-negative integer");
+          heading_occurrence = static_cast<std::size_t>(value);
+        }
+        else if(occurrence.is_number_unsigned())
+          heading_occurrence = occurrence.get<std::size_t>();
+        else
+          return failure("invalid_args", "heading occurrence must be a non-negative integer");
       }
+      const auto found = args.contains("heading_occurrence")
+                             ? (heading_occurrence < hs.size() &&
+                                        std::get<2>(hs[heading_occurrence]) == heading
+                                    ? hs.begin() + static_cast<std::ptrdiff_t>(heading_occurrence)
+                                    : hs.end())
+                             : std::find_if(hs.begin(), hs.end(), [&](const auto &h) {
+                                 return std::get<2>(h) == heading;
+                               });
+      if(found == hs.end()) return failure("not_found", "heading was not found");
+      if(!args.contains("heading_occurrence"))
+      {
+        const auto match_count = std::count_if(hs.begin(), hs.end(), [&](const auto &h) {
+          return std::get<2>(h) == heading;
+        });
+        if(match_count > 1)
+          return failure("ambiguous_heading", "heading title is duplicated; line was not added");
+      }
+      for(const auto &candidate : hs)
+        if(std::get<0>(candidate) > std::get<0>(*found) &&
+           std::get<1>(candidate) <= std::get<1>(*found))
+        {
+          insert = std::get<0>(candidate);
+          break;
+        }
+    }
     std::string updated = text;
     if(insert != 0U && updated[insert - 1U] != '\n') updated.insert(insert++, 1U, '\n');
     updated.insert(insert, line + "\n");
@@ -437,7 +470,9 @@ Response Api::execute(const Json &request)
     index.document["folders"][fi]["notes"][ni]["content_fingerprint"] =
         note_index::content_fingerprint(updated);
     if(!save_index(project_, index.document, error)) return failure("io_error", error);
-    return success(Json{{"heading", heading}, {"line", line}, {"offset", insert}});
+    Json result{{"line", line}, {"offset", insert}};
+    if(!heading.empty()) result["heading"] = heading;
+    return success(std::move(result));
   }
   if(command == "note.color.set")
   {
