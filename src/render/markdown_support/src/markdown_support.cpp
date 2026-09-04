@@ -873,13 +873,13 @@ static std::string splice_section(const std::string &file_content,
 // hover can produce multiple consecutive edits (e.g. toggling several
 // checkboxes), and the strict compare would reject every edit after the
 // first. This matches the main note view's write behaviour.
-static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
-                                       const std::string &modified_body)
+static std::optional<std::string> persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
+                                                              const std::string &modified_body)
 {
   if(preview.section_start == std::string_view::npos || preview.section_end == std::string_view::npos)
-    return false;
-  if(preview.path.empty()) return false;
-  if(preview.section_start > preview.section_end) return false;
+    return std::nullopt;
+  if(preview.path.empty()) return std::nullopt;
+  if(preview.section_start > preview.section_end) return std::nullopt;
 
   const auto loaded = g_preview_files.load(preview.path);
   record_preview_read(preview.path, loaded);
@@ -887,34 +887,41 @@ static bool persist_hover_preview_edit(const MarkdownHoverPreviewData &preview,
   if(!loaded || !loaded.snapshot.existed)
   {
     if(!loaded) g_preview_persistence_errors[preview_key] = loaded.message;
-    return false;
+    return std::nullopt;
   }
   g_preview_persistence_errors.erase(preview_key);
   const std::string &file_content = loaded.snapshot.content;
-  if(preview.section_end > file_content.size()) return false;
+  if(preview.section_end > file_content.size()) return std::nullopt;
 
   const std::string updated = splice_section(file_content,
                                              preview.section_start,
                                              preview.section_end,
                                              modified_body);
-  if(updated == file_content) return false; // nothing actually changed
+  if(updated == file_content) return std::nullopt; // nothing actually changed
 
-  if(!save_preview_file(preview.path, updated)) return false;
+  if(!save_preview_file(preview.path, updated)) return std::nullopt;
 
   // Refresh the cached body so the next frame renders the edited content.
   MarkdownView::update_hover_preview_body(modified_body);
-  return true;
+  return updated;
 }
 
-void render_link_hover_preview_popup()
+static std::filesystem::path normalized_preview_path(std::string_view path)
 {
-  if(g_rendering_hover_preview) return;
+  std::filesystem::path result(path);
+  if(result.is_relative() && !g_preview_project_root.empty()) result = g_preview_project_root / result;
+  return result.lexically_normal();
+}
+
+bool render_link_hover_preview_popup(std::string &document_markdown)
+{
+  if(g_rendering_hover_preview) return false;
 
   const int frame = ImGui::GetFrameCount();
-  if(g_hover_preview_drawn_frame == frame) return;
+  if(g_hover_preview_drawn_frame == frame) return false;
 
   MarkdownHoverPreviewData preview;
-  if(!MarkdownView::take_hover_preview(preview)) return;
+  if(!MarkdownView::take_hover_preview(preview)) return false;
 
   // Larger, user-resizable popup that can scroll. Sized to a typical preview
   // column on a 1440 px screen; the user can still resize the corner.
@@ -990,7 +997,8 @@ void render_link_hover_preview_popup()
   MarkdownSupport::PreviewRenderResult popup_render_result;
   // Drop AlwaysAutoResize: a scrollable body needs a stable window size so
   // scrollbars can engage and the user can resize from the corner.
-  if(ImGui::Begin(window_title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings))
+  if(ImGui::Begin(window_title.c_str(), nullptr,
+                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse))
   {
     popup_pos = ImGui::GetWindowPos();
     popup_size = ImGui::GetWindowSize();
@@ -1002,7 +1010,6 @@ void render_link_hover_preview_popup()
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + popup_content_w);
 
     // Scrollable body — wheel & scrollbar work as expected on overflow.
-    MarkdownSupport::PreviewRenderResult popup_render_result;
     if(ImGui::BeginChild("##link_preview_body", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_HorizontalScrollbar))
     {
       popup_render_result = render_preview_with_task_checkboxes_ex(preview_markdown);
@@ -1027,13 +1034,22 @@ void render_link_hover_preview_popup()
   // Persist interactive edits (checkbox toggles, table edits, ...) to the
   // source file. Only writes when something actually changed and the section
   // range is known.
+  bool current_document_changed = false;
   if(popup_render_result.markdown_changed)
-    persist_hover_preview_edit(preview, preview_markdown);
+  {
+    if(const auto updated = persist_hover_preview_edit(preview, preview_markdown))
+    {
+      current_document_changed =
+          normalized_preview_path(preview.path) == normalized_preview_path(previous_document_path);
+      if(current_document_changed) document_markdown = *updated;
+    }
+  }
 
   g_force_open_preview_headers = false;
   set_preview_document_path(previous_document_path);
   MarkdownView::set_hover_preview_enabled(true);
   g_rendering_hover_preview = false;
+  return current_document_changed;
 }
 
 std::string portable_document_key(std::string_view document_path)
@@ -2898,7 +2914,7 @@ PreviewRenderResult render_preview_with_task_checkboxes_ex(std::string &markdown
   result.markdown_changed = result.markdown_changed || checkbox_changed || !table_replacements.empty();
   if(result.preview_state_changed) save_preview_state_if_dirty();
   if(heading_request) g_preview_heading_request.reset();
-  render_link_hover_preview_popup();
+  result.markdown_changed = result.markdown_changed || render_link_hover_preview_popup(markdown);
 
   const auto img_ctx = MarkdownView::render_image_context_menu(markdown);
   result.consumed_right_click = result.consumed_right_click || img_ctx.consumed_right_click;

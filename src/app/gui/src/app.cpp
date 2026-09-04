@@ -8774,10 +8774,19 @@ void App::frame_ui()
     }
     if(target_note >= 0)
     {
+      folders_[static_cast<std::size_t>(target_folder)]
+          .notes[static_cast<std::size_t>(target_note)]
+          .hidden = false;
       set_active_note(target_folder, target_note);
       selected_note_indices.clear();
       selected_note_indices.insert(target_note);
+      selected_stroke_indices.clear();
+      pending_focus_note_idx = target_note;
+      force_open_folder_idx = target_folder;
       editing_mode_ = false;
+      request_exit_edit_mode_ = false;
+      request_cancel_draw_tools_ = true;
+      sidebar_last_selected_was_folder = false;
       if(!pending_internal_link_anchor_.empty())
       {
         const std::string &content = markdown_text_;
@@ -15009,6 +15018,7 @@ void App::frame_ui()
       std::string preview_text;
       bool table_ctx_right_click_consumed = false;
       bool table_ctx_double_click_consumed = false;
+      bool internal_link_double_click_consumed = false;
 
       if(note_window_visible && is_editing_this)
       {
@@ -15250,6 +15260,7 @@ void App::frame_ui()
         changed = preview_result.markdown_changed;
         table_ctx_right_click_consumed = preview_result.consumed_right_click;
         table_ctx_double_click_consumed = preview_result.consumed_double_click;
+        internal_link_double_click_consumed = !pending_internal_link_path_.empty();
         ImGui::PopTextWrapPos();
         if(preview_result.markdown_changed)
         {
@@ -15339,7 +15350,8 @@ void App::frame_ui()
       if(w_hovered &&
          !mouse_on_title &&
          ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
-         !table_ctx_double_click_consumed)
+         !table_ctx_double_click_consumed &&
+         !internal_link_double_click_consumed)
       {
         if(editing_mode_ && !is_editing_this)
         {
@@ -16032,6 +16044,7 @@ void App::frame_ui()
     const MarkdownSupport::PreviewRenderResult preview_result = render_preview_with_task_checkboxes_ex(markdown_text_);
     const bool preview_changed = preview_result.markdown_changed || preview_result.preview_state_changed;
     const bool table_double_click_consumed = preview_result.consumed_double_click;
+    const bool internal_link_double_click_consumed = !pending_internal_link_path_.empty();
     ImGui::PopTextWrapPos();
 
     if(preview_result.markdown_changed)
@@ -16064,7 +16077,8 @@ void App::frame_ui()
     // Enter edit mode only on double click (single click does nothing)
     if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
-       !table_double_click_consumed)
+       !table_double_click_consumed &&
+       !internal_link_double_click_consumed)
     {
       editing_mode_ = true;
       show_palette = false;
