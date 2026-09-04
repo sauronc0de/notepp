@@ -4604,7 +4604,7 @@ void App::load_note_content_for_active(bool preserve_edit_checkpoint)
   if(preserve_edit_checkpoint && edit_checkpoint_text_ && edit_checkpoint_path_ == state_file_path_)
     checkpoint_to_preserve = *edit_checkpoint_text_;
   if(edit_checkpoint_text_ && !edit_checkpoint_path_.empty() && !checkpoint_to_preserve)
-    detached_edit_checkpoints_.try_emplace(edit_checkpoint_path_, *edit_checkpoint_text_);
+    detached_edit_checkpoints_.try_emplace(edit_checkpoint_path_.string(), *edit_checkpoint_text_);
   edit_checkpoint_path_.clear();
   edit_checkpoint_text_.reset();
   if(!history_replay_in_progress_) flush_pending_text_history();
@@ -5238,7 +5238,7 @@ void App::apply_text_history_state(std::string_view note_path, std::string_view 
     throw std::invalid_argument("text undo context snapshot is malformed");
   if(note_path.empty()) throw std::invalid_argument("text undo note path is empty");
 
-  const std::string saved_checkpoint_path = edit_checkpoint_path_;
+  const std::string saved_checkpoint_path = edit_checkpoint_path_.string();
   const std::optional<std::string> saved_checkpoint = edit_checkpoint_text_;
   discard_pending_text_history();
   if(!write_text_file(std::string(note_path), text))
