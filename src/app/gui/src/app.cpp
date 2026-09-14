@@ -7866,6 +7866,29 @@ void App::frame_ui()
     SearchScope last_scope = SearchScope::CurrentPageNotes;
   };
   static SearchDialogState search_dialog;
+  const bool editing_mode_at_frame_start = editing_mode_;
+  const auto clear_search_highlight = [&]() {
+    search_editor_scroll_note_path_.clear();
+    search_editor_scroll_pos_ = -1;
+    search_editor_selection_note_path_.clear();
+    search_editor_selection_start_ = -1;
+    search_editor_selection_end_ = -1;
+    search_editor_selection_focus_pending_ = false;
+    search_editor_match_note_path_.clear();
+    search_editor_match_offset_ = -1;
+    search_editor_match_length_ = 0;
+  };
+  const auto close_search_dialog = [&]() {
+    const bool editor_search = search_dialog.scope == SearchScope::CurrentEditorNote;
+    search_dialog.visible = false;
+    request_close_search_ = false;
+    search_selected_idx_ = -1;
+    search_navigation_delta_ = 0;
+    request_search_activate_ = false;
+    clear_search_highlight();
+    if(editor_search) search_request_window_focus_ = true;
+    request_preview_source_offset({}, 0);
+  };
   struct NoteSwitcherResult
   {
     std::string note_id;
@@ -8443,18 +8466,7 @@ void App::frame_ui()
   auto render_search_dialog = [&]() {
     open_default_search_dialog();
     if(request_close_search_)
-    {
-      if(search_dialog.scope == SearchScope::CurrentEditorNote)
-      {
-        search_request_window_focus_ = true;
-        if(!editing_mode_) request_preview_source_offset({}, 0);
-      }
-      search_dialog.visible = false;
-      request_close_search_ = false;
-      search_selected_idx_ = -1;
-      search_navigation_delta_ = 0;
-      request_search_activate_ = false;
-    }
+      close_search_dialog();
     search_window_visible_ = search_dialog.visible;
     if(!search_dialog.visible) return;
 
@@ -8463,7 +8475,12 @@ void App::frame_ui()
     const ImGuiCond placement_cond = just_opened ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
     ImGui::SetNextWindowSize(editor_search ? ImVec2(500.0f, 150.0f) : ImVec2(680.0f, 480.0f),
                              editor_search ? ImGuiCond_Always : placement_cond);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), placement_cond, ImVec2(0.5f, 0.5f));
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    constexpr float kSearchWindowMargin = 35.0f;
+    const ImVec2 search_window_top_right(
+        viewport->WorkPos.x + viewport->WorkSize.x - kSearchWindowMargin,
+        viewport->WorkPos.y + kSearchWindowMargin);
+    ImGui::SetNextWindowPos(search_window_top_right, placement_cond, ImVec2(1.0f, 0.0f));
     if(just_opened) ImGui::SetNextWindowFocus();
     if(!ImGui::Begin(Lang::t("Search"), &search_dialog.visible, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings))
     {
@@ -8471,12 +8488,7 @@ void App::frame_ui()
       ImGui::End();
       search_window_visible_ = search_dialog.visible;
       if(!search_dialog.visible)
-      {
-        if(editor_search && !editing_mode_) request_preview_source_offset({}, 0);
-        search_selected_idx_ = -1;
-        search_navigation_delta_ = 0;
-        request_search_activate_ = false;
-      }
+        close_search_dialog();
       return;
     }
     search_dialog.just_opened = false;
@@ -8617,13 +8629,7 @@ void App::frame_ui()
       ImGui::End();
       search_window_visible_ = search_dialog.visible;
       if(!search_dialog.visible)
-      {
-        search_request_window_focus_ = true;
-        if(!editing_mode_) request_preview_source_offset({}, 0);
-        search_selected_idx_ = -1;
-        search_navigation_delta_ = 0;
-        request_search_activate_ = false;
-      }
+        close_search_dialog();
       return;
     }
 
@@ -8674,12 +8680,7 @@ void App::frame_ui()
     ImGui::End();
     search_window_visible_ = search_dialog.visible;
     if(!search_dialog.visible)
-    {
-      if(editor_search && !editing_mode_) request_preview_source_offset({}, 0);
-      search_selected_idx_ = -1;
-      search_navigation_delta_ = 0;
-      request_search_activate_ = false;
-    }
+      close_search_dialog();
   };
   auto navigate_to_note_switcher_result = [&](const NoteSwitcherResult &result) {
     int folder_idx = result.folder_idx;
@@ -15763,6 +15764,8 @@ void App::frame_ui()
       if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
       if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
     }
+    if(editing_mode_ != editing_mode_at_frame_start)
+      close_search_dialog();
     render_search_dialog();
     render_note_switcher();
     render_note_reference_label();
@@ -15802,6 +15805,8 @@ void App::frame_ui()
       deferred_sidebar_snapshot_before.clear();
     }
     if(variable_inspector_visible_) render_variable_inspector();
+    if(editing_mode_ != editing_mode_at_frame_start)
+      close_search_dialog();
     render_search_dialog();
     render_note_switcher();
     render_note_reference_label();
@@ -16676,6 +16681,8 @@ void App::frame_ui()
     if(g_drawings_dirty && !ImGui::IsAnyMouseDown()) save_drawings_state();
     if(g_clipboard_dirty && !ImGui::IsAnyMouseDown()) save_note_clipboard();
   }
+  if(editing_mode_ != editing_mode_at_frame_start)
+    close_search_dialog();
   render_search_dialog();
   render_note_switcher();
   render_note_reference_label();
